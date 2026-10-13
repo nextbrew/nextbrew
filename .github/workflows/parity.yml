@@ -4,16 +4,16 @@ on:
   push:
     branches: [ main ]
     paths:
-      - 'zb_core/**'
-      - 'zb_io/**'
-      - 'zb_cli/**'
+      - 'nb_core/**'
+      - 'nb_io/**'
+      - 'nb_cli/**'
       - 'Cargo.lock'
       - '.github/workflows/parity.yml'
   pull_request:
     paths:
-      - 'zb_core/**'
-      - 'zb_io/**'
-      - 'zb_cli/**'
+      - 'nb_core/**'
+      - 'nb_io/**'
+      - 'nb_cli/**'
       - 'Cargo.lock'
       - '.github/workflows/parity.yml'
   schedule:
@@ -54,5 +54,5 @@ jobs:
       # per install.
       - name: run parity tests
         env:
-          ZB_PARITY_REQUIRE_BREW: "1"
-        run: cargo test --package zb_cli --features parity --test parity -- --nocapture --test-threads=1 --skip install_timings
+          NB_PARITY_REQUIRE_BREW: "1"
+        run: cargo test --package nb_cli --features parity --test parity -- --nocapture --test-threads=1 --skip install_timings

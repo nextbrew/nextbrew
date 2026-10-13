@@ -7,7 +7,7 @@ on:
   workflow_dispatch:
   pull_request:
     paths:
-      - 'zb_io/src/build/shim.rb'
+      - 'nb_io/src/build/shim.rb'
       - '.github/workflows/homebrew-compat.yml'
 
 permissions:
@@ -53,14 +53,14 @@ jobs:
           echo "version=$version" >> $GITHUB_OUTPUT
           echo "Homebrew version: $version"
 
-      - name: Build zerobrew
+      - name: Build nextbrew
         run: cargo build --release
 
-      - name: Install zerobrew
-        run: cargo install --force --path zb_cli
+      - name: Install nextbrew
+        run: cargo install --force --path nb_cli
 
-      - name: Initialize zerobrew
-        run: zb init
+      - name: Initialize nextbrew
+        run: nb init
 
       - name: Test common formulas
         id: test-formulas
@@ -94,7 +94,7 @@ jobs:
 
           for formula in "${formulas[@]}"; do
             echo "Testing $formula..."
-            if zb info "$formula" > /tmp/test_output.log 2>&1; then
+            if nb info "$formula" > /tmp/test_output.log 2>&1; then
               echo "PASS: $formula"
               passed=$((passed + 1))
             else

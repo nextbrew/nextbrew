@@ -1,10 +1,10 @@
-# Contributing to zerobrew
+# Contributing to nextbrew
 
-Thanks for your interest in contributing to zerobrew! This document provides guidelines for contributing to the project.
+Thanks for your interest in contributing to nextbrew! This document provides guidelines for contributing to the project.
 
 ## Licensing
 
-By contributing to zerobrew, you agree your contributions will be dual-licensed under either [Apache](./LICENSE-APACHE.md) OR [MIT](./LICENSE-MIT.md), at the licensee's choice.
+By contributing to nextbrew, you agree your contributions will be dual-licensed under either [Apache](./LICENSE-APACHE.md) OR [MIT](./LICENSE-MIT.md), at the licensee's choice.
 
 ## Soft Prerequisites
 
@@ -13,11 +13,11 @@ By contributing to zerobrew, you agree your contributions will be dual-licensed 
 
 ## Project Structure
 
-zerobrew is organized as a Cargo workspace with three crates:
+nextbrew is organized as a Cargo workspace with three crates:
 
-- `zb_core`: Core data models and domain logic (formula resolution, bottle selection)
-- `zb_io`: I/O operations (API client, downloads, extraction, installation)
-- `zb_cli`: Command-line interface
+- `nb_core`: Core data models and domain logic (formula resolution, bottle selection)
+- `nb_io`: I/O operations (API client, downloads, extraction, installation)
+- `nb_cli`: Command-line interface
 
 Any changes you make that touch several crates should be organized properly. See [commit hygiene](#commit-hygiene)
 
@@ -43,8 +43,8 @@ out in the Discord to give us a heads up or open an issue first to discuss your 
 This project includes a `Justfile`, Install [just](https://github.com/casey/just) and use these commands instead of `cargo` (for ease of development):
 
 - `just build` Check formatting, lint, then build the binary (Builds debug binary)
-- `just install` Build and install zb to $HOME/.local/bin (Customizable with `$ZEROBREW_BIN`)
-- `just uninstall` Remove all zerobrew installations and configurations
+- `just install` Build and install nb to $HOME/.local/bin (Customizable with `$NEXTBREW_BIN`)
+- `just uninstall` Remove all nextbrew installations and configurations
 - `just fmt` Format code with rustfmt
 - `just fmt-check` Check code formatting
 - `just lint` Run clippy with strict warnings
@@ -64,7 +64,7 @@ We ask that you follow the format below for commits:
 
 for instance:
 ```bash
-fix(zb_cli): foo bar moo baz
+fix(nb_cli): foo bar moo baz
 ```
 Allowed prefixes:
 ```bash
@@ -98,7 +98,7 @@ To benchmark performance:
 just bench --full
 ```
 
-This runs a 100-package installation suite comparing zerobrew to Homebrew. This is especially crucial to run if you are 
+This runs a 100-package installation suite comparing nextbrew to Homebrew. This is especially crucial to run if you are 
 planning on contributing to performance/optimization related changes.
 
 Useful options:

@@ -60,4 +60,4 @@ jobs:
         run: cargo test --workspace
 
       - name: run integration tests
-        run: cargo test --package zb_cli --test integration -- --ignored
+        run: cargo test --package nb_cli --test integration -- --ignored

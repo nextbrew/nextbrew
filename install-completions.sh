@@ -1,5 +1,5 @@
 #!/bin/bash
-# Install shell completions for zb
+# Install shell completions for nb
 
 set -e
 
@@ -12,7 +12,7 @@ NC='\033[0m' # No Color
 
 SHELL_NAME=$(basename "$SHELL")
 
-echo -e "${CYAN}==> Installing zb shell completions${NC}"
+echo -e "${CYAN}==> Installing nb shell completions${NC}"
 echo ""
 
 case "$SHELL_NAME" in
@@ -26,14 +26,14 @@ case "$SHELL_NAME" in
     mkdir -p "$ZSH_COMPLETIONS_DIR"
     
     # Generate completion
-    zb completion zsh > "$ZSH_COMPLETIONS_DIR/_zb"
-    echo -e "${GREEN}✓${NC} Generated zsh completions at $ZSH_COMPLETIONS_DIR/_zb"
+    nb completion zsh > "$ZSH_COMPLETIONS_DIR/_nb"
+    echo -e "${GREEN}✓${NC} Generated zsh completions at $ZSH_COMPLETIONS_DIR/_nb"
     
     # Add completion function to shell config if not already there
     ZSHENV="${ZDOTDIR:-$HOME}/.zshenv"
     if ! grep -q "fpath=.*\.zsh/completions" "$ZSHENV" 2>/dev/null; then
       echo "" >> "$ZSHENV"
-      echo "# zb completions" >> "$ZSHENV"
+      echo "# nb completions" >> "$ZSHENV"
       echo "fpath=(${ZDOTDIR:-\$HOME}/.zsh/completions \$fpath)" >> "$ZSHENV"
       echo "autoload -Uz compinit && compinit" >> "$ZSHENV"
       echo -e "${GREEN}✓${NC} Added completion function to $ZSHENV"
@@ -64,8 +64,8 @@ case "$SHELL_NAME" in
     mkdir -p "$BASH_COMPLETIONS_DIR"
     
     # Generate completion
-    zb completion bash > "$BASH_COMPLETIONS_DIR/zb"
-    echo -e "${GREEN}✓${NC} Generated bash completions at $BASH_COMPLETIONS_DIR/zb"
+    nb completion bash > "$BASH_COMPLETIONS_DIR/nb"
+    echo -e "${GREEN}✓${NC} Generated bash completions at $BASH_COMPLETIONS_DIR/nb"
     
     # Add sourcing to bashrc if not already there
     BASHRC="$HOME/.bashrc"
@@ -73,10 +73,10 @@ case "$SHELL_NAME" in
       BASHRC="$HOME/.bash_profile"
     fi
     
-    if ! grep -q "bash_completion.d/zb" "$BASHRC" 2>/dev/null; then
+    if ! grep -q "bash_completion.d/nb" "$BASHRC" 2>/dev/null; then
       echo "" >> "$BASHRC"
-      echo "# zb completions" >> "$BASHRC"
-      echo "source $BASH_COMPLETIONS_DIR/zb" >> "$BASHRC"
+      echo "# nb completions" >> "$BASHRC"
+      echo "source $BASH_COMPLETIONS_DIR/nb" >> "$BASHRC"
       echo -e "${GREEN}✓${NC} Added completion source to $BASHRC"
     else
       echo -e "${YELLOW}→${NC} Completion already sourced in $BASHRC"
@@ -94,8 +94,8 @@ case "$SHELL_NAME" in
     mkdir -p "$FISH_COMPLETIONS_DIR"
     
     # Generate completion
-    zb completion fish > "$FISH_COMPLETIONS_DIR/zb.fish"
-    echo -e "${GREEN}✓${NC} Generated fish completions at $FISH_COMPLETIONS_DIR/zb.fish"
+    nb completion fish > "$FISH_COMPLETIONS_DIR/nb.fish"
+    echo -e "${GREEN}✓${NC} Generated fish completions at $FISH_COMPLETIONS_DIR/nb.fish"
     
     echo ""
     echo "Completions will be automatically loaded next time you start fish."
@@ -107,9 +107,9 @@ case "$SHELL_NAME" in
     echo "Supported shells: zsh, bash, fish"
     echo ""
     echo "You can manually generate completions with:"
-    echo -e "  ${CYAN}zb completion bash${NC}  # for bash"
-    echo -e "  ${CYAN}zb completion zsh${NC}   # for zsh"
-    echo -e "  ${CYAN}zb completion fish${NC}  # for fish"
+    echo -e "  ${CYAN}nb completion bash${NC}  # for bash"
+    echo -e "  ${CYAN}nb completion zsh${NC}   # for zsh"
+    echo -e "  ${CYAN}nb completion fish${NC}  # for fish"
     exit 1
     ;;
 esac

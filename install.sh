@@ -55,40 +55,40 @@ cleanup() {
 }
 trap cleanup EXIT
 
-ZEROBREW_REPO="https://github.com/zerobrewhq/zerobrew.git"
-: "${ZEROBREW_DIR:=$HOME/.zerobrew}"
-: "${ZEROBREW_BIN:=$HOME/.local/bin}"
+NEXTBREW_REPO="https://github.com/nextbrew/nextbrew.git"
+: "${NEXTBREW_DIR:=$HOME/.nextbrew}"
+: "${NEXTBREW_BIN:=$HOME/.local/bin}"
 ORIGINAL_PATH="$PATH"
 PREVIOUS_ZB_VERSION=""
 
-if [[ -d "/opt/zerobrew" ]]; then
-    ZEROBREW_ROOT="/opt/zerobrew"
+if [[ -d "/opt/nextbrew" ]]; then
+    NEXTBREW_ROOT="/opt/nextbrew"
 elif [[ "$(uname -s)" == "Darwin" ]]; then
-    ZEROBREW_ROOT="/opt/zerobrew"
+    NEXTBREW_ROOT="/opt/nextbrew"
 else
     XDG_DATA_HOME="${XDG_DATA_HOME:-$HOME/.local/share}"
-    ZEROBREW_ROOT="$XDG_DATA_HOME/zerobrew"
+    NEXTBREW_ROOT="$XDG_DATA_HOME/nextbrew"
 fi
 
 if [[ "$(uname -s)" == "Darwin" ]]; then
-    : "${ZEROBREW_PREFIX:=$ZEROBREW_ROOT}"
+    : "${NEXTBREW_PREFIX:=$NEXTBREW_ROOT}"
 else
-    : "${ZEROBREW_PREFIX:=$ZEROBREW_ROOT/prefix}"
+    : "${NEXTBREW_PREFIX:=$NEXTBREW_ROOT/prefix}"
 fi
 
-export ZEROBREW_ROOT
-export ZEROBREW_PREFIX
+export NEXTBREW_ROOT
+export NEXTBREW_PREFIX
 
-# Ensure system tools are used instead of zerobrew-installed ones.
-# A prior `zb init` adds $ZEROBREW_PREFIX/bin to PATH, which can cause
-# zerobrew's curl/git (linked against zerobrew's OpenSSL) to be used by
+# Ensure system tools are used instead of nextbrew-installed ones.
+# A prior `nb init` adds $NEXTBREW_PREFIX/bin to PATH, which can cause
+# nextbrew's curl/git (linked against nextbrew's OpenSSL) to be used by
 # this script. On some macOS versions that leads to dyld symbol errors.
-# see https://github.com/zerobrewhq/zerobrew/issues/288
+# see https://github.com/nextbrewhq/nextbrew/issues/288
 sanitized_path=""
 IFS=':' read -ra _path_parts <<< "$PATH"
 for _p in "${_path_parts[@]}"; do
     case "$_p" in
-        "$ZEROBREW_PREFIX"/bin|"$ZEROBREW_ROOT"/bin) ;;
+        "$NEXTBREW_PREFIX"/bin|"$NEXTBREW_ROOT"/bin) ;;
         *) sanitized_path="${sanitized_path:+$sanitized_path:}$_p" ;;
     esac
 done
@@ -110,13 +110,13 @@ usage() {
     printf "\n"
     printf "Options:\n"
     printf "    -h, --help               %bDisplay this help message%b\n" "$MUTED" "$NC"
-    printf "    -b, --binary <path>...   %bInstalls binaries (zb, zbx) to \$ZEROBREW_BIN%b\n" "$MUTED" "$NC"
+    printf "    -b, --binary <path>...   %bInstalls binaries (nb, nbx) to \$NEXTBREW_BIN%b\n" "$MUTED" "$NC"
     printf "        --no-modify-path     %bDon't modify shell config files (.zshrc, .bashrc, etc.)%b\n" "$MUTED" "$NC"
     printf "\n"
     printf "Examples:%b\n" "$MUTED"
     printf "    ./install.sh --no-modify-path\n"
-    printf "    ./install.sh -b /path/to/zb\n"
-    printf "    ./install.sh -b /path/to/zb /path/to/zbx%b\n" "$NC"
+    printf "    ./install.sh -b /path/to/nb\n"
+    printf "    ./install.sh -b /path/to/nb /path/to/nbx%b\n" "$NC"
 }
 
 spinner() {
@@ -150,22 +150,22 @@ warn() {
     printf "%b[!]%b %b\n" "$ORANGE" "$NC" "$1" >&2
 }
 
-zb_version() {
-    local zb_path="$1"
+nb_version() {
+    local nb_path="$1"
 
-    if [[ -x "$zb_path" ]]; then
-        "$zb_path" --version 2>/dev/null || true
+    if [[ -x "$nb_path" ]]; then
+        "$nb_path" --version 2>/dev/null || true
     fi
 }
 
-detect_existing_zb() {
-    PREVIOUS_ZB_VERSION="$(zb_version "$ZEROBREW_BIN/zb")"
+detect_existing_nb() {
+    PREVIOUS_ZB_VERSION="$(nb_version "$NEXTBREW_BIN/nb")"
 }
 
 report_zb_version() {
-    local installed_zb="$ZEROBREW_BIN/zb"
+    local installed_nb="$NEXTBREW_BIN/nb"
     local installed_version
-    installed_version="$(zb_version "$installed_zb")"
+    installed_version="$(nb_version "$installed_nb")"
 
     if [[ -z "$installed_version" ]]; then
         return
@@ -176,17 +176,17 @@ report_zb_version() {
     elif [[ "$PREVIOUS_ZB_VERSION" == "$installed_version" ]]; then
         completed "${ORANGE}${installed_version}${NC} is already up to date"
     else
-        completed "Updated zerobrew from ${ORANGE}${PREVIOUS_ZB_VERSION}${NC} to ${ORANGE}${installed_version}${NC}"
+        completed "Updated nextbrew from ${ORANGE}${PREVIOUS_ZB_VERSION}${NC} to ${ORANGE}${installed_version}${NC}"
     fi
 
-    local current_path_zb
-    current_path_zb="$(PATH="$ORIGINAL_PATH" command -v zb 2>/dev/null || true)"
-    if [[ -z "$current_path_zb" ]]; then
-        warn "zb is installed at ${installed_zb}, but your current shell may not see it until you restart or source your shell config."
-    elif [[ "$current_path_zb" != "$installed_zb" ]]; then
+    local current_path_nb
+    current_path_nb="$(PATH="$ORIGINAL_PATH" command -v nb 2>/dev/null || true)"
+    if [[ -z "$current_path_nb" ]]; then
+        warn "nb is installed at ${installed_nb}, but your current shell may not see it until you restart or source your shell config."
+    elif [[ "$current_path_nb" != "$installed_nb" ]]; then
         local current_path_version
-        current_path_version="$(zb_version "$current_path_zb")"
-        warn "Your current shell finds ${current_path_zb}${current_path_version:+ ($current_path_version)} before ${installed_zb}. Restart your terminal or adjust PATH if zb still reports an old version."
+        current_path_version="$(nb_version "$current_path_nb")"
+        warn "Your current shell finds ${current_path_nb}${current_path_version:+ ($current_path_version)} before ${installed_nb}. Restart your terminal or adjust PATH if nb still reports an old version."
     fi
 }
 
@@ -228,8 +228,8 @@ install_bin() {
     done
 }
 
-zb_init() {
-    local zb_path="$1"
+nb_init() {
+    local nb_path="$1"
     local no_modify="$2"
     local init_args=()
 
@@ -237,23 +237,23 @@ zb_init() {
         init_args+=("--no-modify-path")
     fi
 
-    "$zb_path" init ${init_args[@]+"${init_args[@]}"} || error_exit "Failed to initialize zerobrew"
+    "$nb_path" init ${init_args[@]+"${init_args[@]}"} || error_exit "Failed to initialize nextbrew"
 }
 
 finalize_installation() {
     local no_modify="$1"
 
     # Verify the binary works
-    if ! "$ZEROBREW_BIN/zb" --version >/dev/null 2>&1; then
+    if ! "$NEXTBREW_BIN/nb" --version >/dev/null 2>&1; then
         error_exit "Installation succeeded but binary does not execute properly"
     fi
 
-    # Add zb to PATH for current session if not already present
-    if [[ ":$PATH:" != *":$ZEROBREW_BIN:"* ]]; then
-        export PATH="$ZEROBREW_BIN:$PATH"
+    # Add nb to PATH for current session if not already present
+    if [[ ":$PATH:" != *":$NEXTBREW_BIN:"* ]]; then
+        export PATH="$NEXTBREW_BIN:$PATH"
     fi
 
-    zb_init "$ZEROBREW_BIN/zb" "$no_modify"
+    nb_init "$NEXTBREW_BIN/nb" "$no_modify"
     report_zb_version
 
     print_logo
@@ -290,7 +290,7 @@ download_release_binary() {
     local output_name="$2"
     local required="${3:-true}"
     local downloaded_path="$DOWNLOAD_TEMP_DIR/${output_name}"
-    local download_url="https://github.com/zerobrewhq/zerobrew/releases/latest/download/${asset_name}"
+    local download_url="https://github.com/nextbrew/nextbrew/releases/latest/download/${asset_name}"
 
     (
         curl -fsL --retry 3 --retry-delay 1 --connect-timeout 10 \
@@ -314,9 +314,9 @@ download_release_binary() {
         return 0
     fi
 
-    if [[ "$output_name" == "zb" ]]; then
+    if [[ "$output_name" == "nb" ]]; then
         DOWNLOADED_ZB_PATH="$downloaded_path"
-    elif [[ "$output_name" == "zbx" ]]; then
+    elif [[ "$output_name" == "nbx" ]]; then
         DOWNLOADED_ZBX_PATH="$downloaded_path"
     fi
 
@@ -325,24 +325,24 @@ download_release_binary() {
 }
 
 try_release_install() {
-    local zb_asset zbx_asset
+    local nb_asset nbx_asset
 
     DOWNLOAD_TEMP_DIR=$(mktemp -d)
     DOWNLOADED_ZB_PATH=""
     DOWNLOADED_ZBX_PATH=""
 
-    if ! zb_asset=$(resolve_release_asset "zb"); then
-        warn "No prebuilt release binary for zb on $(uname -s)/$(uname -m). Falling back to source build."
+    if ! nb_asset=$(resolve_release_asset "nb"); then
+        warn "No prebuilt release binary for nb on $(uname -s)/$(uname -m). Falling back to source build."
         return 1
     fi
 
-    if ! download_release_binary "$zb_asset" "zb" "true"; then
-        warn "Release binary download failed for ${zb_asset}. Falling back to source build."
+    if ! download_release_binary "$nb_asset" "nb" "true"; then
+        warn "Release binary download failed for ${nb_asset}. Falling back to source build."
         return 1
     fi
 
-    if zbx_asset=$(resolve_release_asset "zbx"); then
-        download_release_binary "$zbx_asset" "zbx" "false"
+    if nbx_asset=$(resolve_release_asset "nbx"); then
+        download_release_binary "$nbx_asset" "nbx" "false"
     fi
 
     local binaries_to_install=("$DOWNLOADED_ZB_PATH")
@@ -350,7 +350,7 @@ try_release_install() {
         binaries_to_install+=("$DOWNLOADED_ZBX_PATH")
     fi
 
-    install_bin "$ZEROBREW_BIN" "${binaries_to_install[@]}"
+    install_bin "$NEXTBREW_BIN" "${binaries_to_install[@]}"
     finalize_installation "$no_modify_path"
     return 0
 }
@@ -362,10 +362,10 @@ print_logo() {
     printf "%b▄██▄▄ ██▄▄▄ ██ ██ ▀███▀%b ██▄█▀ ██ ██ ██▄▄▄  ▀█▀█▀ \n" "$NC" "$ORANGE"
     printf "\n"
 
-    printf "%bStart installing %bPackages%b with %bzerobrew%b:\n\n" "$MUTED" "$NC" "$MUTED" "$ORANGE" "$NC"
-    printf "  zb install %bffmpeg%b    # Install a Package%b\n" "$ORANGE" "$MUTED" "$NC"
-    printf "  zbx %byetris%b           # Single-time Run%b\n\n" "$ORANGE" "$MUTED" "$NC"
-    printf "%bFor more information visit %bhttps://zerobrew.rs/docs\n\n" "$MUTED" "$NC"
+    printf "%bStart installing %bPackages%b with %bnextbrew%b:\n\n" "$MUTED" "$NC" "$MUTED" "$ORANGE" "$NC"
+    printf "  nb install %bffmpeg%b    # Install a Package%b\n" "$ORANGE" "$MUTED" "$NC"
+    printf "  nbx %byetris%b           # Single-time Run%b\n\n" "$ORANGE" "$MUTED" "$NC"
+    printf "%bFor more information visit %bhttps://github.com/nextbrew/nextbrew\n\n" "$MUTED" "$NC"
 }
 
 while [[ $# -gt 0 ]]; do
@@ -396,11 +396,11 @@ while [[ $# -gt 0 ]]; do
     esac
 done
 
-detect_existing_zb
+detect_existing_nb
 
 # Skip all if binary path is provided
 if [[ ${#binary_paths[@]} -gt 0 ]]; then
-    install_bin "$ZEROBREW_BIN" "${binary_paths[@]}"
+    install_bin "$NEXTBREW_BIN" "${binary_paths[@]}"
     finalize_installation "$no_modify_path"
     exit 0
 fi
@@ -437,9 +437,9 @@ if ! command -v cargo >/dev/null 2>&1; then
 fi
 
 # Clone or update repo
-if [[ -d "$ZEROBREW_DIR" ]]; then
+if [[ -d "$NEXTBREW_DIR" ]]; then
     (
-        cd "$ZEROBREW_DIR" || exit 1
+        cd "$NEXTBREW_DIR" || exit 1
         if ! git fetch --depth=1 origin main >/dev/null 2>&1; then
             printf "Failed to fetch updates\n" >&2
             exit 1
@@ -449,28 +449,28 @@ if [[ -d "$ZEROBREW_DIR" ]]; then
             exit 1
         fi
     ) &
-    if ! spinner "Updating ${ORANGE}zerobrew${NC} repository" $!; then
-        error_exit "Failed to update zerobrew repository. Check your network connection and permissions."
+    if ! spinner "Updating ${ORANGE}nextbrew${NC} repository" $!; then
+        error_exit "Failed to update nextbrew repository. Check your network connection and permissions."
     fi
-    completed "Updated ${ORANGE}zerobrew${NC} repository"
-    cd "$ZEROBREW_DIR" || error_exit "Failed to enter directory: $ZEROBREW_DIR"
+    completed "Updated ${ORANGE}nextbrew${NC} repository"
+    cd "$NEXTBREW_DIR" || error_exit "Failed to enter directory: $NEXTBREW_DIR"
 else
     (
-        if ! git clone --depth 1 "$ZEROBREW_REPO" "$ZEROBREW_DIR" >/dev/null 2>&1; then
+        if ! git clone --depth 1 "$NEXTBREW_REPO" "$NEXTBREW_DIR" >/dev/null 2>&1; then
             printf "Failed to clone repository\n" >&2
             exit 1
         fi
     ) &
-    if ! spinner "Cloning ${ORANGE}zerobrew${NC} repository" $!; then
-        error_exit "Failed to clone zerobrew repository. Check your network connection and that the repository exists."
+    if ! spinner "Cloning ${ORANGE}nextbrew${NC} repository" $!; then
+        error_exit "Failed to clone nextbrew repository. Check your network connection and that the repository exists."
     fi
-    completed "Cloned ${ORANGE}zerobrew${NC} repository"
-    cd "$ZEROBREW_DIR" || error_exit "Failed to enter directory: $ZEROBREW_DIR"
+    completed "Cloned ${ORANGE}nextbrew${NC} repository"
+    cd "$NEXTBREW_DIR" || error_exit "Failed to enter directory: $NEXTBREW_DIR"
 fi
 
 # Build
-if [[ -d "$ZEROBREW_PREFIX/lib/pkgconfig" ]]; then
-    export PKG_CONFIG_PATH="$ZEROBREW_PREFIX/lib/pkgconfig:${PKG_CONFIG_PATH:-}"
+if [[ -d "$NEXTBREW_PREFIX/lib/pkgconfig" ]]; then
+    export PKG_CONFIG_PATH="$NEXTBREW_PREFIX/lib/pkgconfig:${PKG_CONFIG_PATH:-}"
 fi
 if [[ -d "/opt/homebrew/lib/pkgconfig" ]] && [[ ! "${PKG_CONFIG_PATH:-}" =~ "/opt/homebrew/lib/pkgconfig" ]]; then
     export PKG_CONFIG_PATH="/opt/homebrew/lib/pkgconfig:${PKG_CONFIG_PATH:-}"
@@ -480,14 +480,14 @@ fi
 BUILD_OUTPUT=$(mktemp)
 
 (
-    if ! cargo build --release --bin zb --bin zbx --message-format=json > "$BUILD_OUTPUT" 2>&1; then
+    if ! cargo build --release --bin nb --bin nbx --message-format=json > "$BUILD_OUTPUT" 2>&1; then
         exit 1
     fi
 ) &
-if ! spinner "Building ${ORANGE}zerobrew${NC}" $!; then
-    error_exit "Failed to build zerobrew. Run 'cargo build --release --bin zb --bin zbx' to see details."
+if ! spinner "Building ${ORANGE}nextbrew${NC}" $!; then
+    error_exit "Failed to build nextbrew. Run 'cargo build --release --bin nb --bin nbx' to see details."
 fi
-completed "Built ${ORANGE}zerobrew${NC}"
+completed "Built ${ORANGE}nextbrew${NC}"
 
 # Parse cargo's JSON output to find the actual binary paths
 # This handles custom CARGO_TARGET_DIR, .cargo/config.toml target-dir, etc.
@@ -507,16 +507,16 @@ parse_binary_path() {
     echo "$path"
 }
 
-ZB_PATH=$(parse_binary_path "zb")
-ZBX_PATH=$(parse_binary_path "zbx")
+NB_PATH=$(parse_binary_path "nb")
+ZBX_PATH=$(parse_binary_path "nbx")
 
-if [[ -z "$ZB_PATH" || ! -f "$ZB_PATH" ]]; then
-    error_exit "Build succeeded but could not locate zb binary. Check cargo configuration."
+if [[ -z "$NB_PATH" || ! -f "$NB_PATH" ]]; then
+    error_exit "Build succeeded but could not locate nb binary. Check cargo configuration."
 fi
 
 if [[ -z "$ZBX_PATH" || ! -f "$ZBX_PATH" ]]; then
-    error_exit "Build succeeded but could not locate zbx binary. Check cargo configuration."
+    error_exit "Build succeeded but could not locate nbx binary. Check cargo configuration."
 fi
 
-install_bin "$ZEROBREW_BIN" "$ZB_PATH" "$ZBX_PATH"
+install_bin "$NEXTBREW_BIN" "$NB_PATH" "$ZBX_PATH"
 finalize_installation "$no_modify_path"

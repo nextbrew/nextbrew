@@ -1,0 +1,39 @@
+[package]
+name = "nb_cli"
+version.workspace = true
+edition = "2024"
+rust-version.workspace = true
+
+[features]
+# Compares installed prefixes against a real Homebrew; needs `brew` and
+# network access, so it only runs when asked for. See tests/parity.rs.
+parity = []
+
+[dependencies]
+clap = { workspace = true, features = ["derive"] }
+clap_complete = { workspace = true, features = ["unstable-dynamic"] }
+tokio = { workspace = true, features = ["full"] }
+indicatif.workspace = true
+console.workspace = true
+serde_json.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+
+nb_core = { path = "../nb_core" }
+nb_io = { path = "../nb_io" }
+chrono = "0.4.43"
+
+[target.'cfg(unix)'.dependencies]
+libc.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
+wiremock.workspace = true
+tar.workspace = true
+flate2.workspace = true
+sha2.workspace = true
+walkdir.workspace = true
+
+[[test]]
+name = "parity"
+required-features = ["parity"]

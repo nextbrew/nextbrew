@@ -3,25 +3,25 @@ set dotenv-load
 set unstable
 set script-interpreter := ['bash', '-euo', 'pipefail']
 
-ZEROBREW_ROOT := if env('ZEROBREW_ROOT', '') != '' {
-    env('ZEROBREW_ROOT')
-} else if path_exists('/opt/zerobrew') == 'true' {
-    '/opt/zerobrew'
+NEXTBREW_ROOT := if env('NEXTBREW_ROOT', '') != '' {
+    env('NEXTBREW_ROOT')
+} else if path_exists('/opt/nextbrew') == 'true' {
+    '/opt/nextbrew'
 } else if os() == 'macos' {
-    '/opt/zerobrew'
+    '/opt/nextbrew'
 } else {
-    env('XDG_DATA_HOME', env('HOME', '~') / '.local' / 'share' ) / 'zerobrew'
+    env('XDG_DATA_HOME', env('HOME', '~') / '.local' / 'share' ) / 'nextbrew'
 }
-ZEROBREW_DIR := env('ZEROBREW_DIR', env('HOME', '~') / '.zerobrew')
-ZEROBREW_BIN := env('ZEROBREW_BIN', env('HOME', '~') / '.local' / 'bin')
-ZEROBREW_PREFIX := if env('ZEROBREW_PREFIX', '') != '' {
-    env('ZEROBREW_PREFIX')
+NEXTBREW_DIR := env('NEXTBREW_DIR', env('HOME', '~') / '.nextbrew')
+NEXTBREW_BIN := env('NEXTBREW_BIN', env('HOME', '~') / '.local' / 'bin')
+NEXTBREW_PREFIX := if env('NEXTBREW_PREFIX', '') != '' {
+    env('NEXTBREW_PREFIX')
 } else if os() == 'macos' {
-    ZEROBREW_ROOT
+    NEXTBREW_ROOT
 } else {
-    ZEROBREW_ROOT / 'prefix'
+    NEXTBREW_ROOT / 'prefix'
 }
-ZEROBREW_INSTALLED_BIN := ZEROBREW_BIN / 'zb'
+NEXTBREW_INSTALLED_BIN := NEXTBREW_BIN / 'nb'
 
 # Plain shell lookup: `which()` requires `set lists` since just 1.53
 SUDO := `command -v doas >/dev/null 2>&1 && echo doas || echo sudo`
@@ -44,33 +44,33 @@ alias f := fmt
 default:
     @just --list --unsorted
 
-[doc('Build the zb binary')]
+[doc('Build the nb binary')]
 [group('build')]
 build: fmt-check lint
-    cargo build --bin zb --bin zbx
+    cargo build --bin nb --bin nbx
 
-[doc('Install zb to $ZEROBREW_BIN')]
+[doc('Install nb to $NEXTBREW_BIN')]
 [group('install')]
 [script]
 install: build
-    if [[ -d "$ZEROBREW_PREFIX/lib/pkgconfig" ]]; then
-        export PKG_CONFIG_PATH="$ZEROBREW_PREFIX/lib/pkgconfig:${PKG_CONFIG_PATH:-}"
+    if [[ -d "$NEXTBREW_PREFIX/lib/pkgconfig" ]]; then
+        export PKG_CONFIG_PATH="$NEXTBREW_PREFIX/lib/pkgconfig:${PKG_CONFIG_PATH:-}"
     fi
     if [[ -d '/opt/homebrew/lib/pkgconfig' ]] && [[ ! "$PKG_CONFIG_PATH" =~ '/opt/homebrew/lib/pkgconfig' ]]; then
         export PKG_CONFIG_PATH="/opt/homebrew/lib/pkgconfig:${PKG_CONFIG_PATH:-}"
     fi
 
-    mkdir -p "$ZEROBREW_BIN"
-    install -Dm755 target/debug/zb "$ZEROBREW_BIN/zb"
-    install -Dm755 target/debug/zbx "$ZEROBREW_BIN/zbx"
-    echo "Installed zb to $ZEROBREW_BIN/zb"
-    echo "Installed zbx to $ZEROBREW_BIN/zbx"
+    mkdir -p "$NEXTBREW_BIN"
+    install -Dm755 target/debug/nb "$NEXTBREW_BIN/nb"
+    install -Dm755 target/debug/nbx "$NEXTBREW_BIN/nbx"
+    echo "Installed nb to $NEXTBREW_BIN/nb"
+    echo "Installed nbx to $NEXTBREW_BIN/nbx"
 
-    "$ZEROBREW_BIN/zb" init
+    "$NEXTBREW_BIN/nb" init
 
 [private]
 [script]
-_get_zerobrew_configs:
+_get_nextbrew_configs:
     shell_configs=(
         "${ZDOTDIR:-$HOME}/.zshenv"
         "${ZDOTDIR:-$HOME}/.zshrc"
@@ -80,7 +80,7 @@ _get_zerobrew_configs:
     )
 
     for config in "${shell_configs[@]}"; do
-        if [[ -f "$config" ]] && grep -q '^# zerobrew$' "$config" 2>/dev/null; then
+        if [[ -f "$config" ]] && grep -q '^# nextbrew$' "$config" 2>/dev/null; then
             echo "$config"
         fi
     done
@@ -89,7 +89,7 @@ _get_zerobrew_configs:
 [script]
 _clean_shell_config config:
     tmp_file=$(mktemp)
-    sed -e '/^# zerobrew$/,/^}$/d' \
+    sed -e '/^# nextbrew$/,/^}$/d' \
         -e '/_zb_path_append/d' \
         "$config" > "$tmp_file" 2>/dev/null || true
     cat -s "$tmp_file" > "$config"
@@ -106,19 +106,19 @@ _confirm msg:
         exit 1
     fi
 
-[doc('Uninstall zb and remove all data')]
+[doc('Uninstall nb and remove all data')]
 [group('install')]
 [script]
 uninstall:
-    mapfile -t configs_to_clean < <(just _get_zerobrew_configs)
+    mapfile -t configs_to_clean < <(just _get_nextbrew_configs)
 
     echo 'Running this will remove:'
     echo -en '{{BOLD}}{{RED}}'
-    echo -e  "\t$ZEROBREW_INSTALLED_BIN"
-    echo -e  "\t$ZEROBREW_DIR"
-    echo -e  "\t$ZEROBREW_ROOT"
+    echo -e  "\t$NEXTBREW_INSTALLED_BIN"
+    echo -e  "\t$NEXTBREW_DIR"
+    echo -e  "\t$NEXTBREW_ROOT"
     for config in "${configs_to_clean[@]}"; do
-        echo -e "\tzerobrew entries in $config"
+        echo -e "\tnextbrew entries in $config"
     done
     echo -en '{{NORMAL}}'
 
@@ -129,30 +129,30 @@ uninstall:
         just _clean_shell_config "$config"
     done
 
-    [[ -f "$ZEROBREW_INSTALLED_BIN" ]] && rm -- "$ZEROBREW_INSTALLED_BIN"
-    [[ -d "$ZEROBREW_DIR" ]] && rm -rf -- "$ZEROBREW_DIR"
+    [[ -f "$NEXTBREW_INSTALLED_BIN" ]] && rm -- "$NEXTBREW_INSTALLED_BIN"
+    [[ -d "$NEXTBREW_DIR" ]] && rm -rf -- "$NEXTBREW_DIR"
 
-    if [[ -d "$ZEROBREW_ROOT" ]]; then
-        $SUDO rm -r -- "$ZEROBREW_ROOT"
+    if [[ -d "$NEXTBREW_ROOT" ]]; then
+        $SUDO rm -r -- "$NEXTBREW_ROOT"
     fi
 
     echo ''
-    echo -e '{{BOLD}}{{GREEN}}✓{{NORMAL}} zerobrew uninstalled successfully!'
+    echo -e '{{BOLD}}{{GREEN}}✓{{NORMAL}} nextbrew uninstalled successfully!'
     echo ''
     echo 'Restart your terminal or run: exec $SHELL'
 
-[doc('Reset zerobrew completely (removes data and re-initializes)')]
+[doc('Reset nextbrew completely (removes data and re-initializes)')]
 [group('install')]
 [script]
 reset:
-    mapfile -t configs_to_clean < <(just _get_zerobrew_configs)
+    mapfile -t configs_to_clean < <(just _get_nextbrew_configs)
 
-    echo -e '{{BOLD}}{{YELLOW}}Warning:{{NORMAL}} This will reset zerobrew completely:'
+    echo -e '{{BOLD}}{{YELLOW}}Warning:{{NORMAL}} This will reset nextbrew completely:'
     echo -en '{{BOLD}}{{RED}}'
-    echo -e  "\t$ZEROBREW_DIR"
-    echo -e  "\t$ZEROBREW_ROOT"
+    echo -e  "\t$NEXTBREW_DIR"
+    echo -e  "\t$NEXTBREW_ROOT"
     for config in "${configs_to_clean[@]}"; do
-        echo -e "\tzerobrew entries in $config"
+        echo -e "\tnextbrew entries in $config"
     done
     echo -en '{{NORMAL}}'
 
@@ -163,22 +163,22 @@ reset:
         just _clean_shell_config "$config"
     done
 
-    [[ -d "$ZEROBREW_DIR" ]] && rm -rf -- "$ZEROBREW_DIR" && echo -e '{{BOLD}}{{GREEN}}✓{{NORMAL}} Removed '"$ZEROBREW_DIR"''
+    [[ -d "$NEXTBREW_DIR" ]] && rm -rf -- "$NEXTBREW_DIR" && echo -e '{{BOLD}}{{GREEN}}✓{{NORMAL}} Removed '"$NEXTBREW_DIR"''
 
-    if [[ -d "$ZEROBREW_ROOT" ]]; then
-        $SUDO rm -rf -- "$ZEROBREW_ROOT" && echo -e '{{BOLD}}{{GREEN}}✓{{NORMAL}} Removed '"$ZEROBREW_ROOT"''
+    if [[ -d "$NEXTBREW_ROOT" ]]; then
+        $SUDO rm -rf -- "$NEXTBREW_ROOT" && echo -e '{{BOLD}}{{GREEN}}✓{{NORMAL}} Removed '"$NEXTBREW_ROOT"''
     fi
 
     echo ''
-    echo -e '{{BOLD}}{{CYAN}}==>{{NORMAL}} Re-initializing zerobrew...'
+    echo -e '{{BOLD}}{{CYAN}}==>{{NORMAL}} Re-initializing nextbrew...'
 
-    if [[ -f "$ZEROBREW_INSTALLED_BIN" ]]; then
-        "$ZEROBREW_INSTALLED_BIN" init
+    if [[ -f "$NEXTBREW_INSTALLED_BIN" ]]; then
+        "$NEXTBREW_INSTALLED_BIN" init
         echo ''
         echo -e '{{BOLD}}{{GREEN}}✓{{NORMAL}} Reset complete!'
     else
-        echo -e '{{BOLD}}{{YELLOW}}Note:{{NORMAL}} zb binary not found at $ZEROBREW_INSTALLED_BIN'
-        echo -e '{{BOLD}}{{YELLOW}}Note:{{NORMAL}} Run {{BOLD}}just install{{NORMAL}} first to install zerobrew'
+        echo -e '{{BOLD}}{{YELLOW}}Note:{{NORMAL}} nb binary not found at $NEXTBREW_INSTALLED_BIN'
+        echo -e '{{BOLD}}{{YELLOW}}Note:{{NORMAL}} Run {{BOLD}}just install{{NORMAL}} first to install nextbrew'
     fi
 
 [doc('Format code with rustfmt')]
@@ -213,7 +213,7 @@ lint:
 test:
     cargo test --workspace -- --include-ignored
 
-[doc('Benchmark zerobrew against Homebrew (resets zerobrew; see --help)')]
+[doc('Benchmark nextbrew against Homebrew (resets nextbrew; see --help)')]
 [group('benchmark')]
 [positional-arguments]
 [script]
@@ -255,11 +255,11 @@ bench *args:
                 echo "Usage: just bench [options]"
                 echo ""
                 echo "Installs each package four times: Homebrew cold, Homebrew warm,"
-                echo "zerobrew cold and zerobrew warm. Every run starts with the package and"
+                echo "nextbrew cold and nextbrew warm. Every run starts with the package and"
                 echo "all of its dependencies uninstalled. Cold runs start with an empty"
                 echo "download cache; warm runs reuse the downloads from the cold run."
                 echo ""
-                echo "Warning: this runs 'zb reset' and uninstalls every Homebrew formula the"
+                echo "Warning: this runs 'nb reset' and uninstalls every Homebrew formula the"
                 echo "benchmark installs. Formulae installed before the run are left alone,"
                 echo "and benchmark packages among them are skipped. For publishable numbers,"
                 echo "run it on a machine with nothing installed in Homebrew."
@@ -337,15 +337,15 @@ bench *args:
         echo "Each package would be tested with (package and dependencies uninstalled first):" >&2
         echo "  1. brew install <package> (cold: empty download cache)" >&2
         echo "  2. brew install <package> (warm: downloads cached)" >&2
-        echo "  3. zb install <package> (cold: after zb reset)" >&2
-        echo "  4. zb install <package> (warm: store and downloads cached)" >&2
+        echo "  3. nb install <package> (cold: after nb reset)" >&2
+        echo "  4. nb install <package> (warm: store and downloads cached)" >&2
         exit 0
     fi
 
     # Pre-run validation
     missing=()
     command -v brew &>/dev/null || missing+=("brew")
-    command -v zb &>/dev/null || missing+=("zb")
+    command -v nb &>/dev/null || missing+=("nb")
     command -v python3 &>/dev/null || missing+=("python3")
 
     if [[ ${#missing[@]} -gt 0 ]]; then
@@ -369,12 +369,12 @@ bench *args:
         exit 1
     fi
 
-    # Check if zerobrew directories have files not owned by current user
-    # This would cause zb reset to prompt for sudo during benchmarks
+    # Check if nextbrew directories have files not owned by current user
+    # This would cause nb reset to prompt for sudo during benchmarks
     current_user=$(whoami)
     needs_chown=false
 
-    for dir in "$ZEROBREW_ROOT" "$ZEROBREW_PREFIX"; do
+    for dir in "$NEXTBREW_ROOT" "$NEXTBREW_PREFIX"; do
         if [[ -d "$dir" ]]; then
             # Find any files/dirs not owned by current user (limit to 1 for speed)
             not_owned=$(find "$dir" ! -user "$current_user" -print -quit 2>/dev/null || true)
@@ -386,14 +386,14 @@ bench *args:
     done
 
     if [[ "$needs_chown" == "true" ]]; then
-        echo -e "${YELLOW}==> Some files in zerobrew directories are not owned by you.${NORMAL}" >&2
+        echo -e "${YELLOW}==> Some files in nextbrew directories are not owned by you.${NORMAL}" >&2
         echo -e "${YELLOW}    This will cause password prompts during benchmarks.${NORMAL}" >&2
         echo -e "${YELLOW}    Fixing ownership now (requires sudo once)...${NORMAL}" >&2
-        if [[ -d "$ZEROBREW_ROOT" ]]; then
-            {{SUDO}} chown -R "$current_user" "$ZEROBREW_ROOT" || { echo "Error: Failed to fix ownership of $ZEROBREW_ROOT" >&2; exit 1; }
+        if [[ -d "$NEXTBREW_ROOT" ]]; then
+            {{SUDO}} chown -R "$current_user" "$NEXTBREW_ROOT" || { echo "Error: Failed to fix ownership of $NEXTBREW_ROOT" >&2; exit 1; }
         fi
-        if [[ -d "$ZEROBREW_PREFIX" && "$ZEROBREW_PREFIX" != "$ZEROBREW_ROOT"* ]]; then
-            {{SUDO}} chown -R "$current_user" "$ZEROBREW_PREFIX" || { echo "Error: Failed to fix ownership of $ZEROBREW_PREFIX" >&2; exit 1; }
+        if [[ -d "$NEXTBREW_PREFIX" && "$NEXTBREW_PREFIX" != "$NEXTBREW_ROOT"* ]]; then
+            {{SUDO}} chown -R "$current_user" "$NEXTBREW_PREFIX" || { echo "Error: Failed to fix ownership of $NEXTBREW_PREFIX" >&2; exit 1; }
         fi
         echo -e "${GREEN}    Ownership fixed!${NORMAL}" >&2
     fi
@@ -435,7 +435,7 @@ bench *args:
     # Homebrew downloads go to a private cache so cold runs can start empty
     # without touching the user's real cache. The formula index under api/ is
     # kept, as it would be after any `brew update`.
-    BENCH_BREW_CACHE=$(mktemp -d "${TMPDIR:-/tmp}/zb-bench-brew-cache.XXXXXX")
+    BENCH_BREW_CACHE=$(mktemp -d "${TMPDIR:-/tmp}/nb-bench-brew-cache.XXXXXX")
     trap 'rm -rf "$BENCH_BREW_CACHE"' EXIT
     export HOMEBREW_CACHE="$BENCH_BREW_CACHE"
 
@@ -484,7 +484,7 @@ bench *args:
 
     BENCH_DATE=$(date -u +%Y-%m-%d)
     BREW_VERSION=$(brew --version 2>/dev/null | sed -n 1p)
-    ZB_VERSION=$(zb --version 2>/dev/null | sed -n 1p)
+    NB_VERSION=$(nb --version 2>/dev/null | sed -n 1p)
     ARCH=$(uname -m)
     case "$(uname -s)" in
         Darwin)
@@ -503,7 +503,7 @@ bench *args:
     HW_MODEL=${HW_MODEL:-unknown}
     CPU_NAME=${CPU_NAME:-unknown}
     MEM_GB=${MEM_GB:-unknown}
-    log_msg "env: $ZB_VERSION / $BREW_VERSION / $OS_NAME $ARCH / $HW_MODEL / $CPU_NAME / ${MEM_GB}GB"
+    log_msg "env: $NB_VERSION / $BREW_VERSION / $OS_NAME $ARCH / $HW_MODEL / $CPU_NAME / ${MEM_GB}GB"
 
     # Usage: run_timed_install "label" cmd arg1 arg2 ...
     run_timed_install() {
@@ -535,7 +535,7 @@ bench *args:
         return 1
     }
 
-    declare -a NAMES=() BREW_COLD_TIMES=() BREW_WARM_TIMES=() ZB_COLD_TIMES=() ZB_WARM_TIMES=() SPEEDUPS_COLD=() SPEEDUPS_WARM=() FAILED_NAMES=() FAILED_REASONS=()
+    declare -a NAMES=() BREW_COLD_TIMES=() BREW_WARM_TIMES=() NB_COLD_TIMES=() NB_WARM_TIMES=() SPEEDUPS_COLD=() SPEEDUPS_WARM=() FAILED_NAMES=() FAILED_REASONS=()
     PASSED=0
     FAILED=0
 
@@ -560,28 +560,28 @@ bench *args:
 
         remove_brew_bench_formulae
         clear_brew_downloads
-        zb reset -y &>/dev/null || true
+        nb reset -y &>/dev/null || true
         # Homebrew's formula index was loaded once above and is kept; give
-        # zerobrew its index untimed too, so cold times only the install.
-        zb update &>/dev/null || true
+        # nextbrew its index untimed too, so cold times only the install.
+        nb update &>/dev/null || true
 
         BREW_COLD_MS=$(run_timed_install "Homebrew (cold)" brew install --formula "$pkg") || { record_failure "$pkg" "brew install failed (cold)"; continue; }
         remove_brew_bench_formulae
         BREW_WARM_MS=$(run_timed_install "Homebrew (warm)" brew install --formula "$pkg") || { record_failure "$pkg" "brew install failed (warm)"; continue; }
         remove_brew_bench_formulae
 
-        ZB_COLD_MS=$(run_timed_install "zerobrew (cold)" zb install "$pkg") || { record_failure "$pkg" "zb install failed (cold)"; continue; }
-        zb uninstall --all &>/dev/null || true
-        ZB_WARM_MS=$(run_timed_install "zerobrew (warm)" zb install "$pkg") || { record_failure "$pkg" "zb install failed (warm)"; continue; }
-        zb reset -y &>/dev/null || true
+        NB_COLD_MS=$(run_timed_install "nextbrew (cold)" nb install "$pkg") || { record_failure "$pkg" "nb install failed (cold)"; continue; }
+        nb uninstall --all &>/dev/null || true
+        NB_WARM_MS=$(run_timed_install "nextbrew (warm)" nb install "$pkg") || { record_failure "$pkg" "nb install failed (warm)"; continue; }
+        nb reset -y &>/dev/null || true
 
         NAMES+=("$pkg")
         BREW_COLD_TIMES+=("$BREW_COLD_MS")
         BREW_WARM_TIMES+=("$BREW_WARM_MS")
-        ZB_COLD_TIMES+=("$ZB_COLD_MS")
-        ZB_WARM_TIMES+=("$ZB_WARM_MS")
-        SPEEDUPS_COLD+=("$(ratio "$BREW_COLD_MS" "$ZB_COLD_MS")")
-        SPEEDUPS_WARM+=("$(ratio "$BREW_WARM_MS" "$ZB_WARM_MS")")
+        NB_COLD_TIMES+=("$NB_COLD_MS")
+        NB_WARM_TIMES+=("$NB_WARM_MS")
+        SPEEDUPS_COLD+=("$(ratio "$BREW_COLD_MS" "$NB_COLD_MS")")
+        SPEEDUPS_WARM+=("$(ratio "$BREW_WARM_MS" "$NB_WARM_MS")")
         ((PASSED++)) || true
         log_msg "package done: $pkg"
         echo >&2
@@ -590,7 +590,7 @@ bench *args:
     echo "Cleaning up..." >&2
     log_msg "cleanup start"
     remove_brew_bench_formulae
-    zb reset -y &>/dev/null || true
+    nb reset -y &>/dev/null || true
 
     TOTAL_BREW_COLD=0
     TOTAL_BREW_WARM=0
@@ -600,8 +600,8 @@ bench *args:
     for i in "${!NAMES[@]}"; do
         TOTAL_BREW_COLD=$((TOTAL_BREW_COLD + BREW_COLD_TIMES[i]))
         TOTAL_BREW_WARM=$((TOTAL_BREW_WARM + BREW_WARM_TIMES[i]))
-        TOTAL_ZB_COLD=$((TOTAL_ZB_COLD + ZB_COLD_TIMES[i]))
-        TOTAL_ZB_WARM=$((TOTAL_ZB_WARM + ZB_WARM_TIMES[i]))
+        TOTAL_ZB_COLD=$((TOTAL_ZB_COLD + NB_COLD_TIMES[i]))
+        TOTAL_ZB_WARM=$((TOTAL_ZB_WARM + NB_WARM_TIMES[i]))
     done
 
     # Overall speedups compare total time across all passed packages.
@@ -614,7 +614,7 @@ bench *args:
     output_text() {
         echo "=== Benchmark Summary ==="
         echo "Date:      $BENCH_DATE"
-        echo "zerobrew:  $ZB_VERSION"
+        echo "nextbrew:  $NB_VERSION"
         echo "Homebrew:  $BREW_VERSION"
         echo "OS:        $OS_NAME ($ARCH)"
         echo "Hardware:  $HARDWARE"
@@ -626,14 +626,14 @@ bench *args:
         echo "Failed: $FAILED"
         echo ""
         echo "Total time:"
-        echo "  Cold: Homebrew $(format_duration "$TOTAL_BREW_COLD"), zerobrew $(format_duration "$TOTAL_ZB_COLD") (${TOTAL_SPEEDUP_COLD}x)"
-        echo "  Warm: Homebrew $(format_duration "$TOTAL_BREW_WARM"), zerobrew $(format_duration "$TOTAL_ZB_WARM") (${TOTAL_SPEEDUP_WARM}x)"
+        echo "  Cold: Homebrew $(format_duration "$TOTAL_BREW_COLD"), nextbrew $(format_duration "$TOTAL_ZB_COLD") (${TOTAL_SPEEDUP_COLD}x)"
+        echo "  Warm: Homebrew $(format_duration "$TOTAL_BREW_WARM"), nextbrew $(format_duration "$TOTAL_ZB_WARM") (${TOTAL_SPEEDUP_WARM}x)"
         echo ""
         echo "Results:"
-        printf "%-15s %10s %10s %10s %10s %8s %8s\n" "Package" "HB cold" "ZB cold" "HB warm" "ZB warm" "Cold" "Warm"
+        printf "%-15s %10s %10s %10s %10s %8s %8s\n" "Package" "HB cold" "NB cold" "HB warm" "NB warm" "Cold" "Warm"
         echo "-------------------------------------------------------------------------------"
         for i in "${!NAMES[@]}"; do
-            printf "%-15s %10s %10s %10s %10s %7sx %7sx\n" "${NAMES[i]}" "$(format_duration "${BREW_COLD_TIMES[i]}")" "$(format_duration "${ZB_COLD_TIMES[i]}")" "$(format_duration "${BREW_WARM_TIMES[i]}")" "$(format_duration "${ZB_WARM_TIMES[i]}")" "${SPEEDUPS_COLD[i]}" "${SPEEDUPS_WARM[i]}"
+            printf "%-15s %10s %10s %10s %10s %7sx %7sx\n" "${NAMES[i]}" "$(format_duration "${BREW_COLD_TIMES[i]}")" "$(format_duration "${NB_COLD_TIMES[i]}")" "$(format_duration "${BREW_WARM_TIMES[i]}")" "$(format_duration "${NB_WARM_TIMES[i]}")" "${SPEEDUPS_COLD[i]}" "${SPEEDUPS_WARM[i]}"
         done
         echo
         if [[ $FAILED -gt 0 ]]; then
@@ -646,15 +646,15 @@ bench *args:
     }
 
     output_json() {
-        printf '{"environment":{"date":%s,"zerobrew_version":%s,"homebrew_version":%s,"os":%s,"arch":%s,"hardware_model":%s,"cpu":%s,"memory_gb":%s,"bandwidth":%s,"homebrew_preinstalled_formulae":%d},' \
-            "$(json_str "$BENCH_DATE")" "$(json_str "$ZB_VERSION")" "$(json_str "$BREW_VERSION")" "$(json_str "$OS_NAME")" "$(json_str "$ARCH")" \
+        printf '{"environment":{"date":%s,"nextbrew_version":%s,"homebrew_version":%s,"os":%s,"arch":%s,"hardware_model":%s,"cpu":%s,"memory_gb":%s,"bandwidth":%s,"homebrew_preinstalled_formulae":%d},' \
+            "$(json_str "$BENCH_DATE")" "$(json_str "$NB_VERSION")" "$(json_str "$BREW_VERSION")" "$(json_str "$OS_NAME")" "$(json_str "$ARCH")" \
             "$(json_str "$HW_MODEL")" "$(json_str "$CPU_NAME")" "$(json_str "$MEM_GB")" "$(json_str "$BANDWIDTH")" "$BREW_BASELINE_COUNT"
         printf '"results":['
         first=1
         for i in "${!NAMES[@]}"; do
             [[ $first -eq 0 ]] && printf ","
             first=0
-            printf '{"name":%s,"homebrew_cold_ms":%s,"homebrew_warm_ms":%s,"zerobrew_cold_ms":%s,"zerobrew_warm_ms":%s,"speedup_cold":%s,"speedup_warm":%s}' "$(json_str "${NAMES[i]}")" "${BREW_COLD_TIMES[i]}" "${BREW_WARM_TIMES[i]}" "${ZB_COLD_TIMES[i]}" "${ZB_WARM_TIMES[i]}" "${SPEEDUPS_COLD[i]}" "${SPEEDUPS_WARM[i]}"
+            printf '{"name":%s,"homebrew_cold_ms":%s,"homebrew_warm_ms":%s,"nextbrew_cold_ms":%s,"nextbrew_warm_ms":%s,"speedup_cold":%s,"speedup_warm":%s}' "$(json_str "${NAMES[i]}")" "${BREW_COLD_TIMES[i]}" "${BREW_WARM_TIMES[i]}" "${NB_COLD_TIMES[i]}" "${NB_WARM_TIMES[i]}" "${SPEEDUPS_COLD[i]}" "${SPEEDUPS_WARM[i]}"
         done
         printf '],"failures":['
         first=1
@@ -663,27 +663,27 @@ bench *args:
             first=0
             printf '{"name":%s,"reason":%s}' "$(json_str "${FAILED_NAMES[i]}")" "$(json_str "${FAILED_REASONS[i]}")"
         done
-        printf '],"summary":{"tested":%d,"passed":%d,"failed":%d,"homebrew_cold_ms":%d,"homebrew_warm_ms":%d,"zerobrew_cold_ms":%d,"zerobrew_warm_ms":%d,"speedup_cold":%s,"speedup_warm":%s}}\n' \
+        printf '],"summary":{"tested":%d,"passed":%d,"failed":%d,"homebrew_cold_ms":%d,"homebrew_warm_ms":%d,"nextbrew_cold_ms":%d,"nextbrew_warm_ms":%d,"speedup_cold":%s,"speedup_warm":%s}}\n' \
             "${#PACKAGES[@]}" "$PASSED" "$FAILED" "$TOTAL_BREW_COLD" "$TOTAL_BREW_WARM" "$TOTAL_ZB_COLD" "$TOTAL_ZB_WARM" "$TOTAL_SPEEDUP_COLD" "$TOTAL_SPEEDUP_WARM"
     }
 
     output_csv() {
-        echo "package,homebrew_cold_ms,homebrew_warm_ms,zerobrew_cold_ms,zerobrew_warm_ms,speedup_cold,speedup_warm"
+        echo "package,homebrew_cold_ms,homebrew_warm_ms,nextbrew_cold_ms,nextbrew_warm_ms,speedup_cold,speedup_warm"
         for i in "${!NAMES[@]}"; do
-            echo "${NAMES[i]},${BREW_COLD_TIMES[i]},${BREW_WARM_TIMES[i]},${ZB_COLD_TIMES[i]},${ZB_WARM_TIMES[i]},${SPEEDUPS_COLD[i]},${SPEEDUPS_WARM[i]}"
+            echo "${NAMES[i]},${BREW_COLD_TIMES[i]},${BREW_WARM_TIMES[i]},${NB_COLD_TIMES[i]},${NB_WARM_TIMES[i]},${SPEEDUPS_COLD[i]},${SPEEDUPS_WARM[i]}"
         done
     }
 
     # README-ready table plus the environment it was measured in.
     output_markdown() {
-        echo "| Package | Homebrew (cold) | ZB (cold) | Cold speedup | Homebrew (warm) | ZB (warm) | Warm speedup |"
+        echo "| Package | Homebrew (cold) | NB (cold) | Cold speedup | Homebrew (warm) | NB (warm) | Warm speedup |"
         echo "|---------|-----------------|-----------|--------------|-----------------|-----------|--------------|"
         echo "| **Overall ($PASSED packages)** | $(format_duration "$TOTAL_BREW_COLD") | $(format_duration "$TOTAL_ZB_COLD") | **${TOTAL_SPEEDUP_COLD}x** | $(format_duration "$TOTAL_BREW_WARM") | $(format_duration "$TOTAL_ZB_WARM") | **${TOTAL_SPEEDUP_WARM}x** |"
         for i in "${!NAMES[@]}"; do
-            echo "| ${NAMES[i]} | $(format_duration "${BREW_COLD_TIMES[i]}") | $(format_duration "${ZB_COLD_TIMES[i]}") | ${SPEEDUPS_COLD[i]}x | $(format_duration "${BREW_WARM_TIMES[i]}") | $(format_duration "${ZB_WARM_TIMES[i]}") | ${SPEEDUPS_WARM[i]}x |"
+            echo "| ${NAMES[i]} | $(format_duration "${BREW_COLD_TIMES[i]}") | $(format_duration "${NB_COLD_TIMES[i]}") | ${SPEEDUPS_COLD[i]}x | $(format_duration "${BREW_WARM_TIMES[i]}") | $(format_duration "${NB_WARM_TIMES[i]}") | ${SPEEDUPS_WARM[i]}x |"
         done
         echo ""
-        echo "Measured $BENCH_DATE with $ZB_VERSION and $BREW_VERSION on $OS_NAME ($ARCH), $HARDWARE, $BANDWIDTH download bandwidth. Homebrew had $BREW_BASELINE_COUNT formulae installed before the run."
+        echo "Measured $BENCH_DATE with $NB_VERSION and $BREW_VERSION on $OS_NAME ($ARCH), $HARDWARE, $BANDWIDTH download bandwidth. Homebrew had $BREW_BASELINE_COUNT formulae installed before the run."
     }
 
     output_html() {
@@ -691,7 +691,7 @@ bench *args:
     <!DOCTYPE html>
     <html>
     <head>
-        <title>Zerobrew Benchmark Results</title>
+        <title>NextBrew Benchmark Results</title>
         <style>
             body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; margin: 40px; background: #f5f5f5; }
             .container { max-width: 1100px; margin: 0 auto; background: white; padding: 30px; border-radius: 8px; box-shadow: 0 2px 4px rgba(0,0,0,0.1); }
@@ -711,10 +711,10 @@ bench *args:
     </head>
     <body>
         <div class="container">
-            <h1>Zerobrew Benchmark Results</h1>
+            <h1>NextBrew Benchmark Results</h1>
             <ul class="env">
                 <li>Date: $BENCH_DATE</li>
-                <li>zerobrew: $ZB_VERSION</li>
+                <li>nextbrew: $NB_VERSION</li>
                 <li>Homebrew: $BREW_VERSION</li>
                 <li>OS: $OS_NAME ($ARCH)</li>
                 <li>Hardware: $HARDWARE</li>
@@ -730,12 +730,12 @@ bench *args:
             <h2>Results</h2>
             <table>
                 <thead>
-                    <tr><th>Package</th><th>Homebrew Cold</th><th>ZB Cold</th><th>Homebrew Warm</th><th>ZB Warm</th><th>Speedup (cold/warm)</th></tr>
+                    <tr><th>Package</th><th>Homebrew Cold</th><th>NB Cold</th><th>Homebrew Warm</th><th>NB Warm</th><th>Speedup (cold/warm)</th></tr>
                 </thead>
                 <tbody>
     EOF
         for i in "${!NAMES[@]}"; do
-            echo "                <tr><td>${NAMES[$i]}</td><td>$(format_duration "${BREW_COLD_TIMES[$i]}")</td><td>$(format_duration "${ZB_COLD_TIMES[$i]}")</td><td>$(format_duration "${BREW_WARM_TIMES[$i]}")</td><td>$(format_duration "${ZB_WARM_TIMES[$i]}")</td><td class=\"speedup\">${SPEEDUPS_COLD[$i]}x / ${SPEEDUPS_WARM[$i]}x</td></tr>"
+            echo "                <tr><td>${NAMES[$i]}</td><td>$(format_duration "${BREW_COLD_TIMES[$i]}")</td><td>$(format_duration "${NB_COLD_TIMES[$i]}")</td><td>$(format_duration "${BREW_WARM_TIMES[$i]}")</td><td>$(format_duration "${NB_WARM_TIMES[$i]}")</td><td class=\"speedup\">${SPEEDUPS_COLD[$i]}x / ${SPEEDUPS_WARM[$i]}x</td></tr>"
         done
         echo '            </tbody>'
         echo '        </table>'

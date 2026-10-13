@@ -1330,6 +1330,75 @@ dependencies = [
 ]
 
 [[package]]
+name = "nb_cli"
+version = "0.4.0"
+dependencies = [
+ "chrono",
+ "clap",
+ "clap_complete",
+ "console",
+ "flate2",
+ "indicatif",
+ "libc",
+ "nb_core",
+ "nb_io",
+ "serde_json",
+ "sha2",
+ "tar",
+ "tempfile",
+ "tokio",
+ "tracing",
+ "tracing-subscriber",
+ "walkdir",
+ "wiremock",
+]
+
+[[package]]
+name = "nb_core"
+version = "0.4.0"
+dependencies = [
+ "serde",
+ "serde_json",
+]
+
+[[package]]
+name = "nb_io"
+version = "0.4.0"
+dependencies = [
+ "arwen",
+ "bytes",
+ "flate2",
+ "fs4",
+ "futures",
+ "futures-util",
+ "globset",
+ "libc",
+ "memchr",
+ "nb_core",
+ "object 0.39.1",
+ "rayon",
+ "regex",
+ "reqwest",
+ "rusqlite",
+ "rustls",
+ "rustls-native-certs",
+ "serde",
+ "serde_json",
+ "sha2",
+ "strsim",
+ "tar",
+ "tempfile",
+ "tokio",
+ "tracing",
+ "walkdir",
+ "webpki-roots",
+ "wiremock",
+ "xz2",
+ "zip",
+ "zstd",
+]
+
+[[package]]
 name = "nu-ansi-term"
 version = "0.50.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3049,75 +3118,6 @@ dependencies = [
  "quote",
  "syn",
  "synstructure",
-]
-
-[[package]]
-name = "zb_cli"
-version = "0.4.0"
-dependencies = [
- "chrono",
- "clap",
- "clap_complete",
- "console",
- "flate2",
- "indicatif",
- "libc",
- "serde_json",
- "sha2",
- "tar",
- "tempfile",
- "tokio",
- "tracing",
- "tracing-subscriber",
- "walkdir",
- "wiremock",
- "zb_core",
- "zb_io",
-]
-
-[[package]]
-name = "zb_core"
-version = "0.4.0"
-dependencies = [
- "serde",
- "serde_json",
-]
-
-[[package]]
-name = "zb_io"
-version = "0.4.0"
-dependencies = [
- "arwen",
- "bytes",
- "flate2",
- "fs4",
- "futures",
- "futures-util",
- "globset",
- "libc",
- "memchr",
- "object 0.39.1",
- "rayon",
- "regex",
- "reqwest",
- "rusqlite",
- "rustls",
- "rustls-native-certs",
- "serde",
- "serde_json",
- "sha2",
- "strsim",
- "tar",
- "tempfile",
- "tokio",
- "tracing",
- "walkdir",
- "webpki-roots",
- "wiremock",
- "xz2",
- "zb_core",
- "zip",
- "zstd",
 ]
 
 [[package]]
