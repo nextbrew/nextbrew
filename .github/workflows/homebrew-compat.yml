@@ -1,14 +1,9 @@
 name: Homebrew Compatibility
 
+# ponytail: manual only; macOS minutes cost 10x on a private repo.
+# Put the push/schedule triggers back once the repo is public.
 on:
-  schedule:
-    # Run weekly on Sunday at 9 PM ET (1 AM UTC Monday)
-    - cron: '0 1 * * 1'
   workflow_dispatch:
-  pull_request:
-    paths:
-      - 'nb_io/src/build/shim.rb'
-      - '.github/workflows/homebrew-compat.yml'
 
 permissions:
   contents: read

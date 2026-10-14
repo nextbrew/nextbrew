@@ -1,21 +1,8 @@
 name: timing
 
+# ponytail: manual only; macOS minutes cost 10x on a private repo.
+# Put the push/schedule triggers back once the repo is public.
 on:
-  pull_request:
-    paths:
-      - 'nb_core/src/**'
-      - 'nb_io/src/cellar/**'
-      - 'nb_io/src/extraction/**'
-      - 'nb_io/src/installer/**'
-      - 'nb_io/src/network/**'
-      - 'nb_io/src/storage/**'
-      - 'nb_io/Cargo.toml'
-      - 'Cargo.toml'
-      - 'Cargo.lock'
-      - 'nb_cli/tests/parity.rs'
-      - '.github/workflows/timing.yml'
-  schedule:
-    - cron: '17 6 * * *'
   workflow_dispatch:
 
 permissions:

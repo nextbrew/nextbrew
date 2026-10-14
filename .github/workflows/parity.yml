@@ -1,23 +1,8 @@
 name: parity
 
+# ponytail: manual only; macOS minutes cost 10x on a private repo.
+# Put the push/schedule triggers back once the repo is public.
 on:
-  push:
-    branches: [ main ]
-    paths:
-      - 'nb_core/**'
-      - 'nb_io/**'
-      - 'nb_cli/**'
-      - 'Cargo.lock'
-      - '.github/workflows/parity.yml'
-  pull_request:
-    paths:
-      - 'nb_core/**'
-      - 'nb_io/**'
-      - 'nb_cli/**'
-      - 'Cargo.lock'
-      - '.github/workflows/parity.yml'
-  schedule:
-    - cron: '17 6 * * *'
   workflow_dispatch:
 
 permissions:
