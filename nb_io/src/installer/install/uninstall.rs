@@ -7,15 +7,27 @@ impl Installer {
         let installed = self.db.get_installed(name).ok_or(Error::NotInstalled {
             name: name.to_string(),
         })?;
-        self.uninstall_by_version(name, &installed.version)
+        self.uninstall_inner(name, &installed.version, false)
+    }
+
+    /// `brew uninstall --zap`: uninstall, then remove the cask's user data.
+    pub fn zap(&mut self, name: &str) -> Result<(), Error> {
+        let installed = self.db.get_installed(name).ok_or(Error::NotInstalled {
+            name: name.to_string(),
+        })?;
+        self.uninstall_inner(name, &installed.version, true)
     }
 
     pub fn uninstall_by_version(&mut self, name: &str, version: &str) -> Result<(), Error> {
+        self.uninstall_inner(name, version, false)
+    }
+
+    fn uninstall_inner(&mut self, name: &str, version: &str, zap: bool) -> Result<(), Error> {
         let keg_name = formula_token(name);
 
         let keg_path = self.cellar.keg_path(keg_name, version);
         self.linker.unlink_keg(&keg_path)?;
-        self.remove_cask(&keg_path)?;
+        self.remove_cask(&keg_path, zap)?;
 
         {
             let tx = self.db.transaction()?;

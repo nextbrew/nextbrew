@@ -130,6 +130,8 @@ pub enum Commands {
         formulas: Vec<String>,
         #[arg(long, help = "Uninstall all installed packages")]
         all: bool,
+        #[arg(long, help = "Also remove the casks' user data (zap stanza)")]
+        zap: bool,
     },
     /// Migrate packages from Homebrew
     Migrate {

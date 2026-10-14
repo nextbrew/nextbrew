@@ -18,6 +18,7 @@ use tracing::warn;
 
 use super::Installer;
 use super::bottle::{resolve_cask_source_path, stage_cask_binaries};
+use super::cask_uninstall::run_stanza;
 use crate::installer::cask::{ResolvedCask, resolve_cask};
 use crate::installer::post_install::{
     CaskDirs, PostInstallContext, remove_uninstall_links, run_steps,
@@ -115,7 +116,8 @@ impl Installer {
     }
 
     /// Undo what [`stage_cask`] did for the keg, if it is a cask's.
-    pub(super) fn remove_cask(&self, keg: &Path) -> Result<(), Error> {
+    /// `zap` also runs the cask's `zap` stanza, removing its user data.
+    pub(super) fn remove_cask(&self, keg: &Path, zap: bool) -> Result<(), Error> {
         let Ok(json) = fs::read(keg.join(CASK_JSON)) else {
             return remove_cask_apps(keg);
         };
@@ -130,7 +132,14 @@ impl Installer {
             Some(dir) => dir,
             None => app_dir()?,
         };
-        uninstall_cask(&self.cask_context(&cask, keg, appdir), &cask)
+        let ctx = self.cask_context(&cask, keg, appdir);
+        uninstall_cask(&ctx, &cask, &json)?;
+        if zap {
+            for warning in run_stanza(&ctx, &json, "zap") {
+                warn!(cask = %cask.token, "{warning}");
+            }
+        }
+        Ok(())
     }
 }
 
@@ -198,10 +207,17 @@ pub(super) fn stage_cask(
 
 /// Uninstall hooks around removing the apps. Hook failures are reported but
 /// do not stop the uninstall, so a cask can always be removed.
-fn uninstall_cask(ctx: &PostInstallContext, cask: &ResolvedCask) -> Result<(), Error> {
+fn uninstall_cask(
+    ctx: &PostInstallContext,
+    cask: &ResolvedCask,
+    json: &Value,
+) -> Result<(), Error> {
     let hooks = &cask.hooks;
     if let Err(e) = run_hooks(ctx, cask, "uninstall_preflight", &hooks.uninstall_preflight) {
         warn!(cask = %cask.token, error = %e, "uninstall hook failed");
+    }
+    for warning in run_stanza(ctx, json, "uninstall") {
+        warn!(cask = %cask.token, "{warning}");
     }
     remove_cask_apps(&ctx.keg)?;
     for steps in [&hooks.preflight, &hooks.postflight] {
@@ -329,7 +345,7 @@ fn copy(source: &Path, target: &Path) -> Result<(), Error> {
     run(Command::new(tool[0]).arg(tool[1]).arg(source).arg(target))
 }
 
-fn run(cmd: &mut Command) -> Result<(), Error> {
+pub(super) fn run(cmd: &mut Command) -> Result<(), Error> {
     let program = cmd.get_program().to_string_lossy().into_owned();
     let output = cmd
         .stdin(Stdio::null())
@@ -461,7 +477,7 @@ mod tests {
         // Uninstall reads the hooks back from the keg.
         let saved: Value =
             serde_json::from_slice(&fs::read(ctx.keg.join(CASK_JSON)).unwrap()).unwrap();
-        uninstall_cask(&ctx, &resolve_cask("foo", &saved).unwrap()).unwrap();
+        uninstall_cask(&ctx, &resolve_cask("foo", &saved).unwrap(), &saved).unwrap();
         assert!(!app.exists());
         assert!(root.join("link").symlink_metadata().is_err());
         assert!(ctx.keg.join("uninstalled").exists());
