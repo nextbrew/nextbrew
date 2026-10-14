@@ -1,18 +1,20 @@
 //! A cask's `uninstall` and `zap` stanzas: directives run in Homebrew's
-//! order, as the current user. What needs root (kexts, pkg receipts,
-//! `sudo: true` scripts, system paths) is reported and left alone, and no
-//! failure stops the uninstall. `trash` moves to `~/.Trash`, so zapped
-//! user data can be restored.
+//! order. As in Homebrew, what needs root (kexts, pkg receipts, `sudo:
+//! true` scripts, system launchd jobs and paths) goes through `sudo`, one
+//! command at a time. No failure stops the uninstall. `trash` moves to
+//! `~/.Trash`, so zapped user data can be restored.
 
 use std::fs;
+use std::io::{ErrorKind, Write};
 use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::process::{Command, Stdio};
 
 use globset::Glob;
 use serde_json::Value;
 
 use super::cask_app::run;
 use crate::installer::post_install::PostInstallContext;
+use crate::installer::sudo;
 
 const ORDER: &[&str] = &[
     "early_script",
@@ -86,7 +88,7 @@ fn run_directive(
             r#"tell application "System Events" to delete every login item whose name is "{}""#,
             applescript_str(text)
         )),
-        "kext" => Err(format!("{text}: unloading kexts needs root; skipped")),
+        "kext" => kext(text),
         "pkgutil" => pkgutil(text),
         "delete" | "trash" | "rmdir" => {
             for path in expand(ctx, home, text)? {
@@ -109,15 +111,17 @@ fn script(ctx: &PostInstallContext, home: &Path, item: &Value) -> Result<(), Str
                 .collect(),
         ),
     };
-    if item["sudo"].as_bool() == Some(true) {
-        return Err(format!("{exe}: needs root; skipped"));
-    }
     let exe = expand_tokens(ctx, home, exe);
     let exe = match ctx.cask.as_ref() {
         Some(dirs) if Path::new(&exe).is_relative() => dirs.staged.join(&exe),
         _ => PathBuf::from(exe),
     };
-    let result = run(Command::new(&exe).args(args)).map_err(|e| e.to_string());
+    let mut cmd = if item["sudo"].as_bool() == Some(true) {
+        sudo::command(&exe)
+    } else {
+        Command::new(&exe)
+    };
+    let result = run(cmd.args(args)).map_err(|e| e.to_string());
     if item["must_succeed"].as_bool() == Some(false) {
         return Ok(());
     }
@@ -129,12 +133,34 @@ fn launchctl(home: &Path, label: &str) -> Result<(), String> {
         run(Command::new("launchctl").args(["remove", label])).map_err(|e| e.to_string())?;
     }
     let _ = fs::remove_file(home.join(format!("Library/LaunchAgents/{label}.plist")));
-    for dir in ["/Library/LaunchAgents", "/Library/LaunchDaemons"] {
-        if Path::new(dir).join(format!("{label}.plist")).exists() {
-            return Err(format!("{label}: system launchd job needs root; skipped"));
-        }
+    let system: Vec<PathBuf> = ["/Library/LaunchAgents", "/Library/LaunchDaemons"]
+        .iter()
+        .map(|dir| Path::new(dir).join(format!("{label}.plist")))
+        .filter(|plist| plist.exists())
+        .collect();
+    if system.is_empty() {
+        return Ok(());
     }
-    Ok(())
+    // Not loaded is fine; the plist still has to go.
+    let _ = run(sudo::command("/bin/launchctl").args(["remove", label]));
+    run(sudo::command("/bin/rm").arg("-f").args(&system)).map_err(|e| e.to_string())
+}
+
+fn kext(id: &str) -> Result<(), String> {
+    // Not loaded is fine; the bundle still has to go.
+    let _ = run(sudo::command("/sbin/kextunload").args(["-b", id]));
+    let found = Command::new("/usr/sbin/kextfind")
+        .args(["-b", id])
+        .output()
+        .map_err(|e| e.to_string())?;
+    let paths: Vec<&str> = std::str::from_utf8(&found.stdout)
+        .unwrap_or_default()
+        .lines()
+        .collect();
+    if paths.is_empty() {
+        return Ok(());
+    }
+    run(sudo::command("/bin/rm").arg("-rf").arg("--").args(paths)).map_err(|e| e.to_string())
 }
 
 fn signal(item: &Value) -> Result<(), String> {
@@ -156,15 +182,99 @@ fn signal(item: &Value) -> Result<(), String> {
     run(Command::new("kill").arg(format!("-{sig}")).arg(pid)).map_err(|e| e.to_string())
 }
 
-fn pkgutil(id: &str) -> Result<(), String> {
-    let output = Command::new("pkgutil")
-        .arg(format!("--pkgs={id}"))
+/// Remove what the receipts matching `pattern` installed, then forget
+/// them, as Homebrew's `Pkg#uninstall` does.
+fn pkgutil(pattern: &str) -> Result<(), String> {
+    for id in pkgutil_lines(&[&format!("--pkgs={pattern}")])? {
+        let mut root = PathBuf::from("/");
+        for line in pkgutil_lines(&["--pkg-info", &id])? {
+            if let Some(dir) = line.strip_prefix("volume: ") {
+                root = PathBuf::from(dir);
+            } else if let Some(dir) = line.strip_prefix("location: ") {
+                root = root.join(dir);
+            }
+        }
+        let files: Vec<PathBuf> = pkgutil_lines(&["--only-files", "--files", &id])?
+            .iter()
+            .map(|f| root.join(f))
+            .filter(|f| f.symlink_metadata().is_ok())
+            .collect();
+        let mut dirs: Vec<PathBuf> = pkgutil_lines(&["--only-dirs", "--files", &id])?
+            .iter()
+            .map(|d| root.join(d))
+            .filter(|d| d.is_dir() && !standard_dir(d))
+            .collect();
+        dirs.sort_by_key(|d| std::cmp::Reverse(d.components().count()));
+        if !files.is_empty() {
+            xargs(&["/bin/rm", "-f", "--"], &files)?;
+        }
+        // Only the directories the package left empty go.
+        let _ = xargs(&["/bin/rmdir", "--"], &dirs);
+        run(sudo::command("/usr/sbin/pkgutil").args(["--forget", &id]))
+            .map_err(|e| e.to_string())?;
+    }
+    Ok(())
+}
+
+fn pkgutil_lines(args: &[&str]) -> Result<Vec<String>, String> {
+    let output = Command::new("/usr/sbin/pkgutil")
+        .args(args)
         .output()
         .map_err(|e| e.to_string())?;
-    if output.stdout.is_empty() {
-        return Ok(());
+    Ok(String::from_utf8_lossy(&output.stdout)
+        .lines()
+        .map(str::to_string)
+        .filter(|l| !l.is_empty())
+        .collect())
+}
+
+/// `sudo xargs -0 cmd`, so a package's thousands of files are one prompt
+/// and no argument list overflows.
+fn xargs(cmd: &[&str], paths: &[PathBuf]) -> Result<(), String> {
+    let mut input = Vec::new();
+    for path in paths {
+        input.extend_from_slice(path.as_os_str().as_encoded_bytes());
+        input.push(0);
     }
-    Err(format!("{id}: removing pkg receipts needs root; skipped"))
+    let mut child = sudo::command("/usr/bin/xargs")
+        .arg("-0")
+        .args(cmd)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::null())
+        .spawn()
+        .map_err(|e| e.to_string())?;
+    if let Some(mut stdin) = child.stdin.take() {
+        stdin.write_all(&input).map_err(|e| e.to_string())?;
+    }
+    let status = child.wait().map_err(|e| e.to_string())?;
+    if status.success() {
+        Ok(())
+    } else {
+        Err(format!("{} failed with {status}", cmd[0]))
+    }
+}
+
+/// Directories packages share and must not take away even when empty.
+// ponytail: depth plus a short list, swap in Homebrew's MacOS::SYSTEM_DIRS if a cask trips it.
+fn standard_dir(dir: &Path) -> bool {
+    const SHARED: &[&str] = &[
+        "/Library/Audio/Plug-Ins",
+        "/Library/Audio/Plug-Ins/Components",
+        "/Library/Audio/Plug-Ins/HAL",
+        "/Library/Audio/Plug-Ins/VST",
+        "/Library/Audio/Plug-Ins/VST3",
+        "/Library/Audio/MIDI Drivers",
+        "/usr/local/bin",
+        "/usr/local/etc",
+        "/usr/local/include",
+        "/usr/local/lib",
+        "/usr/local/libexec",
+        "/usr/local/sbin",
+        "/usr/local/share",
+        "/usr/local/share/man",
+        "/usr/local/share/man/man1",
+    ];
+    dir.components().count() <= 3 || SHARED.iter().any(|s| dir == Path::new(s))
 }
 
 fn osascript(script: &str) -> Result<(), String> {
@@ -268,7 +378,7 @@ fn remove(home: &Path, directive: &str, path: &Path) -> Result<(), String> {
             let _ = fs::remove_file(path.join(".DS_Store"));
             // Not empty is fine: rmdir only takes empty directories.
             match fs::remove_dir(path) {
-                Err(e) if e.kind() == std::io::ErrorKind::DirectoryNotEmpty => Ok(()),
+                Err(e) if e.kind() == ErrorKind::DirectoryNotEmpty => Ok(()),
                 other => other,
             }
         }
@@ -277,7 +387,20 @@ fn remove(home: &Path, directive: &str, path: &Path) -> Result<(), String> {
         _ if is_dir => fs::remove_dir_all(path),
         _ => fs::remove_file(path),
     };
-    result.map_err(|e| e.to_string())
+    match result {
+        // System paths: as root, like Homebrew.
+        Err(e) if e.kind() == ErrorKind::PermissionDenied => {
+            let mut cmd = if directive == "rmdir" {
+                sudo::command("/bin/rmdir")
+            } else {
+                let mut cmd = sudo::command("/bin/rm");
+                cmd.arg("-rf");
+                cmd
+            };
+            run(cmd.arg("--").arg(path)).map_err(|e| e.to_string())
+        }
+        other => other.map_err(|e| e.to_string()),
+    }
 }
 
 fn trash(home: &Path, path: &Path) -> Result<(), String> {
@@ -351,11 +474,11 @@ mod tests {
     }
 
     #[test]
-    fn sudo_scripts_are_skipped_and_failing_scripts_reported() {
+    fn failing_scripts_are_reported_unless_allowed_to_fail() {
         let tmp = TempDir::new().unwrap();
         let json: Value = serde_json::from_str(
             r#"{"artifacts": [{"uninstall": [{
-                "script": [{"executable": "/bin/true", "sudo": true}],
+                "script": [{"executable": "/bin/sh", "args": ["-c", "exit 0"]}],
                 "early_script": {"executable": "/bin/false", "must_succeed": false}
             }, {
                 "script": {"executable": "/bin/false"}
@@ -363,7 +486,7 @@ mod tests {
         )
         .unwrap();
         let warnings = run_stanza_in(&ctx(tmp.path()), &json, "uninstall", tmp.path());
-        assert_eq!(warnings.len(), 2, "{warnings:?}");
-        assert!(warnings[0].contains("needs root"));
+        assert_eq!(warnings.len(), 1, "{warnings:?}");
+        assert!(warnings[0].starts_with("uninstall script"));
     }
 }

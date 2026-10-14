@@ -19,6 +19,8 @@ pub struct ResolvedCask {
     pub binaries: Vec<CaskArtifact>,
     pub apps: Vec<CaskArtifact>,
     pub hooks: CaskHooks,
+    /// The `installer` and `pkg` artifacts, as published: run, not placed.
+    pub installers: Vec<Value>,
 }
 
 /// A cask's `*flight` blocks, which the API publishes as install steps.
@@ -36,10 +38,9 @@ impl CaskHooks {
     }
 }
 
-/// Artifacts that need an installer or a system location nextbrew does not
-/// manage. Stanzas not listed here and not handled (zap, uninstall,
-/// manpage, completions, ...) are skipped.
-const UNSUPPORTED_ARTIFACTS: &[&str] = &["pkg", "installer", "suite"];
+/// Artifacts nextbrew does not install yet. Stanzas not listed here and
+/// not handled (manpage, completions, ...) are skipped.
+const UNSUPPORTED_ARTIFACTS: &[&str] = &["suite"];
 
 pub fn resolve_cask(token: &str, cask: &Value) -> Result<ResolvedCask, Error> {
     let mut url = required_string(cask, "url")?;
@@ -79,7 +80,13 @@ pub fn resolve_cask(token: &str, cask: &Value) -> Result<ResolvedCask, Error> {
 
     let binaries = parse_artifacts(artifacts, "binary")?;
     let apps = parse_artifacts(artifacts, "app")?;
-    if binaries.is_empty() && apps.is_empty() {
+    // Homebrew runs `installer` before `pkg`.
+    let installers: Vec<Value> = ["installer", "pkg"]
+        .iter()
+        .flat_map(|kind| artifacts.iter().filter(move |a| a.get(*kind).is_some()))
+        .cloned()
+        .collect();
+    if binaries.is_empty() && apps.is_empty() && installers.is_empty() {
         let found = artifact_types(cask);
         return Err(Error::InvalidArgument {
             message: format!(
@@ -103,6 +110,7 @@ pub fn resolve_cask(token: &str, cask: &Value) -> Result<ResolvedCask, Error> {
             uninstall_preflight: parse_steps(artifacts, "uninstall_preflight_steps")?,
             uninstall_postflight: parse_steps(artifacts, "uninstall_postflight_steps")?,
         },
+        installers,
     })
 }
 
@@ -381,16 +389,20 @@ mod tests {
     }
 
     #[test]
-    fn resolve_cask_rejects_pkg_artifacts() {
+    fn resolve_cask_orders_installers_before_pkgs() {
         let cask = serde_json::json!({
             "token": "zoom",
             "version": "1.0.0",
             "url": "https://example.com/zoom.pkg",
             "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-            "artifacts": [{ "pkg": ["zoomusInstallerFull.pkg"] }]
+            "artifacts": [
+                { "pkg": ["zoomusInstallerFull.pkg"] },
+                { "installer": [{ "manual": "Setup.app" }] }
+            ]
         });
 
-        let msg = resolve_cask("zoom", &cask).unwrap_err().to_string();
-        assert!(msg.contains("'pkg'"), "got: {msg}");
+        let resolved = resolve_cask("zoom", &cask).unwrap();
+        assert!(resolved.installers[0].get("installer").is_some());
+        assert!(resolved.installers[1].get("pkg").is_some());
     }
 }

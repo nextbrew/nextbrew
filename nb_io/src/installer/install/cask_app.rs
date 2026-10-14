@@ -23,6 +23,7 @@ use crate::installer::cask::{ResolvedCask, resolve_cask};
 use crate::installer::post_install::{
     CaskDirs, PostInstallContext, remove_uninstall_links, run_steps,
 };
+use crate::installer::sudo;
 
 /// Keg directory with one symlink per placed bundle. Not a link dir, so
 /// the linker leaves it alone.
@@ -158,6 +159,9 @@ pub(super) fn stage_cask(
         .map_err(Error::store("failed to save cask.json"))?;
 
     run_hooks(ctx, cask, "preflight", &cask.hooks.preflight)?;
+    for artifact in &cask.installers {
+        run_installer(ctx, cask, artifact)?;
+    }
 
     let keg_apps = ctx.keg.join(KEG_APPS_DIR);
     fs::create_dir_all(&keg_apps).map_err(Error::store("failed to create keg apps dir"))?;
@@ -203,6 +207,117 @@ pub(super) fn stage_cask(
 
     stage_cask_binaries(&dirs.staged, Some(&dirs.appdir), &ctx.keg, cask)?;
     run_hooks(ctx, cask, "postflight", &cask.hooks.postflight)
+}
+
+/// An `installer` or `pkg` artifact, as Homebrew runs it: `pkg` through
+/// `sudo installer -target /`, `installer script:` as given, and
+/// `installer manual:` left for the user.
+fn run_installer(
+    ctx: &PostInstallContext,
+    cask: &ResolvedCask,
+    artifact: &Value,
+) -> Result<(), Error> {
+    let staged = &ctx.cask.as_ref().expect("cask context").staged;
+    let failed = |message: String| Error::ExecutionError {
+        message: format!("cask '{}': {message}", cask.token),
+    };
+    if let Some(pkg) = artifact.get("pkg") {
+        let path = pkg[0]
+            .as_str()
+            .ok_or_else(|| failed(format!("malformed pkg {pkg}")))?;
+        let options = &pkg[1];
+        let user = std::env::var("USER").unwrap_or_default();
+        let mut cmd = sudo::command("/usr/bin/env");
+        cmd.args([
+            format!("LOGNAME={user}"),
+            format!("USER={user}"),
+            format!("USERNAME={user}"),
+        ])
+        .arg("/usr/sbin/installer")
+        .arg("-pkg")
+        .arg(staged.join(path))
+        .args(["-target", "/"]);
+        if options["allow_untrusted"].as_bool() == Some(true) {
+            cmd.arg("-allowUntrusted");
+        }
+        let choices = match options.get("choices") {
+            Some(choices) => {
+                let file = ctx.keg.join("choices.xml");
+                fs::write(&file, choices_plist(choices))
+                    .map_err(Error::store("failed to write pkg choices"))?;
+                cmd.arg("-applyChoiceChangesXML").arg(&file);
+                Some(file)
+            }
+            None => None,
+        };
+        let result = run(&mut cmd);
+        if let Some(file) = choices {
+            let _ = fs::remove_file(file);
+        }
+        return result;
+    }
+    for entry in artifact["installer"].as_array().into_iter().flatten() {
+        if let Some(manual) = entry["manual"].as_str() {
+            warn!(
+                "To complete the installation of cask {}, you must also run the installer at:\n  {}",
+                cask.token,
+                staged.join(manual).display()
+            );
+        } else if let Some(script) = entry.get("script") {
+            let exe = script["executable"]
+                .as_str()
+                .ok_or_else(|| failed(format!("malformed installer script {script}")))?;
+            let exe = staged.join(exe);
+            let mut cmd = if script["sudo"].as_bool() == Some(true) {
+                sudo::command(&exe)
+            } else {
+                Command::new(&exe)
+            };
+            let args = script["args"].as_array().into_iter().flatten();
+            cmd.args(args.filter_map(Value::as_str));
+            if let Err(e) = run(&mut cmd)
+                && script["must_succeed"].as_bool() != Some(false)
+            {
+                return Err(e);
+            }
+        }
+    }
+    Ok(())
+}
+
+/// The `-applyChoiceChangesXML` plist for a pkg's `choices`.
+fn choices_plist(choices: &Value) -> String {
+    let escape = |s: &str| {
+        s.replace('&', "&amp;")
+            .replace('<', "&lt;")
+            .replace('>', "&gt;")
+    };
+    let mut xml = String::from(
+        "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n\
+         <!DOCTYPE plist PUBLIC \"-//Apple//DTD PLIST 1.0//EN\" \
+         \"http://www.apple.com/DTDs/PropertyList-1.0.dtd\">\n\
+         <plist version=\"1.0\">\n<array>\n",
+    );
+    for choice in choices.as_array().into_iter().flatten() {
+        xml.push_str("<dict>\n");
+        for (key, value) in choice.as_object().into_iter().flatten() {
+            xml.push_str(&format!("<key>{}</key>", escape(key)));
+            xml.push_str(&match value {
+                Value::Bool(true) => "<true/>".to_string(),
+                Value::Bool(false) => "<false/>".to_string(),
+                Value::Number(n) if n.is_i64() => format!("<integer>{n}</integer>"),
+                Value::Number(n) => format!("<real>{n}</real>"),
+                other => format!(
+                    "<string>{}</string>",
+                    escape(other.as_str().unwrap_or_default())
+                ),
+            });
+            xml.push('\n');
+        }
+        xml.push_str("</dict>\n");
+    }
+    xml.push_str("</array>\n</plist>\n");
+    xml
 }
 
 /// Uninstall hooks around removing the apps. Hook failures are reported but
@@ -515,6 +630,35 @@ mod tests {
             .to_string();
         assert!(err.contains("already exists"), "got: {err}");
         assert!(root.join("Applications/Foo.app").exists());
+    }
+
+    #[test]
+    fn writes_pkg_choices_as_a_plist() {
+        let choices = serde_json::json!([
+            {"choiceIdentifier": "a&b", "choiceAttribute": "selected", "attributeSetting": 0}
+        ]);
+        let xml = choices_plist(&choices);
+        assert!(xml.contains("<key>choiceIdentifier</key><string>a&amp;b</string>"));
+        assert!(xml.contains("<key>attributeSetting</key><integer>0</integer>"));
+    }
+
+    #[test]
+    fn runs_installer_scripts_from_the_staged_dir() {
+        let tmp = TempDir::new().unwrap();
+        let ctx = context(tmp.path());
+        let staged = &ctx.cask.as_ref().unwrap().staged;
+        fs::create_dir_all(staged).unwrap();
+        let script = staged.join("setup.sh");
+        fs::write(&script, "#!/bin/sh\ntouch \"$1\"\n").unwrap();
+        fs::set_permissions(&script, std::os::unix::fs::PermissionsExt::from_mode(0o755)).unwrap();
+        let (cask, _) = app_cask(tmp.path());
+        let marker = tmp.path().join("ran");
+        let artifact = serde_json::json!({"installer": [
+            {"manual": "Setup.app"},
+            {"script": {"executable": "setup.sh", "args": [marker]}}
+        ]});
+        run_installer(&ctx, &cask, &artifact).unwrap();
+        assert!(marker.is_file());
     }
 
     #[test]

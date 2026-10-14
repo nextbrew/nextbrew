@@ -207,7 +207,11 @@ impl Installer {
             link,
         );
 
-        if !cask.apps.is_empty() || !cask.hooks.is_empty() || is_dmg(&blob_path)? {
+        if !cask.apps.is_empty()
+            || !cask.hooks.is_empty()
+            || !cask.installers.is_empty()
+            || is_dmg(&blob_path)?
+        {
             let ctx = self.cask_context(&cask, &keg_path, app_dir()?);
             stage_cask(&blob_path, &cask, &cask_json, &ctx)?;
         } else if crate::extraction::is_archive(&blob_path)? {
@@ -648,6 +652,7 @@ mod tests {
             }],
             apps: vec![],
             hooks: Default::default(),
+            installers: Vec::new(),
         };
 
         stage_raw_cask_binary(&blob_path, &keg_path, &cask).unwrap();
@@ -692,6 +697,7 @@ mod tests {
             ],
             apps: vec![],
             hooks: Default::default(),
+            installers: Vec::new(),
         };
 
         let err = stage_raw_cask_binary(&blob_path, &keg_path, &cask).unwrap_err();

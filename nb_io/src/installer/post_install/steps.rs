@@ -19,6 +19,7 @@ use super::ca_bundle::CaBundle;
 use super::paths::{self, expand_glob, resolve};
 use super::template::expand;
 use super::{PostInstallContext, StepError, clang};
+use crate::installer::sudo;
 
 /// Lines of command output kept for an error message.
 const OUTPUT_TAIL: usize = 20;
@@ -68,13 +69,13 @@ pub(super) fn run_step(
             content_contains,
             sudo,
         } => {
-            refuse_sudo(*sudo)?;
             remove(
                 ctx,
                 paths,
                 *recursive,
                 symlink_target_contains.as_deref(),
                 content_contains.as_deref(),
+                *sudo != Sudo::Never,
             )?;
         }
         StepAction::Inreplace {
@@ -110,10 +111,12 @@ pub(super) fn run_step(
         } => {
             // `if_needed` only escalates when the link's directory is not
             // ours to write.
-            if *sudo != Sudo::IfNeeded || !writable_parent(&resolve(ctx, target)?) {
-                refuse_sudo(*sudo)?;
-            }
-            make_symlink(ctx, source, target, *force, *source_glob)?;
+            let root = match sudo {
+                Sudo::Never => false,
+                Sudo::Always => true,
+                Sudo::IfNeeded => !writable_parent(&resolve(ctx, target)?),
+            };
+            make_symlink(ctx, source, target, *force, *source_glob, root)?;
         }
         StepAction::Write {
             path,
@@ -138,7 +141,6 @@ pub(super) fn run_step(
             allow_failure,
             sudo,
         } => {
-            refuse_sudo(*sudo)?;
             let program = paths::command(ctx, command)?;
             let args = args
                 .iter()
@@ -159,6 +161,7 @@ pub(super) fn run_step(
                     stdout_path.as_ref(),
                     chdir.as_ref(),
                     *allow_failure,
+                    *sudo != Sudo::Never,
                 )?;
                 if let Some(bundle) = &bundle {
                     bundle.store()?;
@@ -174,7 +177,6 @@ pub(super) fn run_step(
             notices,
             sudo,
         } => {
-            refuse_sudo(*sudo)?;
             for notice in notices {
                 debug!(notice = %expand(ctx, notice)?, "post-install notice");
             }
@@ -185,6 +187,7 @@ pub(super) fn run_step(
                 *attempts,
                 *must_succeed,
                 failure_message.as_deref(),
+                *sudo != Sudo::Never,
             )?;
         }
         StepAction::ChangeDylibId {
@@ -267,12 +270,13 @@ pub(super) fn run_step(
     Ok(None)
 }
 
-fn refuse_sudo(sudo: Sudo) -> Result<(), StepError> {
-    match sudo {
-        Sudo::Never => Ok(()),
-        Sudo::Always | Sudo::IfNeeded => {
-            Err(StepError::Unsupported("the step asks for sudo".to_string()))
-        }
+/// Run a `sudo` command; the password prompt needs the terminal.
+fn run_root(cmd: &mut Command) -> Result<(), StepError> {
+    let status = cmd.status().map_err(StepError::io("running sudo"))?;
+    if status.success() {
+        Ok(())
+    } else {
+        Err(StepError::Failed(format!("sudo failed with {status}")))
     }
 }
 
@@ -476,6 +480,7 @@ fn remove(
     recursive: bool,
     symlink_target_contains: Option<&str>,
     content_contains: Option<&str>,
+    sudo: bool,
 ) -> Result<(), StepError> {
     let mut paths = Vec::new();
     for spec in specs {
@@ -500,7 +505,10 @@ fn remove(
         });
     }
     for path in paths {
-        if recursive {
+        if sudo {
+            let flags = if recursive { "-rf" } else { "-f" };
+            run_root(sudo::command("/bin/rm").args([flags, "--"]).arg(&path))?;
+        } else if recursive {
             remove_any(&path)?;
         } else if let Ok(metadata) = fs::symlink_metadata(&path) {
             if metadata.is_dir() {
@@ -658,8 +666,22 @@ fn make_symlink(
     target: &PathSpec,
     force: bool,
     source_glob: bool,
+    root: bool,
 ) -> Result<(), StepError> {
     let target = resolve(ctx, target)?;
+    if root {
+        let source = paths::link_target(ctx, source)?;
+        if let Some(parent) = target.parent() {
+            run_root(sudo::command("/bin/mkdir").arg("-p").arg(parent))?;
+        }
+        let flags = if force { "-sfn" } else { "-s" };
+        return run_root(
+            sudo::command("/bin/ln")
+                .arg(flags)
+                .arg(&source)
+                .arg(&target),
+        );
+    }
     if !source_glob {
         return create_symlink(&paths::link_target(ctx, source)?, &target, force);
     }
@@ -726,20 +748,29 @@ fn run_command(
     stdout_path: Option<&PathSpec>,
     chdir: Option<&PathSpec>,
     allow_failure: bool,
+    root: bool,
 ) -> Result<(), StepError> {
     let home = tempfile::Builder::new()
         .prefix(&format!("{}-postinstall-", ctx.name))
         .tempdir_in(&ctx.temp)
         .map_err(StepError::io("creating a temporary home"))?;
 
-    let mut cmd = Command::new(program);
-    cmd.args(args)
-        .envs(command_env(ctx, home.path()))
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped());
+    let mut vars = command_env(ctx, home.path());
     for (key, value) in env {
-        cmd.env(key, expand(ctx, value)?);
+        vars.push((key.clone(), expand(ctx, value)?));
     }
+    let mut cmd = if root {
+        // sudo resets the environment; `env` puts the step's back.
+        let mut cmd = sudo::command("/usr/bin/env");
+        cmd.args(vars.iter().map(|(k, v)| format!("{k}={v}")))
+            .arg(program);
+        cmd
+    } else {
+        let mut cmd = Command::new(program);
+        cmd.envs(vars);
+        cmd
+    };
+    cmd.args(args).stdout(Stdio::piped()).stderr(Stdio::piped());
     if let Some(dir) = chdir {
         cmd.current_dir(resolve(ctx, dir)?);
     }
@@ -805,6 +836,7 @@ fn terminate_process(
     attempts: u32,
     must_succeed: bool,
     failure_message: Option<&str>,
+    root: bool,
 ) -> Result<(), StepError> {
     let name = expand(ctx, name)?;
     let (program, args): (&str, Vec<&str>) = match match_by {
@@ -813,7 +845,12 @@ fn terminate_process(
     };
     let mut remaining = attempts.max(1);
     loop {
-        let status = Command::new(program)
+        let mut cmd = if root {
+            sudo::command(program)
+        } else {
+            Command::new(program)
+        };
+        let status = cmd
             .args(&args)
             .stdout(Stdio::null())
             .stderr(Stdio::null())
@@ -903,8 +940,9 @@ fn set_permissions(
     }
 }
 
-/// `chown` without sudo: works on paths the user already owns, which is
-/// the common case (`anaconda` handing its tree back to the user).
+/// `chown`, with sudo only when the user cannot do it alone. Paths the
+/// user already owns are the common case (`anaconda` handing its tree
+/// back to the user).
 fn set_ownership(
     ctx: &PostInstallContext,
     specs: &[PathSpec],
@@ -929,24 +967,24 @@ fn set_ownership(
             std::env::var("USER").map_err(|_| StepError::Failed("USER is not set".to_string()))?
         }
     };
-    let mut cmd = Command::new("chown");
-    if recursive {
-        cmd.arg("-R");
-    }
-    let output = cmd
-        .arg("--")
-        .arg(format!("{user}:{group}"))
+    let owner = format!("{user}:{group}");
+    let flags: &[&str] = if recursive { &["-R", "--"] } else { &["--"] };
+    let output = Command::new("chown")
+        .args(flags)
+        .arg(&owner)
         .args(&paths)
         .output()
         .map_err(StepError::io("running chown"))?;
     if output.status.success() {
-        Ok(())
-    } else {
-        Err(StepError::Failed(format!(
-            "chown {user}:{group} failed (nextbrew does not use sudo): {}",
-            output_tail(&output.stderr)
-        )))
+        return Ok(());
     }
+    // Homebrew always chowns as root; only ask when it is needed.
+    run_root(
+        sudo::command("/usr/sbin/chown")
+            .args(flags)
+            .arg(&owner)
+            .args(&paths),
+    )
 }
 
 /// Whether the directory `path` would be created in is writable.
@@ -1170,22 +1208,26 @@ mod tests {
     }
 
     #[test]
-    fn sudo_steps_are_refused() {
+    fn if_needed_symlinks_skip_sudo_where_writable() {
         let tmp = TempDir::new().unwrap();
         let ctx = context(tmp.path(), "x", "1");
-        let err = run(
+        fs::create_dir_all(&ctx.prefix).unwrap();
+        run(
             &ctx,
             StepAction::Symlink {
                 source: PathSpec::absolute("/a"),
                 target: abs(&ctx.prefix.join("b")),
                 force: false,
                 source_glob: false,
-                sudo: Sudo::Always,
+                sudo: Sudo::IfNeeded,
                 uninstall: false,
             },
         )
-        .unwrap_err();
-        assert!(matches!(err, StepError::Unsupported(_)));
+        .unwrap();
+        assert_eq!(
+            fs::read_link(ctx.prefix.join("b")).unwrap(),
+            PathBuf::from("/a")
+        );
     }
 
     #[test]

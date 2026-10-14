@@ -154,8 +154,9 @@ impl TryFrom<RawGuard> for Guard {
     }
 }
 
-/// Whether a step asks for elevated privileges. nextbrew never escalates,
-/// so anything but [`Sudo::Never`] is reported as unsupported.
+/// Whether a step asks for elevated privileges. As in Homebrew, such a
+/// step runs its command through `sudo`; `IfNeeded` only when the user
+/// cannot do it alone.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub enum Sudo {
     #[default]
