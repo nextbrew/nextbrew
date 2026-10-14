@@ -1,0 +1,5 @@
+[advisories]
+# ruzstd 0.8.3 (decompression-bomb DoS, no memory corruption) comes in via
+# object 0.38/0.39, which arwen 0.0.5 pins. No object 0.38/0.39 release uses
+# ruzstd >= 0.9.1 yet. Drop this once arwen/object move to ruzstd 0.9.
+ignore = ["RUSTSEC-2026-0344"]
