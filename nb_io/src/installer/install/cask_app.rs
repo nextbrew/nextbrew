@@ -381,7 +381,8 @@ pub(super) fn remove_cask_apps(keg_path: &Path) -> Result<(), Error> {
         let Ok(target) = fs::read_link(entry.path()) else {
             continue;
         };
-        if target.extension().is_some_and(|ext| ext == "app") && target.symlink_metadata().is_ok() {
+        // Every marker is a bundle or suite this keg placed.
+        if target.symlink_metadata().is_ok() {
             fs::remove_dir_all(&target).map_err(|e| Error::StoreCorruption {
                 message: format!("failed to remove '{}': {e}", target.display()),
             })?;
@@ -659,6 +660,18 @@ mod tests {
         ]});
         run_installer(&ctx, &cask, &artifact).unwrap();
         assert!(marker.is_file());
+    }
+
+    #[test]
+    fn removes_placed_suites() {
+        let tmp = TempDir::new().unwrap();
+        let keg = tmp.path().join("keg");
+        let suite = tmp.path().join("Applications/AMPPS");
+        fs::create_dir_all(suite.join("Ampps.app")).unwrap();
+        fs::create_dir_all(keg.join(KEG_APPS_DIR)).unwrap();
+        symlink(&suite, keg.join(KEG_APPS_DIR).join("AMPPS")).unwrap();
+        remove_cask_apps(&keg).unwrap();
+        assert!(!suite.exists());
     }
 
     #[test]

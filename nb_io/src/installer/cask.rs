@@ -38,10 +38,6 @@ impl CaskHooks {
     }
 }
 
-/// Artifacts nextbrew does not install yet. Stanzas not listed here and
-/// not handled (manpage, completions, ...) are skipped.
-const UNSUPPORTED_ARTIFACTS: &[&str] = &["suite"];
-
 pub fn resolve_cask(token: &str, cask: &Value) -> Result<ResolvedCask, Error> {
     let mut url = required_string(cask, "url")?;
     let mut sha256 = required_string(cask, "sha256")?;
@@ -69,17 +65,11 @@ pub fn resolve_cask(token: &str, cask: &Value) -> Result<ResolvedCask, Error> {
             message: "failed to parse cask JSON: missing artifacts array".to_string(),
         })?;
 
-    if let Some(kind) = UNSUPPORTED_ARTIFACTS
-        .iter()
-        .find(|kind| artifacts.iter().any(|a| a.get(**kind).is_some()))
-    {
-        return Err(Error::InvalidArgument {
-            message: format!("cask '{token}' uses '{kind}' artifacts, which are not supported yet"),
-        });
-    }
-
     let binaries = parse_artifacts(artifacts, "binary")?;
-    let apps = parse_artifacts(artifacts, "app")?;
+    // A suite is a folder of apps, moved into the Applications folder the
+    // same way.
+    let mut apps = parse_artifacts(artifacts, "app")?;
+    apps.extend(parse_artifacts(artifacts, "suite")?);
     // Homebrew runs `installer` before `pkg`.
     let installers: Vec<Value> = ["installer", "pkg"]
         .iter()
