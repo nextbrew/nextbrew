@@ -1,12 +1,42 @@
 use nb_core::{Error, select_bottle};
 
 use super::{Installer, OutdatedPackage};
+use crate::installer::cask::resolve_cask;
+use crate::storage::db::InstalledKeg;
 
 impl Installer {
+    /// A cask is outdated when the API's artifact checksum moved on.
+    /// `auto_updates` casks update themselves, so like `brew outdated` they
+    /// only count when `greedy` (named explicitly).
+    async fn cask_outdated(
+        &self,
+        keg: &InstalledKeg,
+        greedy: bool,
+    ) -> Result<Option<OutdatedPackage>, Error> {
+        let token = keg.name.strip_prefix("cask:").unwrap_or(&keg.name);
+        let json = self.api_client.get_cask(token).await?;
+        let auto_updates = json["auto_updates"].as_bool().unwrap_or(false);
+        let cask = resolve_cask(token, &json)?;
+        if keg.store_key == cask.sha256 || (auto_updates && !greedy) {
+            return Ok(None);
+        }
+        Ok(Some(OutdatedPackage {
+            name: keg.name.clone(),
+            installed_version: keg.version.clone(),
+            installed_sha256: keg.store_key.clone(),
+            current_version: cask.version,
+            current_sha256: cask.sha256,
+            is_source_build: false,
+        }))
+    }
+
     pub async fn is_outdated(&self, name: &str) -> Result<Option<OutdatedPackage>, Error> {
         let installed = self.db.get_installed(name).ok_or(Error::NotInstalled {
             name: name.to_string(),
         })?;
+        if name.starts_with("cask:") {
+            return self.cask_outdated(&installed, true).await;
+        }
 
         let formula = self.api_client.get_formula(name).await?;
         let is_source = installed.store_key.starts_with("source:");
@@ -53,6 +83,13 @@ impl Installer {
         let mut warnings = Vec::new();
 
         for keg in &installed {
+            if keg.name.starts_with("cask:") {
+                match self.cask_outdated(keg, false).await {
+                    Ok(pkg) => outdated.extend(pkg),
+                    Err(e) => warnings.push(format!("{}: {}", keg.name, e)),
+                }
+                continue;
+            }
             let formula = match self.api_client.get_formula(&keg.name).await {
                 Ok(f) => f,
                 Err(e) => {

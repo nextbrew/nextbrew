@@ -42,6 +42,24 @@ impl Installer {
             return Ok(ExecuteResult::default());
         }
 
+        if let Some(token) = name.strip_prefix("cask:") {
+            // Same order as bottles: download first, then swap.
+            let json = self.api_client.get_cask(token).await?;
+            let cask = crate::installer::cask::resolve_cask(token, &json)?;
+            self.downloader
+                .download_single(
+                    DownloadRequest::new(cask.url, cask.sha256, cask.install_name),
+                    None,
+                )
+                .await?;
+            self.uninstall_by_version(name, &old.version)?;
+            self.install_single_cask(token, link).await?;
+            return Ok(ExecuteResult {
+                installed: 1,
+                ..Default::default()
+            });
+        }
+
         let plan = self
             .plan_with_options(&[name.to_string()], build_from_source)
             .await?;
@@ -138,7 +156,9 @@ mod tests {
         mock_uri: &str,
     ) -> Installer {
         fs::create_dir_all(root.join("db")).unwrap();
-        let api_client = ApiClient::with_base_url(format!("{mock_uri}/formula")).unwrap();
+        let api_client = ApiClient::with_base_url(format!("{mock_uri}/formula"))
+            .unwrap()
+            .with_cask_base_url(format!("{mock_uri}/cask"));
         let blob_cache = BlobCache::new(&root.join("cache")).unwrap();
         let store = Store::new(root).unwrap();
         let cellar = Cellar::new(root).unwrap();
@@ -546,5 +566,56 @@ mod tests {
         assert!(target.to_string_lossy().contains("1.0.0"));
         let installed = installer.get_installed("flakypkg").unwrap();
         assert_eq!(installed.version, "1.0.0");
+    }
+
+    async fn serve_cask(server: &MockServer, version: &str, auto_updates: bool) {
+        let body = format!("#!/bin/sh\necho {version}\n");
+        let sha = sha256_hex(body.as_bytes());
+        let uri = server.uri();
+        server.reset().await;
+        Mock::given(method("GET"))
+            .and(path("/cask/tool.json"))
+            .respond_with(ResponseTemplate::new(200).set_body_string(format!(
+                r#"{{"token": "tool", "version": "{version}", "url": "{uri}/dl/tool-{version}",
+                    "sha256": "{sha}", "auto_updates": {auto_updates},
+                    "artifacts": [{{"binary": ["tool"]}}]}}"#
+            )))
+            .mount(server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path(format!("/dl/tool-{version}")))
+            .respond_with(ResponseTemplate::new(200).set_body_string(body))
+            .mount(server)
+            .await;
+    }
+
+    #[tokio::test]
+    async fn upgrade_replaces_an_outdated_cask() {
+        let server = MockServer::start().await;
+        let tmp = TempDir::new().unwrap();
+        let root = tmp.path().join("nextbrew");
+        let prefix = tmp.path().join("homebrew");
+        let mut installer = make_installer(&root, &prefix, &server.uri());
+
+        serve_cask(&server, "1.0", true).await;
+        installer
+            .install(&["cask:tool".to_string()], true)
+            .await
+            .unwrap();
+        assert!(installer.is_outdated("cask:tool").await.unwrap().is_none());
+
+        serve_cask(&server, "2.0", true).await;
+        // auto_updates casks are skipped by a bulk check but not when named.
+        assert!(installer.check_outdated().await.unwrap().0.is_empty());
+        assert!(installer.is_outdated("cask:tool").await.unwrap().is_some());
+
+        installer
+            .upgrade("cask:tool", false, true, None)
+            .await
+            .unwrap();
+        assert_eq!(installer.get_installed("cask:tool").unwrap().version, "2.0");
+        let linked = fs::read_to_string(prefix.join("bin/tool")).unwrap();
+        assert!(linked.contains("echo 2.0"));
+        assert!(!installer.keg_path("cask:tool", "1.0").exists());
     }
 }
