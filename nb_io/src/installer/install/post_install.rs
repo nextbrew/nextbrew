@@ -3,7 +3,7 @@ use std::fs;
 use nb_core::{Error, Formula};
 
 use super::Installer;
-use crate::installer::post_install::{PostInstallContext, run_steps};
+use crate::installer::post_install::{PostInstallContext, prepare_ahead, run_steps};
 
 impl Installer {
     fn post_install_context(&self, formula: &Formula) -> PostInstallContext {
@@ -40,6 +40,22 @@ impl Installer {
         })
         .await
         .map_err(Error::exec("post-install task failed"))?
+    }
+
+    /// Start what `formula`'s post-install can do with only its own keg in
+    /// place (see [`prepare_ahead`]), while the rest of the install goes on.
+    pub(super) fn prepare_post_install_ahead(
+        &self,
+        formula: &Formula,
+    ) -> Option<tokio::task::JoinHandle<()>> {
+        if formula.post_install_steps.is_empty() {
+            return None;
+        }
+        let ctx = self.post_install_context(formula);
+        let steps = formula.post_install_steps.clone();
+        Some(tokio::task::spawn_blocking(move || {
+            prepare_ahead(&ctx, &steps);
+        }))
     }
 
     /// Run the post-install steps of an installed formula again, as

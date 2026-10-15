@@ -131,6 +131,22 @@ impl CaBundle {
         Ok(true)
     }
 
+    /// Build the bundle into the cache only, ahead of the step, for a known
+    /// script; the step then restores it. Done while the formula's
+    /// dependencies are still downloading, so its time is hidden. Failures
+    /// are left for the step to meet.
+    pub(super) fn prebuild(&self, script: &Path) {
+        if self.cached.exists() || !known_script(script) {
+            return;
+        }
+        if let Some(bundle) = build(&self.source) {
+            if let Some(parent) = self.cached.parent() {
+                let _ = fs::create_dir_all(parent);
+            }
+            let _ = write_atomically(&self.cached, &bundle);
+        }
+    }
+
     /// Remember the bundle the script just wrote.
     pub(super) fn store(&self) -> Result<(), StepError> {
         let Ok(content) = fs::read(&self.destination) else {
@@ -499,6 +515,52 @@ mod tests {
         let ours = fs::read(tmp.path().join("ours/cert.pem")).unwrap();
         assert_eq!(ours, fs::read(&by_script).unwrap());
         assert!(ours.len() > 100_000, "a real bundle: {} bytes", ours.len());
+    }
+
+    /// Building ahead fills the cache only; the step then restores from it.
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn prebuilding_fills_the_cache_the_step_restores_from() {
+        let script = std::env::var_os("NB_TEST_CA_SCRIPT")
+            .map(PathBuf::from)
+            .unwrap_or_else(|| "/opt/homebrew/opt/ca-certificates/libexec/post-install".into());
+        if !known_script(&script) {
+            eprintln!(
+                "skipping: no known ca-certificates script at {}",
+                script.display()
+            );
+            return;
+        }
+        let tmp = TempDir::new().unwrap();
+        let ctx = context(tmp.path(), "ca-certificates", "2026-09-25");
+        let destination = tmp.path().join("etc/cert.pem");
+        let args = [
+            "/etc/ssl/cert.pem".to_string(),
+            destination.display().to_string(),
+        ];
+        let bundle = CaBundle::detect(&ctx, script.as_os_str(), &args).unwrap();
+
+        bundle.prebuild(&script);
+
+        assert!(!destination.exists(), "only the cache is written ahead");
+        assert!(bundle.restore().unwrap());
+        assert!(fs::read(&destination).unwrap().len() > 100_000);
+    }
+
+    #[test]
+    fn prebuilding_with_an_unknown_script_does_nothing() {
+        let tmp = TempDir::new().unwrap();
+        let ctx = context(tmp.path(), "ca-certificates", "1");
+        let script = install_script(&ctx);
+        let source = ctx.keg.join("cacert.pem");
+        fs::write(&source, "M").unwrap();
+        let args = [
+            source.display().to_string(),
+            ctx.prefix.join("cert.pem").display().to_string(),
+        ];
+        let bundle = CaBundle::detect(&ctx, script.as_os_str(), &args).unwrap();
+        bundle.prebuild(&script);
+        assert!(!bundle.restore().unwrap());
     }
 
     #[test]

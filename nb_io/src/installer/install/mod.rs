@@ -200,6 +200,9 @@ impl Installer {
         let mut installed = 0usize;
         let mut finished: Vec<&PlannedInstall> = Vec::new();
         let mut error: Option<Error> = None;
+        // Post-install work that needs only its own keg, started as soon as
+        // that keg is in place.
+        let mut ahead = Vec::new();
 
         if !bottle_items.is_empty() {
             let requests: Vec<DownloadRequest> = bottle_items
@@ -271,6 +274,7 @@ impl Installer {
                                 Ok(()) => {
                                     installed += 1;
                                     finished.push(&bottle_items[index]);
+                                    ahead.extend(self.prepare_post_install_ahead(&bottle_items[index].formula));
                                 }
                                 Err(e) => error = Some(e),
                             }
@@ -310,6 +314,9 @@ impl Installer {
             }
         }
 
+        for task in ahead {
+            let _ = task.await;
+        }
         finished.sort_by_key(|item| positions.get(&item.install_name).copied());
         let mut notices = Vec::new();
         let mut post_install_failures = Vec::new();

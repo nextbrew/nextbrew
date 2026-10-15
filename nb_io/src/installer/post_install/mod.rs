@@ -138,6 +138,31 @@ pub fn run_steps(
     Ok(notices)
 }
 
+/// Do ahead what a formula's steps need only its own keg for: the CA bundle
+/// ca-certificates builds, into the cache its step restores from. Runs
+/// while the rest of an install is still downloading; anything that goes
+/// wrong is left for the step itself.
+pub fn prepare_ahead(ctx: &PostInstallContext, steps: &[PostInstallStep]) {
+    for step in steps {
+        let StepAction::Run { command, args, .. } = &step.action else {
+            continue;
+        };
+        let Ok(program) = paths::command(ctx, command) else {
+            continue;
+        };
+        let Ok(args) = args
+            .iter()
+            .map(|arg| template::expand(ctx, arg))
+            .collect::<Result<Vec<_>, _>>()
+        else {
+            continue;
+        };
+        if let Some(bundle) = ca_bundle::CaBundle::detect(ctx, &program, &args) {
+            bundle.prebuild(std::path::Path::new(&program));
+        }
+    }
+}
+
 /// Remove the links made by `symlink` steps marked `uninstall`, as a cask
 /// uninstall does. A link that now points elsewhere is left alone, and one
 /// made with sudo is removed with sudo.
