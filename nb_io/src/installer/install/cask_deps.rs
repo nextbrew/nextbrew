@@ -2,7 +2,7 @@
 //! system requirements (`macos`, `maximum_macos`, `arch`) are checked before
 //! anything is downloaded, and missing `cask` and `formula` dependencies are
 //! installed once the cask is downloaded and before it is staged, casks
-//! first.
+//! first. A cask that `conflicts_with` an installed one is refused.
 
 use nb_core::Error;
 use serde_json::Value;
@@ -176,6 +176,21 @@ fn names(value: &Value) -> Vec<String> {
 }
 
 impl Installer {
+    /// Refuse a cask whose `conflicts_with` names an installed cask
+    /// (Homebrew's `check_conflicts`).
+    pub(super) fn check_conflicts(&self, cask: &Value) -> Result<(), Error> {
+        let token = cask["token"].as_str().unwrap_or_default();
+        match names(&cask["conflicts_with"]["cask"])
+            .into_iter()
+            .find(|other| self.is_installed(&format!("cask:{other}")))
+        {
+            Some(other) => Err(Error::InvalidArgument {
+                message: format!("Cask '{token}' conflicts with '{other}'."),
+            }),
+            None => Ok(()),
+        }
+    }
+
     /// Install the cask and formula dependencies of `cask` that are not
     /// installed yet (Homebrew's `satisfy_cask_and_formula_dependencies`).
     /// `chain` holds the casks being installed around this one, to catch a
@@ -429,6 +444,42 @@ mod tests {
             assert!(installer.is_installed("cask:helper"));
             assert!(installer.is_installed("deplib"));
             assert!(installer.is_installed("cask:main"));
+        }
+
+        #[tokio::test]
+        async fn refuses_a_cask_that_conflicts_with_an_installed_one() {
+            let server = MockServer::start().await;
+            let tmp = TempDir::new().unwrap();
+            serve_cask(&server, "stable", "{}").await;
+            let body = "#!/bin/sh\n";
+            Mock::given(method("GET"))
+                .and(path("/cask/beta.json"))
+                .respond_with(ResponseTemplate::new(200).set_body_string(format!(
+                    r#"{{"token": "beta", "version": "1.0", "url": "{}/dl/beta",
+                        "sha256": "{}", "conflicts_with": {{"cask": ["stable"]}},
+                        "artifacts": [{{"binary": ["beta"]}}]}}"#,
+                    server.uri(),
+                    sha256_hex(body.as_bytes())
+                )))
+                .mount(&server)
+                .await;
+            let mut installer = installer(tmp.path(), &server);
+            installer
+                .install(&["cask:stable".to_string()], true)
+                .await
+                .unwrap();
+
+            let err = installer
+                .install(&["cask:beta".to_string()], true)
+                .await
+                .unwrap_err();
+
+            assert!(
+                err.to_string()
+                    .contains("Cask 'beta' conflicts with 'stable'."),
+                "got {err}"
+            );
+            assert!(!installer.is_installed("cask:beta"));
         }
 
         #[tokio::test]

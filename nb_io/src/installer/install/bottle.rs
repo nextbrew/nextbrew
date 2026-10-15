@@ -200,6 +200,7 @@ impl Installer {
         let cask_json = for_current_platform(&self.api_client.get_cask(token).await?);
         check_deprecate_disable(&cask_json)?;
         check_requirements(&cask_json)?;
+        self.check_conflicts(&cask_json)?;
         let cask = resolve_cask(token, &cask_json)?;
 
         let blob_path = self
