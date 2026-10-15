@@ -9,6 +9,7 @@ mod plan;
 mod post_install;
 mod quarantine;
 mod source;
+mod undeletable;
 mod uninstall;
 mod upgrade;
 

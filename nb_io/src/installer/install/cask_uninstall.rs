@@ -13,6 +13,7 @@ use globset::Glob;
 use serde_json::Value;
 
 use super::cask_app::run;
+use super::undeletable::undeletable;
 use crate::installer::post_install::PostInstallContext;
 use crate::installer::sudo;
 
@@ -59,7 +60,7 @@ fn run_stanza_in(ctx: &PostInstallContext, json: &Value, stanza: &str, home: &Pa
                 }
                 continue;
             }
-            for item in items(value) {
+            for item in directive_items(directive, value) {
                 if let Err(e) = run_directive(ctx, home, directive, item) {
                     warnings.push(format!("{stanza} {directive}: {e}"));
                 }
@@ -67,6 +68,16 @@ fn run_stanza_in(ctx: &PostInstallContext, json: &Value, stanza: &str, home: &Pa
         }
     }
     warnings
+}
+
+/// The items of `directive`'s value. A `signal` is a `[signal, bundle id]`
+/// pair or a list of them; every other directive takes one value or a
+/// list.
+fn directive_items<'a>(directive: &str, value: &'a Value) -> Vec<&'a Value> {
+    if directive == "signal" && value.get(0).is_some_and(Value::is_string) {
+        return vec![value];
+    }
+    items(value)
 }
 
 /// A directive takes one value or a list of them.
@@ -90,7 +101,7 @@ fn run_directive(
         "quit" => quit(text),
         "signal" => signal(item),
         "kext" => kext(text),
-        "pkgutil" => pkgutil(text),
+        "pkgutil" => pkgutil(home, text),
         "delete" | "trash" | "rmdir" => {
             for path in expand(ctx, home, text)? {
                 remove(home, directive, &path).map_err(|e| format!("{}: {e}", path.display()))?;
@@ -185,7 +196,7 @@ fn signal(item: &Value) -> Result<(), String> {
 
 /// Remove what the receipts matching `pattern` installed, then forget
 /// them, as Homebrew's `Pkg#uninstall` does.
-fn pkgutil(pattern: &str) -> Result<(), String> {
+fn pkgutil(home: &Path, pattern: &str) -> Result<(), String> {
     for id in pkgutil_lines(&[&format!("--pkgs={pattern}")])? {
         let mut root = PathBuf::from("/");
         for line in pkgutil_lines(&["--pkg-info", &id])? {
@@ -203,7 +214,7 @@ fn pkgutil(pattern: &str) -> Result<(), String> {
         let mut dirs: Vec<PathBuf> = pkgutil_lines(&["--only-dirs", "--files", &id])?
             .iter()
             .map(|d| root.join(d))
-            .filter(|d| d.is_dir() && !standard_dir(d))
+            .filter(|d| d.is_dir() && !undeletable(d, home))
             .collect();
         dirs.sort_by_key(|d| std::cmp::Reverse(d.components().count()));
         if !files.is_empty() {
@@ -253,29 +264,6 @@ fn xargs(cmd: &[&str], paths: &[PathBuf]) -> Result<(), String> {
     } else {
         Err(format!("{} failed with {status}", cmd[0]))
     }
-}
-
-/// Directories packages share and must not take away even when empty.
-// ponytail: depth plus a short list, swap in Homebrew's MacOS::SYSTEM_DIRS if a cask trips it.
-pub(super) fn standard_dir(dir: &Path) -> bool {
-    const SHARED: &[&str] = &[
-        "/Library/Audio/Plug-Ins",
-        "/Library/Audio/Plug-Ins/Components",
-        "/Library/Audio/Plug-Ins/HAL",
-        "/Library/Audio/Plug-Ins/VST",
-        "/Library/Audio/Plug-Ins/VST3",
-        "/Library/Audio/MIDI Drivers",
-        "/usr/local/bin",
-        "/usr/local/etc",
-        "/usr/local/include",
-        "/usr/local/lib",
-        "/usr/local/libexec",
-        "/usr/local/sbin",
-        "/usr/local/share",
-        "/usr/local/share/man",
-        "/usr/local/share/man/man1",
-    ];
-    dir.components().count() <= 3 || SHARED.iter().any(|s| dir == Path::new(s))
 }
 
 /// Quit a running app as Homebrew does: through JavaScript for Automation,
@@ -415,41 +403,10 @@ fn subdirectories(dir: &Path) -> Vec<PathBuf> {
     all
 }
 
-/// Directories a cask may name but must never take away.
+/// Homebrew skips a system or home folder it is told to delete
+/// (`MacOS.undeletable?`).
 fn protected(home: &Path, path: &Path) -> bool {
-    const SYSTEM: &[&str] = &[
-        "/",
-        "/Applications",
-        "/Library",
-        "/System",
-        "/Users",
-        "/opt",
-        "/private",
-        "/usr",
-        "/var",
-    ];
-    const HOME: &[&str] = &[
-        "",
-        "Applications",
-        "Desktop",
-        "Documents",
-        "Downloads",
-        "Library",
-        "Library/Application Support",
-        "Library/Caches",
-        "Library/Containers",
-        "Library/Group Containers",
-        "Library/LaunchAgents",
-        "Library/Logs",
-        "Library/Preferences",
-        "Movies",
-        "Music",
-        "Pictures",
-    ];
-    if SYSTEM.iter().any(|p| path == Path::new(p)) {
-        return true;
-    }
-    HOME.iter().any(|p| path == home.join(p))
+    undeletable(path, home)
 }
 
 fn remove(home: &Path, directive: &str, path: &Path) -> Result<(), String> {
@@ -537,6 +494,17 @@ mod tests {
             .collect();
         names.sort();
         names
+    }
+
+    #[test]
+    fn one_signal_pair_is_one_item() {
+        // bing-wallpaper: "signal": ["TERM", "com.microsoft.bing.wallpaper"]
+        let one = serde_json::json!(["TERM", "com.microsoft.bing.wallpaper"]);
+        assert_eq!(directive_items("signal", &one), [&one]);
+        let two = serde_json::json!([["TERM", "a"], ["KILL", "b"]]);
+        assert_eq!(directive_items("signal", &two).len(), 2);
+        let names = serde_json::json!(["a", "b"]);
+        assert_eq!(directive_items("quit", &names).len(), 2);
     }
 
     #[test]

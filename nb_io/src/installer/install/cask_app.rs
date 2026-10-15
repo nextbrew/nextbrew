@@ -599,7 +599,7 @@ fn links_to_system_dir(path: &Path) -> bool {
         return false;
     };
     let target = path.parent().unwrap_or(Path::new("/")).join(target);
-    target.is_absolute() && target.is_dir() && super::cask_uninstall::standard_dir(&target)
+    target.is_absolute() && target.is_dir() && super::undeletable::system_dir(&target)
 }
 
 /// Copy a file or tree, keeping symlinks, modes and extended attributes.
