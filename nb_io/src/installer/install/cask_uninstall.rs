@@ -444,7 +444,14 @@ fn remove(home: &Path, directive: &str, path: &Path) -> Result<(), String> {
     }
 }
 
+/// Move `path` to the Trash. As Homebrew does, through the system's own
+/// trash (`NSFileManager trashItemAtURL`, which names clashes and keeps Put
+/// Back working) when `home` is the user's; otherwise, or when that fails,
+/// by moving it into `home`'s `.Trash`.
 fn trash(home: &Path, path: &Path) -> Result<(), String> {
+    if std::env::var_os("HOME").is_some_and(|h| Path::new(&h) == home) && system_trash(path) {
+        return Ok(());
+    }
     let bin = home.join(".Trash");
     fs::create_dir_all(&bin).map_err(|e| e.to_string())?;
     let name = path.file_name().unwrap_or_default().to_string_lossy();
@@ -460,6 +467,26 @@ fn trash(home: &Path, path: &Path) -> Result<(), String> {
     // Another volume: copy, then delete.
     run(Command::new("cp").arg("-a").arg(path).arg(&target)).map_err(|e| e.to_string())?;
     remove(home, "delete", path)
+}
+
+#[cfg(target_os = "macos")]
+fn system_trash(path: &Path) -> bool {
+    const SCRIPT: &str = "ObjC.import('Foundation'); function run(argv) { \
+        var ok = $.NSFileManager.defaultManager.trashItemAtURLResultingItemURLError(\
+            $.NSURL.fileURLWithPath(argv[0]), null, null); \
+        return ok ? 'ok' : 'failed' }";
+    Command::new("osascript")
+        .args(["-l", "JavaScript", "-e", SCRIPT])
+        .arg(path)
+        .stdin(Stdio::null())
+        .stderr(Stdio::null())
+        .output()
+        .is_ok_and(|out| String::from_utf8_lossy(&out.stdout).trim() == "ok")
+}
+
+#[cfg(not(target_os = "macos"))]
+fn system_trash(_path: &Path) -> bool {
+    false
 }
 
 #[cfg(test)]
