@@ -60,12 +60,29 @@ pub(super) fn is_dmg(path: &Path) -> Result<bool, Error> {
 }
 
 fn is_zip(path: &Path) -> Result<bool, Error> {
+    Ok(&leading_magic(path)? == b"PK\x03\x04")
+}
+
+fn is_xar(path: &Path) -> Result<bool, Error> {
+    Ok(&leading_magic(path)? == b"xar!")
+}
+
+fn leading_magic(path: &Path) -> Result<[u8; 4], Error> {
     let mut magic = [0u8; 4];
     let mut file = File::open(path).map_err(Error::store("failed to open cask download"))?;
     let n = file
         .read(&mut magic)
         .map_err(Error::store("failed to read cask download"))?;
-    Ok(n == 4 && magic == *b"PK\x03\x04")
+    Ok(if n == 4 { magic } else { [0; 4] })
+}
+
+/// The file a `pkg` stanza names at the top of the staged directory, which
+/// is the download itself when the cask ships a bare package.
+fn downloaded_pkg_name(cask: &ResolvedCask) -> Option<&str> {
+    cask.installers
+        .iter()
+        .filter_map(|artifact| artifact.get("pkg")?.get(0)?.as_str())
+        .find(|name| Path::new(name).components().count() == 1)
 }
 
 /// `/Applications` like Homebrew, or `~/Applications` when the user cannot
@@ -156,7 +173,7 @@ pub(super) fn stage_cask(
     let dirs = ctx.cask.as_ref().expect("cask context");
     let _ = fs::remove_dir_all(&dirs.staged);
     fs::create_dir_all(&dirs.staged).map_err(Error::store("failed to create staged dir"))?;
-    unpack(blob, &dirs.staged)?;
+    unpack(blob, &dirs.staged, cask)?;
     fs::write(ctx.keg.join(CASK_JSON), json.to_string())
         .map_err(Error::store("failed to save cask.json"))?;
 
@@ -404,7 +421,18 @@ fn placed_appdir(keg: &Path) -> Option<PathBuf> {
 
 /// Unpack `blob` into the existing directory `dest`. A DMG is mounted and
 /// its contents copied, as Homebrew does, so hooks can change them.
-fn unpack(blob: &Path, dest: &Path) -> Result<(), Error> {
+/// Unpack `blob` the way Homebrew picks a strategy: a DMG is mounted and
+/// copied, a zip goes through `ditto`, an installer package is staged whole
+/// under the name its `pkg` stanza uses (`UnpackStrategy::Pkg`, before
+/// `Xar`), and anything else goes to `tar`.
+fn unpack(blob: &Path, dest: &Path, cask: &ResolvedCask) -> Result<(), Error> {
+    if is_xar(blob)?
+        && let Some(name) = downloaded_pkg_name(cask)
+    {
+        return fs::copy(blob, dest.join(name))
+            .map(drop)
+            .map_err(Error::store("failed to stage pkg"));
+    }
     if !is_dmg(blob)? {
         return if is_zip(blob)? {
             run(Command::new("ditto")
@@ -472,11 +500,13 @@ pub(super) fn run(cmd: &mut Command) -> Result<(), Error> {
             message: format!("failed to run {program}: {e}"),
         })?;
     if !output.status.success() {
+        // `installer` and friends report on stdout.
+        let detail = match String::from_utf8_lossy(&output.stderr).trim() {
+            "" => String::from_utf8_lossy(&output.stdout).trim().to_string(),
+            stderr => stderr.to_string(),
+        };
         return Err(Error::ExecutionError {
-            message: format!(
-                "{program} failed: {}",
-                String::from_utf8_lossy(&output.stderr).trim()
-            ),
+            message: format!("{program} failed: {detail}"),
         });
     }
     Ok(())
@@ -486,6 +516,27 @@ pub(super) fn run(cmd: &mut Command) -> Result<(), Error> {
 mod tests {
     use super::*;
     use tempfile::TempDir;
+
+    #[test]
+    fn a_downloaded_pkg_is_staged_whole_under_its_stanza_name() {
+        // Shape of 1password-cli@1: the download is the installer package.
+        let tmp = TempDir::new().unwrap();
+        let blob = tmp.path().join("blob.tar.gz");
+        fs::write(&blob, b"xar!\x00\x1c\x00\x01 rest of the package").unwrap();
+        let json = serde_json::json!({
+            "token": "op", "version": "1.0", "url": "https://example.com/op.pkg",
+            "sha256": "aaa", "artifacts": [{ "pkg": ["op_apple_universal_v1.0.pkg"] }]
+        });
+        let staged = tmp.path().join("staged");
+        fs::create_dir(&staged).unwrap();
+
+        unpack(&blob, &staged, &resolve_cask("op", &json).unwrap()).unwrap();
+
+        assert_eq!(
+            fs::read(staged.join("op_apple_universal_v1.0.pkg")).unwrap(),
+            fs::read(&blob).unwrap()
+        );
+    }
 
     /// `Foo.app` with a CLI, and hooks that touch every cask base.
     fn app_cask(root: &Path) -> (ResolvedCask, Value) {
