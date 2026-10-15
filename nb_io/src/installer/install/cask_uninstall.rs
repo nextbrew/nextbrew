@@ -51,6 +51,14 @@ fn run_stanza_in(ctx: &PostInstallContext, json: &Value, stanza: &str, home: &Pa
         .collect();
     for directive in ORDER {
         for value in blocks.iter().filter_map(|b| b.get(*directive)) {
+            if *directive == "login_item" {
+                for script in login_item_scripts(ctx, json, &items(value)) {
+                    if let Err(e) = osascript(&script) {
+                        warnings.push(format!("{stanza} login_item: {e}"));
+                    }
+                }
+                continue;
+            }
             for item in items(value) {
                 if let Err(e) = run_directive(ctx, home, directive, item) {
                     warnings.push(format!("{stanza} {directive}: {e}"));
@@ -81,10 +89,6 @@ fn run_directive(
         "launchctl" => launchctl(home, text),
         "quit" => quit(text),
         "signal" => signal(item),
-        "login_item" => osascript(&format!(
-            r#"tell application "System Events" to delete every login item whose name is "{}""#,
-            applescript_str(text)
-        )),
         "kext" => kext(text),
         "pkgutil" => pkgutil(text),
         "delete" | "trash" | "rmdir" => {
@@ -306,6 +310,38 @@ fn quit(bundle_id: &str) -> Result<(), String> {
     Err(format!("application '{bundle_id}' did not quit"))
 }
 
+/// Homebrew's `uninstall_login_item`: the login items opening one of the
+/// cask's apps go first, then those with the names given.
+fn login_item_scripts(ctx: &PostInstallContext, json: &Value, names: &[&Value]) -> Vec<String> {
+    let delete = |field: &str, value: &str| {
+        format!(
+            r#"tell application "System Events" to delete every login item whose {field} is "{}""#,
+            applescript_str(value)
+        )
+    };
+    let appdir = ctx.cask.as_ref().map(|dirs| dirs.appdir.clone());
+    let apps = json["artifacts"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter(|artifact| artifact.get("app").is_some())
+        .filter_map(|artifact| {
+            let target = artifact["target"]
+                .as_str()
+                .or_else(|| artifact["app"].get(0)?.as_str())?;
+            let name = Path::new(target).file_name()?;
+            Some(appdir.as_ref()?.join(name))
+        });
+    apps.map(|app| delete("path", &app.to_string_lossy()))
+        .chain(
+            names
+                .iter()
+                .filter_map(|n| n.as_str())
+                .map(|n| delete("name", n)),
+        )
+        .collect()
+}
+
 fn osascript(script: &str) -> Result<(), String> {
     run(Command::new("osascript").args(["-e", script])).map_err(|e| e.to_string())
 }
@@ -501,6 +537,30 @@ mod tests {
             .collect();
         names.sort();
         names
+    }
+
+    #[test]
+    fn login_items_go_by_app_path_first_then_by_name() {
+        // aldente: login_item "AlDente", app AlDente.app.
+        let tmp = TempDir::new().unwrap();
+        let mut ctx = ctx(tmp.path());
+        ctx.cask = Some(crate::installer::post_install::CaskDirs {
+            staged: tmp.path().join("staged"),
+            appdir: PathBuf::from("/Applications"),
+            caskroom: tmp.path().join("caskroom"),
+        });
+        let json = serde_json::json!({ "artifacts": [
+            { "app": ["AlDente.app"], "target": "/Applications/AlDente.app" }
+        ]});
+        let name = serde_json::json!("AlDente");
+
+        assert_eq!(
+            login_item_scripts(&ctx, &json, &[&name]),
+            [
+                r#"tell application "System Events" to delete every login item whose path is "/Applications/AlDente.app""#,
+                r#"tell application "System Events" to delete every login item whose name is "AlDente""#,
+            ]
+        );
     }
 
     #[test]
