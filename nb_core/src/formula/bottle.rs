@@ -104,11 +104,40 @@ pub fn macos_major_version() -> Option<u32> {
 
 fn codename_for_major(major: u32) -> Option<&'static str> {
     match major {
+        27 => Some("golden_gate"),
         26 => Some("tahoe"),
         15 => Some("sequoia"),
         14 => Some("sonoma"),
         13 => Some("ventura"),
+        12 => Some("monterey"),
+        11 => Some("big_sur"),
         _ => None,
+    }
+}
+
+/// Homebrew's tag for the running system (`arm64_tahoe`, `tahoe` on Intel,
+/// `x86_64_linux`): the key API `variations` are published under.
+pub fn current_platform_tag() -> Option<String> {
+    #[cfg(target_os = "macos")]
+    {
+        let codename = codename_for_major(macos_major_version()?)?;
+        Some(if cfg!(target_arch = "aarch64") {
+            format!("arm64_{codename}")
+        } else {
+            codename.to_string()
+        })
+    }
+    #[cfg(target_os = "linux")]
+    {
+        match std::env::consts::ARCH {
+            "aarch64" => Some("arm64_linux".to_string()),
+            "x86_64" => Some("x86_64_linux".to_string()),
+            _ => None,
+        }
+    }
+    #[cfg(not(any(target_os = "macos", target_os = "linux")))]
+    {
+        None
     }
 }
 

@@ -6,7 +6,7 @@ use tracing::warn;
 
 use crate::cellar::link::Linker;
 use crate::cellar::materialize::Cellar;
-use crate::installer::cask::resolve_cask;
+use crate::installer::cask::{for_current_platform, resolve_cask};
 use crate::network::download::{
     BodyConsumer, Commit, DownloadProgressCallback, DownloadRequest, ParallelDownloader,
 };
@@ -182,7 +182,7 @@ impl Installer {
         token: &str,
         link: bool,
     ) -> Result<(), Error> {
-        let cask_json = self.api_client.get_cask(token).await?;
+        let cask_json = for_current_platform(&self.api_client.get_cask(token).await?);
         let cask = resolve_cask(token, &cask_json)?;
 
         let blob_path = self

@@ -1,7 +1,7 @@
 use nb_core::{Error, select_bottle};
 
 use super::{Installer, OutdatedPackage};
-use crate::installer::cask::resolve_cask;
+use crate::installer::cask::{for_current_platform, resolve_cask};
 use crate::storage::db::InstalledKeg;
 
 impl Installer {
@@ -14,7 +14,7 @@ impl Installer {
         greedy: bool,
     ) -> Result<Option<OutdatedPackage>, Error> {
         let token = keg.name.strip_prefix("cask:").unwrap_or(&keg.name);
-        let json = self.api_client.get_cask(token).await?;
+        let json = for_current_platform(&self.api_client.get_cask(token).await?);
         let auto_updates = json["auto_updates"].as_bool().unwrap_or(false);
         let cask = resolve_cask(token, &json)?;
         if keg.store_key == cask.sha256 || (auto_updates && !greedy) {

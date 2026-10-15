@@ -19,7 +19,7 @@ use tracing::warn;
 use super::Installer;
 use super::bottle::{resolve_cask_source_path, stage_cask_binaries};
 use super::cask_uninstall::run_stanza;
-use crate::installer::cask::{ResolvedCask, resolve_cask};
+use crate::installer::cask::{ResolvedCask, for_current_platform, resolve_cask};
 use crate::installer::post_install::{
     CaskDirs, PostInstallContext, remove_uninstall_links, run_steps,
 };
@@ -124,6 +124,8 @@ impl Installer {
         };
         let json: Value =
             serde_json::from_slice(&json).map_err(Error::store("failed to read cask.json"))?;
+        // Kegs saved before variations were merged at install still carry them.
+        let json = for_current_platform(&json);
         let token = json
             .get("token")
             .and_then(Value::as_str)

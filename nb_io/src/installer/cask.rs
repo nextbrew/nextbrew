@@ -38,19 +38,32 @@ impl CaskHooks {
     }
 }
 
-pub fn resolve_cask(token: &str, cask: &Value) -> Result<ResolvedCask, Error> {
-    let mut url = required_string(cask, "url")?;
-    let mut sha256 = required_string(cask, "sha256")?;
-    let version = required_string(cask, "version")?;
-
-    if let Some(variation) = select_platform_variation(cask) {
-        if let Some(variation_url) = variation.get("url").and_then(Value::as_str) {
-            url = variation_url.to_string();
-        }
-        if let Some(variation_sha) = variation.get("sha256").and_then(Value::as_str) {
-            sha256 = variation_sha.to_string();
-        }
+/// The cask as Homebrew sees it on `tag`: that tag's `variations` entry
+/// merged over the top-level keys (`Homebrew::API.merge_variations`).
+/// Without an entry for `tag` the top level is used as is; entries for
+/// other OS versions never apply.
+pub fn merge_variations(cask: &Value, tag: Option<&str>) -> Value {
+    let mut merged = cask.clone();
+    let Some(fields) = merged.as_object_mut() else {
+        return merged;
+    };
+    let variations = fields.remove("variations");
+    if let Some(Value::Object(variation)) = tag.and_then(|tag| variations?.get(tag).cloned()) {
+        fields.extend(variation);
     }
+    merged
+}
+
+/// [`merge_variations`] for the running system.
+pub fn for_current_platform(cask: &Value) -> Value {
+    merge_variations(cask, nb_core::current_platform_tag().as_deref())
+}
+
+pub fn resolve_cask(token: &str, cask: &Value) -> Result<ResolvedCask, Error> {
+    let cask = &for_current_platform(cask);
+    let url = required_string(cask, "url")?;
+    let sha256 = required_string(cask, "sha256")?;
+    let version = required_string(cask, "version")?;
 
     if sha256 == "no_check" {
         return Err(Error::InvalidArgument {
@@ -128,45 +141,6 @@ fn required_string(value: &Value, field: &str) -> Result<String, Error> {
         .ok_or_else(|| Error::InvalidArgument {
             message: format!("failed to parse cask JSON: missing string field '{field}'"),
         })
-}
-
-fn select_platform_variation(cask: &Value) -> Option<&Value> {
-    let variations = cask.get("variations")?;
-    preferred_variation_keys()
-        .iter()
-        .find_map(|key| variations.get(key))
-}
-
-fn preferred_variation_keys() -> &'static [&'static str] {
-    #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
-    {
-        &["x86_64_linux", "arm64_linux"]
-    }
-    #[cfg(all(target_os = "linux", target_arch = "aarch64"))]
-    {
-        &["arm64_linux", "x86_64_linux"]
-    }
-    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
-    {
-        &[
-            "arm64_tahoe",
-            "arm64_sequoia",
-            "arm64_sonoma",
-            "arm64_ventura",
-            "arm64_monterey",
-            "arm64_big_sur",
-        ]
-    }
-    #[cfg(all(target_os = "macos", target_arch = "x86_64"))]
-    {
-        &[
-            "tahoe", "sequoia", "sonoma", "ventura", "monterey", "big_sur", "catalina",
-        ]
-    }
-    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
-    {
-        &[]
-    }
 }
 
 fn artifact_types(cask: &Value) -> String {
@@ -249,31 +223,56 @@ fn basename(path: &str) -> Result<String, Error> {
 mod tests {
     use super::*;
 
-    #[test]
-    fn resolve_cask_uses_platform_variation_url_and_sha() {
-        let cask = serde_json::json!({
+    /// Shape of visual-studio-code: arm64 Big Sur is pinned to an old release.
+    fn cask_with_old_os_variation() -> Value {
+        serde_json::json!({
             "token": "test",
-            "version": "1.0.0",
-            "url": "https://example.com/darwin.zip",
+            "version": "2.0.0",
+            "url": "https://example.com/2.0.0/arm64.zip",
             "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
             "artifacts": [{ "binary": [["op"]] }],
             "variations": {
-                "x86_64_linux": {
-                    "url": "https://example.com/linux.zip",
+                "tahoe": {
+                    "url": "https://example.com/2.0.0/intel.zip",
                     "sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+                },
+                "arm64_big_sur": {
+                    "version": "1.0.0",
+                    "url": "https://example.com/1.0.0/arm64.zip",
+                    "sha256": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+                    "artifacts": [{ "binary": [["old-op"]] }]
                 }
             }
-        });
+        })
+    }
 
-        let _resolved = resolve_cask("test", &cask).unwrap();
-        #[cfg(target_os = "linux")]
-        {
-            assert_eq!(_resolved.url, "https://example.com/linux.zip");
-            assert_eq!(
-                _resolved.sha256,
-                "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
-            );
-        }
+    #[test]
+    fn merge_variations_ignores_other_os_entries() {
+        let merged = merge_variations(&cask_with_old_os_variation(), Some("arm64_tahoe"));
+        assert_eq!(merged["version"], "2.0.0");
+        assert_eq!(merged["url"], "https://example.com/2.0.0/arm64.zip");
+        assert!(merged.get("variations").is_none());
+    }
+
+    #[test]
+    fn merge_variations_applies_exact_tag_over_top_level() {
+        let merged = merge_variations(&cask_with_old_os_variation(), Some("arm64_big_sur"));
+        let resolved = resolve_cask("test", &merged).unwrap();
+        assert_eq!(resolved.version, "1.0.0");
+        assert_eq!(resolved.url, "https://example.com/1.0.0/arm64.zip");
+        assert_eq!(resolved.sha256, "c".repeat(64));
+        assert_eq!(resolved.binaries[0].target, "old-op");
+
+        let merged = merge_variations(&cask_with_old_os_variation(), Some("tahoe"));
+        assert_eq!(merged["version"], "2.0.0");
+        assert_eq!(merged["url"], "https://example.com/2.0.0/intel.zip");
+    }
+
+    #[test]
+    fn merge_variations_without_tag_keeps_top_level() {
+        let merged = merge_variations(&cask_with_old_os_variation(), None);
+        assert_eq!(merged["url"], "https://example.com/2.0.0/arm64.zip");
+        assert!(merged.get("variations").is_none());
     }
 
     #[test]
