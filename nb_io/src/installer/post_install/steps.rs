@@ -145,6 +145,11 @@ pub(super) fn run_step(
                 && bundle.restore()?
             {
                 debug!("restored the CA bundle from the cache");
+            } else if let Some(bundle) = &bundle
+                && bundle.build_in_parallel(Path::new(&program))?
+            {
+                debug!("built the CA bundle in parallel");
+                bundle.store()?;
             } else {
                 run_command(
                     ctx,
