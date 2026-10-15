@@ -53,6 +53,7 @@ impl Installer {
             {
                 return Err(Error::InvalidArgument { message });
             }
+            super::cask_deps::check_requirements(&json)?;
             let cask = crate::installer::cask::resolve_cask(token, &json)?;
             self.downloader
                 .download_single(

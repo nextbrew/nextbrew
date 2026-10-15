@@ -4,6 +4,7 @@ use std::path::{Path, PathBuf};
 use nb_core::{Error, InstallMethod, formula_token};
 use tracing::warn;
 
+use super::cask_deps::check_requirements;
 use super::quarantine::{propagate, quarantine_download};
 use crate::cellar::link::Linker;
 use crate::cellar::materialize::Cellar;
@@ -178,13 +179,27 @@ impl Installer {
         }
     }
 
+    /// Install one cask and, first, what it depends on. The caller holds
+    /// the install lock.
     pub(super) async fn install_single_cask(
         &mut self,
         token: &str,
         link: bool,
     ) -> Result<(), Error> {
+        self.install_cask_in_chain(token, link, &mut Vec::new())
+            .await
+    }
+
+    /// [`Self::install_single_cask`] for a cask that `chain` depends on.
+    pub(super) async fn install_cask_in_chain(
+        &mut self,
+        token: &str,
+        link: bool,
+        chain: &mut Vec<String>,
+    ) -> Result<(), Error> {
         let cask_json = for_current_platform(&self.api_client.get_cask(token).await?);
         check_deprecate_disable(&cask_json)?;
+        check_requirements(&cask_json)?;
         let cask = resolve_cask(token, &cask_json)?;
 
         let blob_path = self
@@ -200,6 +215,8 @@ impl Installer {
             .await?;
         let homepage = cask_json["homepage"].as_str().unwrap_or_default();
         quarantine_download(&blob_path, &cask.url, homepage)?;
+        self.install_cask_dependencies(&cask_json, link, chain)
+            .await?;
 
         let keg_path = self.cellar.keg_path(&cask.install_name, &cask.version);
         let mut cleanup = FailedInstallGuard::new(

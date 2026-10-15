@@ -1,5 +1,6 @@
 mod bottle;
 mod cask_app;
+mod cask_deps;
 mod cask_uninstall;
 pub mod doctor;
 mod outdated;
@@ -377,6 +378,8 @@ impl Installer {
         names: &[String],
         link: bool,
     ) -> Result<ExecuteResult, Error> {
+        // Held across dependency installs too, which run unlocked.
+        let _lock = acquire_install_lock(&self.locks_dir)?;
         let mut installed = 0usize;
         for name in names {
             let token = name
