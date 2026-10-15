@@ -28,6 +28,7 @@ globset.workspace = true
 xz2.workspace = true
 zstd.workspace = true
 zip.workspace = true
+chrono = "0.4.43"
 tracing.workspace = true
 strsim.workspace = true
 tempfile.workspace = true

@@ -3,6 +3,7 @@ use std::sync::Arc;
 use nb_core::{Error, InstallMethod};
 
 use super::{ExecuteResult, InstallPlan, Installer, acquire_install_lock};
+use crate::installer::cask::{DeprecateDisable, deprecate_disable, for_current_platform};
 use crate::network::download::{DownloadProgressCallback, DownloadRequest};
 use crate::progress::{InstallProgress, ProgressCallback};
 
@@ -44,7 +45,14 @@ impl Installer {
 
         if let Some(token) = name.strip_prefix("cask:") {
             // Same order as bottles: download first, then swap.
-            let json = self.api_client.get_cask(token).await?;
+            let json = for_current_platform(&self.api_client.get_cask(token).await?);
+            // Refuse a disabled cask before the installed version is removed;
+            // the install below warns about a deprecated one.
+            if let Some(DeprecateDisable::Disabled(message)) =
+                deprecate_disable(&json, chrono::Local::now().date_naive())
+            {
+                return Err(Error::InvalidArgument { message });
+            }
             let cask = crate::installer::cask::resolve_cask(token, &json)?;
             self.downloader
                 .download_single(

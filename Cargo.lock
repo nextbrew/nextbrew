@@ -1367,6 +1367,7 @@ version = "0.4.0"
 dependencies = [
  "arwen",
  "bytes",
+ "chrono",
  "flate2",
  "fs4",
  "futures",

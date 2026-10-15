@@ -1,3 +1,4 @@
+use chrono::NaiveDate;
 use nb_core::{Error, PostInstallStep};
 use serde_json::Value;
 
@@ -57,6 +58,94 @@ pub fn merge_variations(cask: &Value, tag: Option<&str>) -> Value {
 /// [`merge_variations`] for the running system.
 pub fn for_current_platform(cask: &Value) -> Value {
     merge_variations(cask, nb_core::current_platform_tag().as_deref())
+}
+
+/// What Homebrew's `check_deprecate_disable` makes of a cask: a deprecated
+/// one installs with a warning (even when also disabled), a disabled one
+/// does not install. Each carries Homebrew's message.
+#[derive(Debug, PartialEq, Eq)]
+pub enum DeprecateDisable {
+    Deprecated(String),
+    Disabled(String),
+}
+
+/// See [`DeprecateDisable`]; the wording follows `DeprecateDisable.message`.
+pub fn deprecate_disable(cask: &Value, today: NaiveDate) -> Option<DeprecateDisable> {
+    let flag = |key: &str| cask[key].as_bool() == Some(true);
+    let text = |key: &str| cask[key].as_str().filter(|s| !s.is_empty());
+    let date = |key: &str| text(key).and_then(|s| NaiveDate::parse_from_str(s, "%Y-%m-%d").ok());
+
+    let (kind, reason) = if flag("deprecated") {
+        ("deprecated", text("deprecation_reason"))
+    } else if flag("disabled") {
+        ("disabled", text("disable_reason"))
+    } else {
+        return None;
+    };
+    let mut message = format!("{} has been {kind}", text("token").unwrap_or_default());
+    match reason {
+        Some(reason) => message += &format!(" because it {}!", reason_text(reason)),
+        None => message += "!",
+    }
+
+    let disable_date = date("disable_date")
+        .or_else(|| date("deprecation_date")?.checked_add_months(chrono::Months::new(12)));
+    if let Some(disable_date) = disable_date {
+        let tense = if disable_date < today {
+            "was"
+        } else {
+            "will be"
+        };
+        message += &format!(" It {tense} disabled on {disable_date}.");
+    }
+
+    let prefix = if flag("disabled") {
+        "disable"
+    } else {
+        "deprecation"
+    };
+    let formula = text(&format!("{prefix}_replacement_formula"));
+    let replacement = match (formula, text(&format!("{prefix}_replacement_cask"))) {
+        (Some(formula), _) => Some(formula.to_string()),
+        (None, Some(cask)) => Some(format!("cask:{cask}")),
+        (None, None) => None,
+    };
+    if let Some(replacement) = replacement {
+        message += &format!("\nReplacement:\n  nb install {replacement}\n");
+    }
+
+    Some(if kind == "deprecated" {
+        DeprecateDisable::Deprecated(message)
+    } else {
+        DeprecateDisable::Disabled(message)
+    })
+}
+
+/// Warn about a deprecated cask and refuse a disabled one, before anything
+/// is downloaded (Homebrew's `Cask::Installer#prelude`).
+pub fn check_deprecate_disable(cask: &Value) -> Result<(), Error> {
+    match deprecate_disable(cask, chrono::Local::now().date_naive()) {
+        Some(DeprecateDisable::Deprecated(message)) => {
+            tracing::warn!("{message}");
+            Ok(())
+        }
+        Some(DeprecateDisable::Disabled(message)) => Err(Error::InvalidArgument { message }),
+        None => Ok(()),
+    }
+}
+
+/// Homebrew's wording for its cask reason codes; anything else is free text.
+fn reason_text(reason: &str) -> &str {
+    match reason {
+        "discontinued" => "is discontinued upstream",
+        "moved_to_mas" => "is now exclusively distributed on the Mac App Store",
+        "no_longer_available" => "is no longer available upstream",
+        "no_longer_meets_criteria" => "no longer meets the criteria for acceptable casks",
+        "unmaintained" => "is not maintained upstream",
+        "fails_gatekeeper_check" => "does not pass the macOS Gatekeeper check",
+        "unreachable" => "is no longer reliably reachable upstream",
+        other => other,
+    }
 }
 
 pub fn resolve_cask(token: &str, cask: &Value) -> Result<ResolvedCask, Error> {
@@ -222,6 +311,65 @@ fn basename(path: &str) -> Result<String, Error> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn date(s: &str) -> NaiveDate {
+        NaiveDate::parse_from_str(s, "%Y-%m-%d").unwrap()
+    }
+
+    #[test]
+    fn deprecate_disable_refuses_a_disabled_cask() {
+        // ampps
+        let cask = serde_json::json!({
+            "token": "ampps", "deprecated": false, "disabled": true,
+            "disable_date": "2026-10-12", "disable_reason": "fails_gatekeeper_check"
+        });
+        assert_eq!(
+            deprecate_disable(&cask, date("2026-10-15")),
+            Some(DeprecateDisable::Disabled(
+                "ampps has been disabled because it does not pass the macOS Gatekeeper check! \
+                 It was disabled on 2026-10-12."
+                    .to_string()
+            ))
+        );
+    }
+
+    #[test]
+    fn deprecate_disable_only_warns_when_also_deprecated() {
+        // 1password-cli@1: Homebrew checks `deprecated?` first.
+        let cask = serde_json::json!({
+            "token": "1password-cli@1", "deprecated": true, "deprecation_date": "2025-06-11",
+            "deprecation_reason": "unmaintained", "disabled": true,
+            "disable_date": "2026-06-11", "disable_reason": "unmaintained"
+        });
+        assert_eq!(
+            deprecate_disable(&cask, date("2026-10-15")),
+            Some(DeprecateDisable::Deprecated(
+                "1password-cli@1 has been deprecated because it is not maintained upstream! \
+                 It was disabled on 2026-06-11."
+                    .to_string()
+            ))
+        );
+    }
+
+    #[test]
+    fn deprecate_disable_dates_from_deprecation_and_names_the_replacement() {
+        let cask = serde_json::json!({
+            "token": "old", "deprecated": true, "deprecation_date": "2026-03-01",
+            "deprecation_reason": "something custom", "deprecation_replacement_cask": "new"
+        });
+        assert_eq!(
+            deprecate_disable(&cask, date("2026-10-15")),
+            Some(DeprecateDisable::Deprecated(
+                "old has been deprecated because it something custom! \
+                 It will be disabled on 2027-03-01.\nReplacement:\n  nb install cask:new\n"
+                    .to_string()
+            ))
+        );
+        assert_eq!(
+            deprecate_disable(&serde_json::json!({ "token": "fine" }), date("2026-10-15")),
+            None
+        );
+    }
 
     /// Shape of visual-studio-code: arm64 Big Sur is pinned to an old release.
     fn cask_with_old_os_variation() -> Value {

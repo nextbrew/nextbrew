@@ -7,7 +7,7 @@ use tracing::warn;
 use super::quarantine::{propagate, quarantine_download};
 use crate::cellar::link::Linker;
 use crate::cellar::materialize::Cellar;
-use crate::installer::cask::{for_current_platform, resolve_cask};
+use crate::installer::cask::{check_deprecate_disable, for_current_platform, resolve_cask};
 use crate::network::download::{
     BodyConsumer, Commit, DownloadProgressCallback, DownloadRequest, ParallelDownloader,
 };
@@ -184,6 +184,7 @@ impl Installer {
         link: bool,
     ) -> Result<(), Error> {
         let cask_json = for_current_platform(&self.api_client.get_cask(token).await?);
+        check_deprecate_disable(&cask_json)?;
         let cask = resolve_cask(token, &cask_json)?;
 
         let blob_path = self
