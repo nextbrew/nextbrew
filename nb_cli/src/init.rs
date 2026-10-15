@@ -147,8 +147,15 @@ pub fn run_init(
                 )
             })?;
 
+        // As Homebrew's installer does: on macOS the admin group too, which
+        // what is unpacked here (and moved on to /Applications) inherits.
+        let owner = if cfg!(target_os = "macos") {
+            format!("{user}:admin")
+        } else {
+            user.clone()
+        };
         let status = Command::new("sudo")
-            .args(["chown", "-R", &user, &root.to_string_lossy()])
+            .args(["chown", "-R", &owner, &root.to_string_lossy()])
             .status()
             .map_err(|e| InitError::Message(format!("Failed to run sudo chown: {}", e)))?;
 
@@ -160,7 +167,7 @@ pub fn run_init(
         }
 
         let status = Command::new("sudo")
-            .args(["chown", "-R", &user, &prefix.to_string_lossy()])
+            .args(["chown", "-R", &owner, &prefix.to_string_lossy()])
             .status()
             .map_err(|e| InitError::Message(format!("Failed to run sudo chown: {}", e)))?;
 
