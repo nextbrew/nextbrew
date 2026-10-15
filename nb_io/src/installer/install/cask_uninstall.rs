@@ -253,7 +253,7 @@ fn xargs(cmd: &[&str], paths: &[PathBuf]) -> Result<(), String> {
 
 /// Directories packages share and must not take away even when empty.
 // ponytail: depth plus a short list, swap in Homebrew's MacOS::SYSTEM_DIRS if a cask trips it.
-fn standard_dir(dir: &Path) -> bool {
+pub(super) fn standard_dir(dir: &Path) -> bool {
     const SHARED: &[&str] = &[
         "/Library/Audio/Plug-Ins",
         "/Library/Audio/Plug-Ins/Components",

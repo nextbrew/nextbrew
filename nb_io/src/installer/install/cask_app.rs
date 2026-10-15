@@ -8,7 +8,8 @@
 
 use std::fs::{self, File};
 use std::io::{Read, Seek, SeekFrom};
-use std::os::unix::fs::symlink;
+use std::os::unix::ffi::OsStrExt;
+use std::os::unix::fs::{PermissionsExt, symlink};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
@@ -36,12 +37,19 @@ const STAGED_DIR: &str = "staged";
 const CASK_JSON: &str = "cask.json";
 /// Volume clutter Homebrew leaves out when copying a DMG.
 const DMG_SKIP: &[&str] = &[
+    ".background",
+    ".com.apple.timemachine.donotpresent",
+    ".com.apple.timemachine.supported",
     ".DocumentRevisions-V100",
+    ".DS_Store",
     ".fseventsd",
+    ".MobileBackups",
     ".Spotlight-V100",
     ".TemporaryItems",
     ".Trashes",
     ".VolumeIcon.icns",
+    ".HFS+ Private Directory Data\r",
+    ".HFS+ Private Data\r",
 ];
 
 /// UDIF images end with a 512-byte trailer that starts with `koly`.
@@ -510,16 +518,88 @@ fn unpack(blob: &Path, dest: &Path, cask: &ResolvedCask) -> Result<(), Error> {
     copied
 }
 
+/// Copy a mounted DMG's contents as Homebrew's `UnpackStrategy::Dmg` does:
+/// list them with `find`, leave out disk image metadata and links to system
+/// folders (the `Applications` link most app DMGs carry), and `ditto` that
+/// list with a BOM, which copies links as links and takes no ownership
+/// along. Everything is then made writable for the owner.
 fn copy_volume(volume: &Path, dest: &Path) -> Result<(), Error> {
-    let entries = fs::read_dir(volume).map_err(Error::store("failed to read mounted DMG"))?;
-    for entry in entries {
-        let entry = entry.map_err(Error::store("failed to read mounted DMG"))?;
-        let name = entry.file_name();
-        if !DMG_SKIP.iter().any(|skip| name == *skip) {
-            copy(&entry.path(), &dest.join(&name))?;
+    let listed = Command::new("find")
+        .args([".", "-print0"])
+        .current_dir(volume)
+        .stderr(Stdio::null())
+        .output()
+        .map_err(Error::store("failed to list the mounted DMG"))?;
+    let entries: Vec<&[u8]> = listed
+        .stdout
+        .split(|b| *b == 0)
+        .filter(|entry| !entry.is_empty())
+        .filter(|entry| {
+            let path = Path::new(std::ffi::OsStr::from_bytes(entry));
+            !dmg_metadata(path) && !links_to_system_dir(&volume.join(path))
+        })
+        .collect();
+    if entries.is_empty() {
+        return Err(Error::InvalidArgument {
+            message: format!("the DMG at {} is empty", volume.display()),
+        });
+    }
+
+    let work = tempfile::tempdir().map_err(Error::store("failed to create a BOM directory"))?;
+    let list = work.path().join("files");
+    let bom = work.path().join("files.bom");
+    // One path per line, the last one too: mkbom drops an unterminated line.
+    let mut paths = entries.join(&b"\n"[..]);
+    paths.push(b'\n');
+    fs::write(&list, paths).map_err(Error::store("failed to write the BOM list"))?;
+    run(Command::new("mkbom")
+        .args(["-s", "-i"])
+        .arg(&list)
+        .arg("--")
+        .arg(&bom))?;
+    run(Command::new("ditto")
+        .arg("--bom")
+        .arg(&bom)
+        .arg("--")
+        .arg(volume)
+        .arg(dest))?;
+
+    for entry in walkdir::WalkDir::new(dest)
+        .min_depth(1)
+        .into_iter()
+        .flatten()
+    {
+        if entry.path_is_symlink() {
+            continue;
+        }
+        if let Ok(meta) = entry.metadata()
+            && meta.permissions().mode() & 0o200 == 0
+        {
+            let _ = fs::set_permissions(
+                entry.path(),
+                fs::Permissions::from_mode(meta.permissions().mode() | 0o200),
+            );
         }
     }
     Ok(())
+}
+
+/// Homebrew's `dmg_metadata?`: an entry under one of the volume's own
+/// bookkeeping folders.
+fn dmg_metadata(path: &Path) -> bool {
+    path.components()
+        .find(|c| !matches!(c, std::path::Component::CurDir))
+        .is_some_and(|top| DMG_SKIP.iter().any(|skip| top.as_os_str() == *skip))
+}
+
+/// Homebrew's `system_dir_symlink?`: a link to a system folder such as
+/// `/Applications`, which must not be copied (or followed).
+fn links_to_system_dir(path: &Path) -> bool {
+    let Ok(target) = fs::read_link(path) else {
+        return false;
+    };
+    let target = path.parent().unwrap_or(Path::new("/")).join(target);
+    target.is_absolute() && target.is_dir() && super::cask_uninstall::standard_dir(&target)
 }
 
 /// Copy a file or tree, keeping symlinks, modes and extended attributes.
@@ -557,6 +637,42 @@ pub(super) fn run(cmd: &mut Command) -> Result<(), Error> {
 mod tests {
     use super::*;
     use tempfile::TempDir;
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn a_volume_is_copied_like_homebrews_dmg_strategy() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let tmp = TempDir::new().unwrap();
+        let volume = tmp.path().join("volume");
+        let app = volume.join("Foo.app/Contents");
+        fs::create_dir_all(&app).unwrap();
+        fs::write(app.join("Info.plist"), "plist").unwrap();
+        fs::set_permissions(app.join("Info.plist"), fs::Permissions::from_mode(0o444)).unwrap();
+        fs::write(volume.join(".DS_Store"), "").unwrap();
+        fs::create_dir(volume.join(".Trashes")).unwrap();
+        symlink("/Applications", volume.join("Applications")).unwrap();
+        let dest = tmp.path().join("staged");
+        fs::create_dir(&dest).unwrap();
+
+        copy_volume(&volume, &dest).unwrap();
+
+        assert_eq!(
+            fs::read_to_string(dest.join("Foo.app/Contents/Info.plist")).unwrap(),
+            "plist"
+        );
+        let mode = fs::metadata(dest.join("Foo.app/Contents/Info.plist"))
+            .unwrap()
+            .permissions()
+            .mode();
+        assert_ne!(mode & 0o200, 0, "made writable for the owner");
+        for skipped in [".DS_Store", ".Trashes", "Applications"] {
+            assert!(
+                dest.join(skipped).symlink_metadata().is_err(),
+                "{skipped} copied"
+            );
+        }
+    }
 
     #[test]
     fn a_downloaded_pkg_is_staged_whole_under_its_stanza_name() {
