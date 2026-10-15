@@ -79,10 +79,7 @@ fn run_directive(
     match directive {
         "early_script" | "script" => script(ctx, home, item),
         "launchctl" => launchctl(home, text),
-        "quit" => osascript(&format!(
-            r#"if application id "{}" is running then tell application id "{0}" to quit"#,
-            applescript_str(text)
-        )),
+        "quit" => quit(text),
         "signal" => signal(item),
         "login_item" => osascript(&format!(
             r#"tell application "System Events" to delete every login item whose name is "{}""#,
@@ -277,6 +274,38 @@ fn standard_dir(dir: &Path) -> bool {
     dir.components().count() <= 3 || SHARED.iter().any(|s| dir == Path::new(s))
 }
 
+/// Quit a running app as Homebrew does: through JavaScript for Automation,
+/// where an app LaunchServices does not know is simply not running, then
+/// up to 10 seconds for it to exit.
+fn quit(bundle_id: &str) -> Result<(), String> {
+    const RUNNING: &str = "ObjC.import('stdlib'); function run(argv) { \
+        try { if (Application(argv[0]).running()) $.exit(0) } catch (err) {} $.exit(1) }";
+    const QUIT: &str = "ObjC.import('stdlib'); function run(argv) { \
+        var app = Application(argv[0]); \
+        try { app.quit() } catch (err) { if (app.running()) $.exit(1) } $.exit(0) }";
+    let jxa = |script: &str| {
+        Command::new("osascript")
+            .args(["-l", "JavaScript", "-e", script, bundle_id])
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status()
+            .is_ok_and(|status| status.success())
+    };
+
+    if !jxa(RUNNING) {
+        return Ok(());
+    }
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    while std::time::Instant::now() < deadline {
+        if jxa(QUIT) && !jxa(RUNNING) {
+            return Ok(());
+        }
+        std::thread::sleep(std::time::Duration::from_millis(200));
+    }
+    Err(format!("application '{bundle_id}' did not quit"))
+}
+
 fn osascript(script: &str) -> Result<(), String> {
     run(Command::new("osascript").args(["-e", script])).map_err(|e| e.to_string())
 }
@@ -425,6 +454,13 @@ fn trash(home: &Path, path: &Path) -> Result<(), String> {
 mod tests {
     use super::*;
     use tempfile::TempDir;
+
+    #[test]
+    fn quit_skips_an_app_that_is_not_running() {
+        // AppleScript's `application id` fails to compile for an app
+        // LaunchServices does not know; this must count as not running.
+        assert_eq!(quit("dev.nextbrew.not-installed"), Ok(()));
+    }
 
     fn ctx(root: &Path) -> PostInstallContext {
         PostInstallContext {
