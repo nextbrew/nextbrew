@@ -350,12 +350,14 @@ pub(super) async fn prepare_bottle(
         let outcome = tokio::task::spawn_blocking(move || {
             let job = job_for_task;
             store.ensure_entry(&job.sha256, &blob, &fingerprint, |extracted| {
-                cellar.relocate_extracted(
-                    extracted,
-                    &job.formula_name,
-                    &job.version,
-                    &job.build_prefix,
-                )
+                cellar
+                    .relocate_extracted(
+                        extracted,
+                        &job.formula_name,
+                        &job.version,
+                        &job.build_prefix,
+                    )
+                    .map_err(|e| relocation_failed(&job.formula_name, e))
             })
         })
         .await
@@ -407,6 +409,14 @@ pub(super) async fn prepare_bottle(
     Err(last_error.unwrap_or_else(|| Error::StoreCorruption {
         message: "extraction failed with unknown error".to_string(),
     }))
+}
+
+/// A bottle that unpacked but could not be relocated is not a corrupted
+/// download: the same bytes fail the same way, so it is not downloaded again.
+fn relocation_failed(formula: &str, error: Error) -> Error {
+    Error::ExecutionError {
+        message: format!("failed to relocate {formula}: {error}"),
+    }
 }
 
 pub(super) fn dependency_cellar_path(
@@ -667,6 +677,19 @@ mod tests {
         let path = dependency_cellar_path(&cellar, &keg.name, &keg.version);
 
         assert!(path.ends_with("cellar/terraform/1.10.0"));
+    }
+
+    #[test]
+    fn a_relocation_failure_is_not_retried_as_a_corrupted_download() {
+        // prepare_bottle downloads again only on StoreCorruption.
+        let error = relocation_failed(
+            "icu4c@78",
+            Error::StoreCorruption {
+                message: "install_name_tool failed".into(),
+            },
+        );
+        assert!(matches!(error, Error::ExecutionError { .. }), "{error:?}");
+        assert!(error.to_string().contains("failed to relocate icu4c@78"));
     }
 
     #[test]
