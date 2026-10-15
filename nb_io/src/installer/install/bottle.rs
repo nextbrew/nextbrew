@@ -497,30 +497,40 @@ pub(super) fn stage_cask_binaries(
                 .map_err(Error::store("failed to replace existing cask binary"))?;
         }
 
-        if binary.source.starts_with("$APPDIR/") {
+        // Homebrew links a binary to where it lies, so a script that finds
+        // its files through its own path still works. That is the app or
+        // this keg's staged directory; out of the shared store it is copied.
+        if binary.source.starts_with("$APPDIR/") || extracted_root.starts_with(keg_path) {
+            make_executable(&source)?;
             std::os::unix::fs::symlink(&source, &target)
-                .map_err(Error::store("failed to link cask binary into app"))?;
+                .map_err(Error::store("failed to link cask binary"))?;
             continue;
         }
 
         fs::copy(&source, &target).map_err(|e| Error::StoreCorruption {
             message: format!("failed to stage cask binary '{}': {e}", binary.target),
         })?;
-
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            let mut perms = fs::metadata(&target)
-                .map_err(Error::store("failed to read staged cask binary metadata"))?
-                .permissions();
-            if perms.mode() & 0o111 == 0 {
-                perms.set_mode(0o755);
-                fs::set_permissions(&target, perms)
-                    .map_err(Error::store("failed to make staged cask binary executable"))?;
-            }
-        }
+        make_executable(&target)?;
     }
 
+    Ok(())
+}
+
+/// Add execute permission to a file that has none, as Homebrew's `binary`
+/// artifact does for its source.
+fn make_executable(path: &Path) -> Result<(), Error> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mut perms = fs::metadata(path)
+            .map_err(Error::store("failed to read cask binary metadata"))?
+            .permissions();
+        if perms.mode() & 0o111 == 0 {
+            perms.set_mode(0o755);
+            fs::set_permissions(path, perms)
+                .map_err(Error::store("failed to make cask binary executable"))?;
+        }
+    }
     Ok(())
 }
 
@@ -656,6 +666,42 @@ mod tests {
         let path = dependency_cellar_path(&cellar, &keg.name, &keg.version);
 
         assert!(path.ends_with("cellar/terraform/1.10.0"));
+    }
+
+    #[test]
+    fn staged_cask_binaries_are_links_into_the_staged_dir() {
+        // gcloud finds its SDK by following its own symlink, as Homebrew
+        // links a binary to where it lies in the staged path.
+        let tmp = TempDir::new().unwrap();
+        let keg_path = tmp.path().join("keg");
+        let staged = keg_path.join("staged");
+        let tool = staged.join("sdk/bin/tool");
+        fs::create_dir_all(tool.parent().unwrap()).unwrap();
+        fs::write(&tool, b"#!/bin/sh\n").unwrap();
+        let cask = crate::installer::cask::ResolvedCask {
+            install_name: "cask:sdk".to_string(),
+            token: "sdk".to_string(),
+            version: "1.0.0".to_string(),
+            url: "https://example.com/sdk.tar.gz".to_string(),
+            sha256: "aaa".to_string(),
+            binaries: vec![crate::installer::cask::CaskArtifact {
+                source: "sdk/bin/tool".to_string(),
+                target: "tool".to_string(),
+            }],
+            apps: vec![],
+            hooks: Default::default(),
+            installers: Vec::new(),
+        };
+
+        stage_cask_binaries(&staged, None, &keg_path, &cask).unwrap();
+
+        assert_eq!(fs::read_link(keg_path.join("bin/tool")).unwrap(), tool);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mode = fs::metadata(&tool).unwrap().permissions().mode();
+            assert_eq!(mode & 0o111, 0o111, "the source is made executable");
+        }
     }
 
     #[test]
