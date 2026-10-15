@@ -296,6 +296,15 @@ fn run_installer(
             };
             let args = script["args"].as_array().into_iter().flatten();
             cmd.args(args.filter_map(Value::as_str));
+            // As Homebrew does, so a script finds formulae the cask depends on.
+            let mut path = vec![ctx.prefix.join("bin"), ctx.prefix.join("sbin")];
+            path.extend(std::env::split_paths(
+                &std::env::var_os("PATH").unwrap_or_default(),
+            ));
+            cmd.env(
+                "PATH",
+                std::env::join_paths(path).map_err(|e| failed(e.to_string()))?,
+            );
             if let Err(e) = run(&mut cmd)
                 && script["must_succeed"].as_bool() != Some(false)
             {
@@ -705,7 +714,7 @@ mod tests {
         let staged = &ctx.cask.as_ref().unwrap().staged;
         fs::create_dir_all(staged).unwrap();
         let script = staged.join("setup.sh");
-        fs::write(&script, "#!/bin/sh\ntouch \"$1\"\n").unwrap();
+        fs::write(&script, "#!/bin/sh\necho \"$PATH\" > \"$1\"\n").unwrap();
         fs::set_permissions(&script, std::os::unix::fs::PermissionsExt::from_mode(0o755)).unwrap();
         let (cask, _) = app_cask(tmp.path());
         let marker = tmp.path().join("ran");
@@ -714,7 +723,14 @@ mod tests {
             {"script": {"executable": "setup.sh", "args": [marker]}}
         ]});
         run_installer(&ctx, &cask, &artifact).unwrap();
-        assert!(marker.is_file());
+        // Formula commands come first, as Homebrew runs these scripts.
+        let path = fs::read_to_string(&marker).unwrap();
+        let bin = ctx.prefix.join("bin").display().to_string();
+        let sbin = ctx.prefix.join("sbin").display().to_string();
+        assert!(
+            path.starts_with(&format!("{bin}:{sbin}:")),
+            "PATH was {path}"
+        );
     }
 
     #[test]
