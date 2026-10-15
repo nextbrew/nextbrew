@@ -262,11 +262,80 @@ pub(super) fn run_step(
             "update-desktop-database",
             &[resolve(ctx, path)?.into()],
         )?,
+        StepAction::DeleteKeychainCertificate {
+            name,
+            matching_certificate,
+        } => delete_keychain_certificate(ctx, name, matching_certificate.as_ref())?,
         StepAction::Unsupported { reason, .. } => {
             return Err(StepError::Unsupported(reason.clone()));
         }
     }
     Ok(None)
+}
+
+/// Homebrew's `delete_keychain_certificate`: delete, as root, the keychain
+/// certificates `security find-certificate -c name` lists, or only the one
+/// whose SHA-256 is that of `matching` when it is given and readable.
+#[cfg(target_os = "macos")]
+fn delete_keychain_certificate(
+    ctx: &PostInstallContext,
+    name: &str,
+    matching: Option<&PathSpec>,
+) -> Result<(), StepError> {
+    let wanted = match matching {
+        Some(spec) => {
+            let Ok(pem) = fs::read(resolve(ctx, spec)?) else {
+                return Ok(());
+            };
+            let Some(hash) = certificate_hash(&pem) else {
+                return Ok(());
+            };
+            Some(hash)
+        }
+        None => None,
+    };
+    // Nothing found is a failing status and no hashes, not an error.
+    let listed = sudo::command("/usr/bin/security")
+        .args(["find-certificate", "-a", "-c", name, "-Z"])
+        .stderr(Stdio::null())
+        .output()
+        .map_err(StepError::io("running security find-certificate"))?;
+    for hash in listed_hashes(&listed.stdout) {
+        if wanted.as_ref().is_none_or(|wanted| *wanted == hash) {
+            run_root(sudo::command("/usr/bin/security").args(["delete-certificate", "-Z", &hash]))?;
+        }
+    }
+    Ok(())
+}
+
+#[cfg(not(target_os = "macos"))]
+fn delete_keychain_certificate(
+    _ctx: &PostInstallContext,
+    _name: &str,
+    _matching: Option<&PathSpec>,
+) -> Result<(), StepError> {
+    Err(StepError::Unsupported(
+        "keychain certificates exist only on macOS".to_string(),
+    ))
+}
+
+/// The `SHA-256 hash:` lines of `security find-certificate -Z`, upper-cased.
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+fn listed_hashes(stdout: &[u8]) -> Vec<String> {
+    String::from_utf8_lossy(stdout)
+        .lines()
+        .filter_map(|line| line.strip_prefix("SHA-256 hash:"))
+        .map(|hash| hash.trim().to_uppercase())
+        .collect()
+}
+
+/// A PEM certificate's SHA-256 as `security` prints it: upper-case hex,
+/// no colons.
+#[cfg(target_os = "macos")]
+fn certificate_hash(pem: &[u8]) -> Option<String> {
+    let facts = super::x509::inspect(pem, chrono::Utc::now())?;
+    let hex = facts.fingerprint.split_once('=')?.1;
+    Some(hex.replace(':', "").to_uppercase())
 }
 
 /// Run a `sudo` command; the password prompt needs the terminal.
@@ -1691,6 +1760,34 @@ mod tests {
         )
         .unwrap();
         assert_eq!(fs::read_to_string(&counted).unwrap().trim(), "2");
+    }
+
+    #[test]
+    fn find_certificate_hashes_are_read_uppercase() {
+        let out = b"SHA-256 hash: 0a1b2c\nSHA-1 hash: FFFF\nkeychain: \"/Library/Keychains/System.keychain\"\nSHA-256 hash: DDEE\n";
+        assert_eq!(listed_hashes(out), ["0A1B2C", "DDEE"]);
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn a_certificate_hash_is_its_sha256_without_colons() {
+        let pem = std::process::Command::new("/usr/bin/security")
+            .args([
+                "find-certificate",
+                "-a",
+                "-p",
+                "/System/Library/Keychains/SystemRootCertificates.keychain",
+            ])
+            .output()
+            .unwrap()
+            .stdout;
+        let first = super::super::ca_bundle::read_certificates(&pem).remove(0);
+        let hash = certificate_hash(&first).unwrap();
+        assert_eq!(hash.len(), 64);
+        assert!(
+            hash.chars()
+                .all(|c| c.is_ascii_hexdigit() && !c.is_ascii_lowercase())
+        );
     }
 
     #[test]

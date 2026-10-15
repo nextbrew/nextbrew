@@ -369,6 +369,13 @@ pub enum StepAction {
     UpdateDesktopDatabase {
         path: PathSpec,
     },
+    /// Remove the keychain certificates named `name` (a cask uninstall
+    /// step), only the one `matching_certificate` holds if given.
+    DeleteKeychainCertificate {
+        name: String,
+        #[serde(default)]
+        matching_certificate: Option<PathSpec>,
+    },
     /// A step we do not know how to run. `kind` is Homebrew's type name.
     #[serde(skip)]
     Unsupported {
@@ -408,6 +415,7 @@ impl StepAction {
             StepAction::GtkUpdateIconCache { .. } => "gtk_update_icon_cache",
             StepAction::UpdateMimeDatabase { .. } => "update_mime_database",
             StepAction::UpdateDesktopDatabase { .. } => "update_desktop_database",
+            StepAction::DeleteKeychainCertificate { .. } => "delete_keychain_certificate",
             StepAction::Unsupported { kind, .. } => kind,
         }
     }
@@ -694,6 +702,29 @@ mod tests {
                 first_only: false,
             }
         );
+    }
+
+    #[test]
+    fn delete_keychain_certificate_parses() {
+        let s = step(r#"{"name": "Charles", "type": "delete_keychain_certificate"}"#);
+        assert_eq!(
+            s.action,
+            StepAction::DeleteKeychainCertificate {
+                name: "Charles".into(),
+                matching_certificate: None,
+            }
+        );
+        let s = step(
+            r#"{"name": "NodeMITMProxyCA", "matching_certificate": {"path": "~/ca.pem"},
+                "type": "delete_keychain_certificate"}"#,
+        );
+        assert!(matches!(
+            s.action,
+            StepAction::DeleteKeychainCertificate {
+                matching_certificate: Some(_),
+                ..
+            }
+        ));
     }
 
     #[test]
