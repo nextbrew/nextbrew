@@ -1,5 +1,6 @@
 mod bottle;
 mod cask_app;
+mod cask_artifacts;
 mod cask_deps;
 mod cask_uninstall;
 pub mod doctor;

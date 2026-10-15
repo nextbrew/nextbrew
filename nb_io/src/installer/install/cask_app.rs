@@ -18,6 +18,7 @@ use tracing::warn;
 
 use super::Installer;
 use super::bottle::{resolve_cask_source_path, stage_cask_binaries};
+use super::cask_artifacts;
 use super::cask_uninstall::run_stanza;
 use super::quarantine;
 use crate::installer::cask::{ResolvedCask, for_current_platform, resolve_cask};
@@ -138,6 +139,7 @@ impl Installer {
     /// `zap` also runs the cask's `zap` stanza, removing its user data.
     pub(super) fn remove_cask(&self, keg: &Path, zap: bool) -> Result<(), Error> {
         let Ok(json) = fs::read(keg.join(CASK_JSON)) else {
+            cask_artifacts::remove_placed(keg)?;
             return remove_cask_apps(keg);
         };
         let json: Value =
@@ -149,10 +151,10 @@ impl Installer {
             .and_then(Value::as_str)
             .unwrap_or_default();
         let cask = resolve_cask(token, &json)?;
-        let appdir = match placed_appdir(keg) {
-            Some(dir) => dir,
-            None => app_dir()?,
-        };
+        // A cask with no app (a binary-only one) never needs the folder.
+        let appdir = placed_appdir(keg)
+            .or_else(|| app_dir().ok())
+            .unwrap_or_else(|| PathBuf::from("/Applications"));
         let ctx = self.cask_context(&cask, keg, appdir);
         uninstall_cask(&ctx, &cask, &json)?;
         if zap {
@@ -162,6 +164,13 @@ impl Installer {
         }
         Ok(())
     }
+}
+
+/// Keep the cask's definition in its keg, so uninstall can run its stanza
+/// and hooks against what was installed.
+pub(super) fn save_cask_json(keg: &Path, json: &Value) -> Result<(), Error> {
+    fs::write(keg.join(CASK_JSON), json.to_string())
+        .map_err(Error::store("failed to save cask.json"))
 }
 
 /// Unpack `blob` into the staged directory and install the cask from it.
@@ -176,10 +185,19 @@ pub(super) fn stage_cask(
     fs::create_dir_all(&dirs.staged).map_err(Error::store("failed to create staged dir"))?;
     unpack(blob, &dirs.staged, cask)?;
     quarantine::propagate(blob, &dirs.staged)?;
-    fs::write(ctx.keg.join(CASK_JSON), json.to_string())
-        .map_err(Error::store("failed to save cask.json"))?;
+    save_cask_json(&ctx.keg, json)?;
+
+    let home = home_dir()?;
+    let places = cask_artifacts::Places {
+        prefix: &ctx.prefix,
+        keg: &ctx.keg,
+        staged: &dirs.staged,
+        appdir: &dirs.appdir,
+        home: &home,
+    };
 
     run_hooks(ctx, cask, "preflight", &cask.hooks.preflight)?;
+    cask_artifacts::write_generated_scripts(&places, cask)?;
     for artifact in &cask.installers {
         run_installer(ctx, cask, artifact)?;
     }
@@ -226,8 +244,19 @@ pub(super) fn stage_cask(
         symlink(&target, &marker).map_err(Error::store("failed to record placed app"))?;
     }
 
+    cask_artifacts::place_moved(&places, cask)?;
     stage_cask_binaries(&dirs.staged, Some(&dirs.appdir), &ctx.keg, cask)?;
+    cask_artifacts::place_wrappers(&places, cask)?;
+    cask_artifacts::place_linked(&places, cask)?;
     run_hooks(ctx, cask, "postflight", &cask.hooks.postflight)
+}
+
+fn home_dir() -> Result<PathBuf, Error> {
+    std::env::var_os("HOME")
+        .map(PathBuf::from)
+        .ok_or_else(|| Error::InvalidArgument {
+            message: "HOME is not set; casks place files in the home folder".to_string(),
+        })
 }
 
 /// An `installer` or `pkg` artifact, as Homebrew runs it: `pkg` through
@@ -364,6 +393,7 @@ fn uninstall_cask(
     for warning in run_stanza(ctx, json, "uninstall") {
         warn!(cask = %cask.token, "{warning}");
     }
+    cask_artifacts::remove_placed(&ctx.keg)?;
     remove_cask_apps(&ctx.keg)?;
     for steps in [&hooks.preflight, &hooks.postflight] {
         if let Err(e) = remove_uninstall_links(ctx, steps) {

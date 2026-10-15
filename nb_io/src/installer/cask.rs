@@ -10,7 +10,40 @@ pub struct CaskArtifact {
     pub target: String,
 }
 
+/// An artifact moved into place (`font`, `qlplugin`, `artifact`, …) or, when
+/// `linked`, symlinked there (`manpage`, shell completions). `target` is the
+/// path the API resolved, placeholders and all.
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PlacedArtifact {
+    pub kind: String,
+    pub source: String,
+    pub target: String,
+    pub linked: bool,
+}
+
+/// A `command_wrapper`: a script named `name` in `bin`, either `content` as
+/// given or one that runs `executable` with `args` and `env`.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct CommandWrapper {
+    pub name: String,
+    pub content: Option<String>,
+    pub executable: Option<String>,
+    pub args: Vec<String>,
+    pub env: Vec<(String, String)>,
+}
+
+/// A `generate_completions_from_executable`: `commands` run once per shell
+/// to print its completions.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct GeneratedCompletion {
+    pub commands: Vec<String>,
+    pub base_name: Option<String>,
+    /// Homebrew's `shell_parameter_format`; `None` passes the shell's name.
+    pub format: Option<String>,
+    pub shells: Vec<String>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct ResolvedCask {
     pub install_name: String,
     pub token: String,
@@ -22,7 +55,61 @@ pub struct ResolvedCask {
     pub hooks: CaskHooks,
     /// The `installer` and `pkg` artifacts, as published: run, not placed.
     pub installers: Vec<Value>,
+    pub placed: Vec<PlacedArtifact>,
+    pub wrappers: Vec<CommandWrapper>,
+    /// `generated_script`s: a path in the staged directory and its content.
+    pub generated_scripts: Vec<(String, String)>,
+    pub completions: Vec<GeneratedCompletion>,
 }
+
+/// Artifacts moved into place, in Homebrew's install order.
+const MOVED_KINDS: &[&str] = &[
+    "artifact",
+    "colorpicker",
+    "prefpane",
+    "qlplugin",
+    "mdimporter",
+    "dictionary",
+    "font",
+    "service",
+    "input_method",
+    "internet_plugin",
+    "keyboard_layout",
+    "audio_unit_plugin",
+    "vst_plugin",
+    "vst3_plugin",
+    "screen_saver",
+];
+
+/// Artifacts symlinked into place, in Homebrew's install order.
+const LINKED_KINDS: &[&str] = &[
+    "manpage",
+    "bash_completion",
+    "zsh_completion",
+    "fish_completion",
+    "pwsh_completion",
+];
+
+/// Every other key nextbrew handles. `target` is the API's resolved target
+/// beside an artifact, not an artifact.
+const HANDLED_KEYS: &[&str] = &[
+    "app",
+    "suite",
+    "binary",
+    "installer",
+    "pkg",
+    "uninstall",
+    "zap",
+    "stage_only",
+    "command_wrapper",
+    "generated_script",
+    "generate_completions_from_executable",
+    "preflight_steps",
+    "postflight_steps",
+    "uninstall_preflight_steps",
+    "uninstall_postflight_steps",
+    "target",
+];
 
 /// A cask's `*flight` blocks, which the API publishes as install steps.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -178,13 +265,36 @@ pub fn resolve_cask(token: &str, cask: &Value) -> Result<ResolvedCask, Error> {
         .flat_map(|kind| artifacts.iter().filter(move |a| a.get(*kind).is_some()))
         .cloned()
         .collect();
-    if binaries.is_empty() && apps.is_empty() && installers.is_empty() {
-        let found = artifact_types(cask);
+    if let Some(kind) = artifacts
+        .iter()
+        .filter_map(Value::as_object)
+        .flat_map(|artifact| artifact.keys())
+        .find(|key| {
+            let key = key.as_str();
+            !HANDLED_KEYS.contains(&key)
+                && !MOVED_KINDS.contains(&key)
+                && !LINKED_KINDS.contains(&key)
+        })
+    {
         return Err(Error::InvalidArgument {
             message: format!(
-                "cask '{token}' has no binary or app artifacts (found: {found}); \
-                 only casks with 'binary' or 'app' artifacts are currently supported"
+                "cask '{token}' has a '{kind}' artifact, which nextbrew does not support"
             ),
+        });
+    }
+    let placed = parse_placed(token, artifacts)?;
+    let wrappers = parse_wrappers(token, artifacts)?;
+    let generated_scripts = parse_generated_scripts(token, artifacts)?;
+    let completions = parse_completions(artifacts);
+    if binaries.is_empty()
+        && apps.is_empty()
+        && installers.is_empty()
+        && placed.is_empty()
+        && wrappers.is_empty()
+    {
+        let found = artifact_types(cask);
+        return Err(Error::InvalidArgument {
+            message: format!("cask '{token}' has nothing to install (found: {found})"),
         });
     }
 
@@ -203,7 +313,141 @@ pub fn resolve_cask(token: &str, cask: &Value) -> Result<ResolvedCask, Error> {
             uninstall_postflight: parse_steps(artifacts, "uninstall_postflight_steps")?,
         },
         installers,
+        placed,
+        wrappers,
+        generated_scripts,
+        completions,
     })
+}
+
+/// The moved and linked artifacts, in Homebrew's order.
+fn parse_placed(token: &str, artifacts: &[Value]) -> Result<Vec<PlacedArtifact>, Error> {
+    let mut placed = Vec::new();
+    for (kinds, linked) in [(MOVED_KINDS, false), (LINKED_KINDS, true)] {
+        for kind in kinds {
+            for artifact in artifacts {
+                let Some(args) = artifact.get(*kind).and_then(Value::as_array) else {
+                    continue;
+                };
+                let invalid = || Error::InvalidArgument {
+                    message: format!("cask '{token}' has a malformed '{kind}' artifact"),
+                };
+                let source = args.first().and_then(Value::as_str).ok_or_else(invalid)?;
+                let target = artifact["target"].as_str().ok_or_else(invalid)?;
+                placed.push(PlacedArtifact {
+                    kind: kind.to_string(),
+                    source: source.to_string(),
+                    target: target.to_string(),
+                    linked,
+                });
+            }
+        }
+    }
+    Ok(placed)
+}
+
+fn parse_wrappers(token: &str, artifacts: &[Value]) -> Result<Vec<CommandWrapper>, Error> {
+    artifacts
+        .iter()
+        .filter_map(|artifact| artifact.get("command_wrapper")?.as_array())
+        .map(|args| {
+            let invalid = || Error::InvalidArgument {
+                message: format!("cask '{token}' has a malformed 'command_wrapper' artifact"),
+            };
+            let name = args.first().and_then(Value::as_str).ok_or_else(invalid)?;
+            let options = &args.get(1).cloned().unwrap_or_default();
+            let text = |key: &str| options[key].as_str().map(ToString::to_string);
+            let wrapper = CommandWrapper {
+                name: name.to_string(),
+                content: text("content"),
+                executable: text("executable"),
+                args: options["args"]
+                    .as_array()
+                    .into_iter()
+                    .flatten()
+                    .filter_map(Value::as_str)
+                    .map(ToString::to_string)
+                    .collect(),
+                env: options["env"]
+                    .as_object()
+                    .into_iter()
+                    .flatten()
+                    .filter_map(|(k, v)| Some((k.clone(), v.as_str()?.to_string())))
+                    .collect(),
+            };
+            if name.contains('/') || wrapper.content.is_some() == wrapper.executable.is_some() {
+                return Err(invalid());
+            }
+            Ok(wrapper)
+        })
+        .collect()
+}
+
+fn parse_generated_scripts(
+    token: &str,
+    artifacts: &[Value],
+) -> Result<Vec<(String, String)>, Error> {
+    artifacts
+        .iter()
+        .filter_map(|artifact| artifact.get("generated_script")?.as_array())
+        .map(|args| {
+            let path = args.first().and_then(Value::as_str);
+            let content = args.get(1).and_then(|o| o["content"].as_str());
+            match (path, content) {
+                (Some(path), Some(content))
+                    if !path.starts_with('/') && !path.split('/').any(|part| part == "..") =>
+                {
+                    Ok((path.to_string(), content.to_string()))
+                }
+                _ => Err(Error::InvalidArgument {
+                    message: format!("cask '{token}' has a malformed 'generated_script' artifact"),
+                }),
+            }
+        })
+        .collect()
+}
+
+fn parse_completions(artifacts: &[Value]) -> Vec<GeneratedCompletion> {
+    artifacts
+        .iter()
+        .filter_map(|artifact| {
+            artifact
+                .get("generate_completions_from_executable")?
+                .as_array()
+        })
+        .map(|args| {
+            let options = args
+                .iter()
+                .find(|a| a.is_object())
+                .cloned()
+                .unwrap_or_default();
+            let format = options["shell_parameter_format"]
+                .as_str()
+                .map(ToString::to_string);
+            let shells = match options["shells"].as_array() {
+                Some(shells) => shells
+                    .iter()
+                    .filter_map(Value::as_str)
+                    .map(ToString::to_string)
+                    .collect(),
+                // Homebrew's default_completion_shells.
+                None if matches!(format.as_deref(), Some("cobra" | "typer")) => {
+                    ["bash", "zsh", "fish", "pwsh"].map(String::from).to_vec()
+                }
+                None => ["bash", "zsh", "fish"].map(String::from).to_vec(),
+            };
+            GeneratedCompletion {
+                commands: args
+                    .iter()
+                    .filter_map(Value::as_str)
+                    .map(ToString::to_string)
+                    .collect(),
+                base_name: options["base_name"].as_str().map(ToString::to_string),
+                format,
+                shells,
+            }
+        })
+        .collect()
 }
 
 /// Steps of every `{key: [{"steps": [..]}]}` artifact, in order.
@@ -470,24 +714,109 @@ mod tests {
         assert!(matches!(err, Error::InvalidArgument { .. }));
     }
 
-    #[test]
-    fn resolve_cask_no_installable_artifacts_lists_found_types() {
-        let cask = serde_json::json!({
-            "token": "font-x",
-            "version": "1.0.0",
-            "url": "https://example.com/font.zip",
-            "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-            "artifacts": [
-                { "font": ["X.ttf"] },
-                { "zap": [{ "trash": ["~/.config/x/"] }] }
-            ]
-        });
+    fn cask_with(artifacts: Value) -> Value {
+        serde_json::json!({
+            "token": "x", "version": "1.0", "url": "https://example.com/x.zip",
+            "sha256": "a".repeat(64), "artifacts": artifacts
+        })
+    }
 
-        let err = resolve_cask("font-x", &cask).unwrap_err();
-        let msg = err.to_string();
-        assert!(msg.contains("no binary or app artifacts"), "got: {msg}");
-        assert!(msg.contains("font"), "got: {msg}");
-        assert!(msg.contains("zap"), "got: {msg}");
+    #[test]
+    fn an_artifact_nextbrew_cannot_place_is_refused_by_name() {
+        // koreader's Linux AppImage.
+        let cask = cask_with(serde_json::json!([
+            { "app_image": ["k.AppImage"], "target": "/$HOME/Applications/k.AppImage" },
+            { "zap": [{ "trash": ["~/.config/x/"] }] }
+        ]));
+        let msg = resolve_cask("x", &cask).unwrap_err().to_string();
+        assert!(msg.contains("'app_image'"), "got: {msg}");
+    }
+
+    #[test]
+    fn moved_and_linked_artifacts_keep_the_target_the_api_resolved() {
+        // font-0xproto, alacritty, android-commandlinetools.
+        let cask = cask_with(serde_json::json!([
+            { "manpage": ["$APPDIR/A.app/a.1.gz"], "target": "$HOMEBREW_PREFIX/share/man/man1/a.1.gz" },
+            { "font": ["fonts/X-Regular.otf"], "target": "/$HOME/Library/Fonts/X-Regular.otf" },
+            { "artifact": ["cmdline-tools", { "target": "$HOMEBREW_PREFIX/share/t/latest" }],
+              "target": "$HOMEBREW_PREFIX/share/t/latest" },
+            { "zsh_completion": ["c/_a"], "target": "$HOMEBREW_PREFIX/share/zsh/site-functions/_a" }
+        ]));
+        let resolved = resolve_cask("x", &cask).unwrap();
+        let placed: Vec<_> = resolved
+            .placed
+            .iter()
+            .map(|p| {
+                (
+                    p.kind.as_str(),
+                    p.source.as_str(),
+                    p.target.as_str(),
+                    p.linked,
+                )
+            })
+            .collect();
+        // Homebrew's order: moved kinds first, artifact before font.
+        assert_eq!(
+            placed,
+            [
+                (
+                    "artifact",
+                    "cmdline-tools",
+                    "$HOMEBREW_PREFIX/share/t/latest",
+                    false
+                ),
+                (
+                    "font",
+                    "fonts/X-Regular.otf",
+                    "/$HOME/Library/Fonts/X-Regular.otf",
+                    false
+                ),
+                (
+                    "manpage",
+                    "$APPDIR/A.app/a.1.gz",
+                    "$HOMEBREW_PREFIX/share/man/man1/a.1.gz",
+                    true
+                ),
+                (
+                    "zsh_completion",
+                    "c/_a",
+                    "$HOMEBREW_PREFIX/share/zsh/site-functions/_a",
+                    true
+                ),
+            ]
+        );
+    }
+
+    #[test]
+    fn wrappers_scripts_and_generated_completions_are_parsed() {
+        let cask = cask_with(serde_json::json!([
+            { "command_wrapper": ["keka", { "executable": "$APPDIR/Keka.app/Keka", "args": ["--cli"] }],
+              "target": "$HOMEBREW_PREFIX/bin/keka" },
+            { "command_wrapper": ["gogs", { "content": "#!/bin/sh\n./gogs \"$@\"\n" }] },
+            { "generated_script": ["Setup.sh", { "content": "#!/bin/bash\necho hi\n" }] },
+            { "generate_completions_from_executable": ["op", "completion",
+                { "base_name": null, "shell_parameter_format": null, "shells": ["bash", "zsh", "fish"] }] }
+        ]));
+        let resolved = resolve_cask("x", &cask).unwrap();
+        assert_eq!(resolved.wrappers.len(), 2);
+        assert_eq!(resolved.wrappers[0].name, "keka");
+        assert_eq!(
+            resolved.wrappers[0].executable.as_deref(),
+            Some("$APPDIR/Keka.app/Keka")
+        );
+        assert_eq!(resolved.wrappers[0].args, ["--cli"]);
+        assert_eq!(
+            resolved.wrappers[1].content.as_deref(),
+            Some("#!/bin/sh\n./gogs \"$@\"\n")
+        );
+        assert_eq!(
+            resolved.generated_scripts,
+            [("Setup.sh".to_string(), "#!/bin/bash\necho hi\n".to_string())]
+        );
+        let completion = &resolved.completions[0];
+        assert_eq!(completion.commands, ["op", "completion"]);
+        assert_eq!(completion.shells, ["bash", "zsh", "fish"]);
+        assert_eq!(completion.format, None);
     }
 
     #[test]

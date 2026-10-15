@@ -600,6 +600,44 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_binary_only_cask_runs_its_uninstall_stanza() {
+        let server = MockServer::start().await;
+        let tmp = TempDir::new().unwrap();
+        let root = tmp.path().join("nextbrew");
+        let prefix = tmp.path().join("homebrew");
+        let leftover = tmp.path().join("state/tool.db");
+        fs::create_dir_all(leftover.parent().unwrap()).unwrap();
+        fs::write(&leftover, "x").unwrap();
+        let body = "#!/bin/sh\n";
+        let uri = server.uri();
+        Mock::given(method("GET"))
+            .and(path("/cask/tool.json"))
+            .respond_with(ResponseTemplate::new(200).set_body_string(format!(
+                r#"{{"token": "tool", "version": "1.0", "url": "{uri}/dl/tool",
+                    "sha256": "{}", "artifacts": [{{"binary": ["tool"]}},
+                    {{"uninstall": [{{"delete": "{}"}}]}}]}}"#,
+                sha256_hex(body.as_bytes()),
+                leftover.display()
+            )))
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/dl/tool"))
+            .respond_with(ResponseTemplate::new(200).set_body_string(body))
+            .mount(&server)
+            .await;
+        let mut installer = make_installer(&root, &prefix, &uri);
+        installer
+            .install(&["cask:tool".to_string()], true)
+            .await
+            .unwrap();
+
+        installer.uninstall("cask:tool").unwrap();
+
+        assert!(!leftover.exists(), "the uninstall stanza ran");
+    }
+
+    #[tokio::test]
     async fn upgrade_replaces_an_outdated_cask() {
         let server = MockServer::start().await;
         let tmp = TempDir::new().unwrap();

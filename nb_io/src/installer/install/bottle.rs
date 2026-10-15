@@ -232,6 +232,10 @@ impl Installer {
         if !cask.apps.is_empty()
             || !cask.hooks.is_empty()
             || !cask.installers.is_empty()
+            || !cask.placed.is_empty()
+            || !cask.wrappers.is_empty()
+            || !cask.completions.is_empty()
+            || !cask.generated_scripts.is_empty()
             || is_dmg(&blob_path)?
         {
             let ctx = self.cask_context(&cask, &keg_path, app_dir()?);
@@ -248,6 +252,9 @@ impl Installer {
         } else {
             stage_raw_cask_binary(&blob_path, &keg_path, &cask)?;
             propagate(&blob_path, &keg_path)?;
+        }
+        if !keg_path.join("cask.json").exists() {
+            super::cask_app::save_cask_json(&keg_path, &cask_json)?;
         }
 
         let linked_files = if link {
@@ -715,6 +722,7 @@ mod tests {
             apps: vec![],
             hooks: Default::default(),
             installers: Vec::new(),
+            ..Default::default()
         };
 
         stage_cask_binaries(&staged, None, &keg_path, &cask).unwrap();
@@ -748,6 +756,7 @@ mod tests {
             apps: vec![],
             hooks: Default::default(),
             installers: Vec::new(),
+            ..Default::default()
         };
 
         stage_raw_cask_binary(&blob_path, &keg_path, &cask).unwrap();
@@ -793,6 +802,7 @@ mod tests {
             apps: vec![],
             hooks: Default::default(),
             installers: Vec::new(),
+            ..Default::default()
         };
 
         let err = stage_raw_cask_binary(&blob_path, &keg_path, &cask).unwrap_err();
