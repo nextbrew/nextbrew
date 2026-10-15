@@ -1,12 +1,14 @@
 use std::collections::HashMap;
-use std::io::{Read, Write};
-use std::path::PathBuf;
+use std::io::{Read, Seek, Write};
+use std::ops::Range;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
 use bytes::Bytes;
 use futures_util::StreamExt;
-use reqwest::header::CONTENT_LENGTH;
+use reqwest::header::{ACCEPT_RANGES, CONTENT_ENCODING, CONTENT_LENGTH, CONTENT_RANGE, RANGE};
 use sha2::{Digest, Sha256};
 use tokio::sync::{RwLock, mpsc};
 use tokio::task::JoinHandle;
@@ -54,6 +56,9 @@ fn transform_url_to_mirror(url: &str, mirror_domain: &str) -> Option<String> {
 /// registry is known; see [`Downloader::prefetch_tokens`].
 pub struct Downloader {
     client: reqwest::Client,
+    /// HTTP/1.1 only, so the parts of a split body each get a connection of
+    /// their own rather than sharing one HTTP/2 connection.
+    range_client: reqwest::Client,
     pub(crate) blob_cache: BlobCache,
     token_cache: TokenCache,
     token_endpoints: HashMap<String, TokenEndpoint>,
@@ -61,23 +66,31 @@ pub struct Downloader {
 
 impl Downloader {
     pub fn new(blob_cache: BlobCache) -> Self {
-        let client = reqwest::Client::builder()
-            .user_agent("nextbrew/0.1")
-            .use_preconfigured_tls((*shared_tls_config()).clone())
-            .pool_max_idle_per_host(GLOBAL_DOWNLOAD_CONCURRENCY)
-            .pool_idle_timeout(Duration::from_secs(90))
-            .tcp_nodelay(true)
-            .tcp_keepalive(Duration::from_secs(60))
-            .connect_timeout(Duration::from_secs(30))
-            .timeout(Duration::from_secs(300))
+        let builder = || {
+            reqwest::Client::builder()
+                .user_agent("nextbrew/0.1")
+                .use_preconfigured_tls((*shared_tls_config()).clone())
+                .pool_max_idle_per_host(GLOBAL_DOWNLOAD_CONCURRENCY)
+                .pool_idle_timeout(Duration::from_secs(90))
+                .tcp_nodelay(true)
+                .tcp_keepalive(Duration::from_secs(60))
+                .connect_timeout(Duration::from_secs(30))
+                .timeout(Duration::from_secs(300))
+        };
+        let client = builder()
             .http2_adaptive_window(true)
             .http2_initial_stream_window_size(Some(2 * 1024 * 1024))
             .http2_initial_connection_window_size(Some(4 * 1024 * 1024))
             .build()
             .expect("failed to build HTTP client");
+        let range_client = builder()
+            .http1_only()
+            .build()
+            .expect("failed to build HTTP client");
 
         Self {
             client,
+            range_client,
             blob_cache,
             token_cache: Arc::new(RwLock::new(HashMap::new())),
             token_endpoints: TokenEndpoint::known(),
@@ -193,6 +206,7 @@ impl Downloader {
             fetch_download_response_internal(&self.client, &self.token_cache, url).await?;
         download_response_internal(
             &self.blob_cache,
+            &self.range_client,
             response,
             expected_sha256,
             name,
@@ -284,10 +298,170 @@ impl Read for ChannelReader {
     }
 }
 
+/// Bodies at least this large are fetched over several connections at once
+/// (HTTP range requests). One connection can be far slower than the link:
+/// behind some TLS-inspecting proxies a single transfer is held to about
+/// 0.5 MB/s, and the CDNs bottles and casks come from serve byte ranges.
+const SPLIT_MIN_BYTES: u64 = 4 * 1024 * 1024;
+/// The size a part aims for, and the most parts one body is split into.
+const SPLIT_PART_BYTES: u64 = 5 * 1024 * 1024 / 2;
+const SPLIT_MAX_PARTS: u64 = 8;
+
+/// Where the body goes, in order: the blob, its checksum and the consumer.
+struct Sink<W> {
+    writer: W,
+    hasher: Sha256,
+    tee: Option<Tee>,
+}
+
+impl<W: Write> Sink<W> {
+    async fn push(&mut self, chunk: &Bytes) -> Result<(), DownloadError> {
+        self.hasher.update(chunk);
+        self.writer
+            .write_all(chunk)
+            .map_err(|e| DownloadError::permanent(Error::network("failed to write chunk")(e)))?;
+        if let Some(tee) = &mut self.tee {
+            tee.feed(chunk).await;
+        }
+        Ok(())
+    }
+}
+
+/// Download progress, counted across the parts of a split body.
+#[derive(Clone)]
+struct Progress {
+    callback: Option<(DownloadProgressCallback, String)>,
+    downloaded: Arc<AtomicU64>,
+    total_bytes: Option<u64>,
+}
+
+impl Progress {
+    fn add(&self, bytes: u64) {
+        let downloaded = self.downloaded.fetch_add(bytes, Ordering::Relaxed) + bytes;
+        if let Some((callback, name)) = &self.callback {
+            callback(InstallProgress::DownloadProgress {
+                name: name.clone(),
+                downloaded,
+                total_bytes: self.total_bytes,
+            });
+        }
+    }
+}
+
+/// The byte ranges to fetch `response`'s body in, the first being the part
+/// the response itself carries; `None` to read it in one piece.
+fn split_plan(response: &reqwest::Response, total_bytes: Option<u64>) -> Option<Vec<Range<u64>>> {
+    let total = total_bytes.filter(|len| *len >= SPLIT_MIN_BYTES)?;
+    let headers = response.headers();
+    if headers.get(ACCEPT_RANGES)?.as_bytes() != b"bytes" || headers.contains_key(CONTENT_ENCODING)
+    {
+        return None;
+    }
+    let parts = total.div_ceil(SPLIT_PART_BYTES).clamp(2, SPLIT_MAX_PARTS);
+    let size = total.div_ceil(parts);
+    Some(
+        (0..parts)
+            .map(|i| i * size..((i + 1) * size).min(total))
+            .filter(|range| !range.is_empty())
+            .collect(),
+    )
+}
+
+/// A part being fetched into its file.
+type PartTask = JoinHandle<Result<std::fs::File, Error>>;
+
+/// Fetch `range` of `url` into an anonymous file in `dir`, rewound.
+async fn fetch_part(
+    client: reqwest::Client,
+    url: reqwest::Url,
+    range: Range<u64>,
+    dir: PathBuf,
+    progress: Progress,
+) -> Result<std::fs::File, Error> {
+    let wanted = format!("bytes {}-{}/", range.start, range.end - 1);
+    let response = client
+        .get(url)
+        .header(RANGE, format!("bytes={}-{}", range.start, range.end - 1))
+        .send()
+        .await
+        .map_err(Error::network("failed to request part"))?;
+    let served = response
+        .headers()
+        .get(CONTENT_RANGE)
+        .and_then(|v| v.to_str().ok())
+        .is_some_and(|v| v.starts_with(&wanted));
+    if response.status() != reqwest::StatusCode::PARTIAL_CONTENT || !served {
+        return Err(Error::NetworkFailure {
+            message: format!("range request answered with HTTP {}", response.status()),
+        });
+    }
+    let mut file =
+        tempfile::tempfile_in(&dir).map_err(Error::network("failed to create part file"))?;
+    let mut stream = response.bytes_stream();
+    let mut written = 0;
+    while let Some(chunk) = stream.next().await {
+        let chunk = chunk.map_err(Error::network("failed to read part"))?;
+        file.write_all(&chunk)
+            .map_err(Error::network("failed to write part"))?;
+        written += chunk.len() as u64;
+        progress.add(chunk.len() as u64);
+    }
+    if written != range.end - range.start {
+        return Err(Error::NetworkFailure {
+            message: format!("part {wanted} ended after {written} bytes"),
+        });
+    }
+    file.rewind()
+        .map_err(Error::network("failed to rewind part"))?;
+    Ok(file)
+}
+
+/// Fetch `url` from byte `start` to the end in one request and push it,
+/// for when the parts could not be had: a range if the server gives one,
+/// otherwise the whole body with its first `start` bytes skipped.
+async fn push_remainder<W: Write>(
+    client: &reqwest::Client,
+    url: reqwest::Url,
+    start: u64,
+    sink: &mut Sink<W>,
+    progress: &Progress,
+) -> Result<(), DownloadError> {
+    let response = client
+        .get(url)
+        .header(RANGE, format!("bytes={start}-"))
+        .send()
+        .await
+        .map_err(|e| DownloadError::transient(Error::network("failed to request the rest")(e)))?;
+    let mut skip = match response.status() {
+        reqwest::StatusCode::PARTIAL_CONTENT => 0,
+        reqwest::StatusCode::OK => start,
+        status => {
+            return Err(DownloadError::transient(Error::NetworkFailure {
+                message: format!("HTTP {status} for the rest of the body"),
+            }));
+        }
+    };
+    let mut stream = response.bytes_stream();
+    while let Some(chunk) = stream.next().await {
+        let mut chunk = chunk
+            .map_err(|e| DownloadError::transient(Error::network("failed to read chunk")(e)))?;
+        if skip > 0 {
+            let dropped = skip.min(chunk.len() as u64);
+            chunk = chunk.slice(dropped as usize..);
+            skip -= dropped;
+        }
+        progress.add(chunk.len() as u64);
+        sink.push(&chunk).await?;
+    }
+    Ok(())
+}
+
 /// Stream a response into the blob cache, verifying its checksum, and
-/// through the consumer if there is one.
+/// through the consumer if there is one. A large body is fetched in parts
+/// over several connections and pushed on in order.
 async fn download_response_internal(
     blob_cache: &BlobCache,
+    range_client: &reqwest::Client,
     response: reqwest::Response,
     expected_sha256: &str,
     name: Option<String>,
@@ -307,38 +481,98 @@ async fn download_response_internal(
         });
     }
 
-    let mut writer = blob_cache
+    let writer = blob_cache
         .start_write(expected_sha256)
         .map_err(|e| DownloadError::permanent(Error::network("failed to create blob writer")(e)))?;
+    let mut sink = Sink {
+        writer,
+        hasher: Sha256::new(),
+        tee: consumer.map(Tee::start),
+    };
+    let counter = Progress {
+        callback: progress.clone().zip(name.clone()),
+        downloaded: Arc::new(AtomicU64::new(0)),
+        total_bytes,
+    };
 
-    let mut hasher = Sha256::new();
+    // The other parts start at once; this response carries the first.
+    let url = response.url().clone();
+    let plan = split_plan(&response, total_bytes);
+    let part_dir = blob_cache
+        .blob_path(expected_sha256)
+        .parent()
+        .map(Path::to_path_buf)
+        .unwrap_or_else(std::env::temp_dir);
+    let mut parts: Vec<(Range<u64>, PartTask)> = plan
+        .iter()
+        .flatten()
+        .skip(1)
+        .map(|range| {
+            let task = tokio::spawn(fetch_part(
+                range_client.clone(),
+                url.clone(),
+                range.clone(),
+                part_dir.clone(),
+                counter.clone(),
+            ));
+            (range.clone(), task)
+        })
+        .collect();
+    let first_end = plan.as_ref().map_or(u64::MAX, |plan| plan[0].end);
+
+    let mut received = 0u64;
     let mut stream = response.bytes_stream();
-    let mut downloaded: u64 = 0;
-    let mut tee = consumer.map(Tee::start);
-
-    while let Some(chunk) = stream.next().await {
+    while received < first_end {
+        let Some(chunk) = stream.next().await else {
+            break;
+        };
         // A connection dropped mid-body; the next attempt starts over.
-        let chunk = chunk
+        let mut chunk = chunk
             .map_err(|e| DownloadError::transient(Error::network("failed to read chunk")(e)))?;
-
-        downloaded += chunk.len() as u64;
-        hasher.update(&chunk);
-        writer
-            .write_all(&chunk)
-            .map_err(|e| DownloadError::permanent(Error::network("failed to write chunk")(e)))?;
-        if let Some(tee) = &mut tee {
-            tee.feed(&chunk).await;
+        if received + chunk.len() as u64 > first_end {
+            chunk = chunk.slice(..(first_end - received) as usize);
         }
+        received += chunk.len() as u64;
+        counter.add(chunk.len() as u64);
+        sink.push(&chunk).await?;
+    }
+    drop(stream);
 
-        if let (Some(cb), Some(n)) = (&progress, &name) {
-            cb(InstallProgress::DownloadProgress {
-                name: n.clone(),
-                downloaded,
-                total_bytes,
-            });
+    let mut parts = parts.drain(..);
+    while let Some((range, task)) = parts.next() {
+        match task.await {
+            Ok(Ok(mut file)) => {
+                let mut buf = vec![0u8; 256 * 1024];
+                loop {
+                    let n = file.read(&mut buf).map_err(|e| {
+                        DownloadError::permanent(Error::network("failed to read part")(e))
+                    })?;
+                    if n == 0 {
+                        break;
+                    }
+                    sink.push(&Bytes::copy_from_slice(&buf[..n])).await?;
+                }
+            }
+            outcome => {
+                let reason = match outcome {
+                    Ok(Err(e)) => e.to_string(),
+                    Err(e) => e.to_string(),
+                    Ok(Ok(_)) => unreachable!(),
+                };
+                debug!(%reason, "fetching the body in parts failed; fetching the rest at once");
+                for (_, task) in parts.by_ref() {
+                    task.abort();
+                }
+                push_remainder(range_client, url.clone(), range.start, &mut sink, &counter).await?;
+            }
         }
     }
 
+    let Sink {
+        mut writer,
+        hasher,
+        tee,
+    } = sink;
     let actual_hash = crate::checksum::sha256_hex(hasher);
 
     if actual_hash != expected_sha256 {
@@ -357,7 +591,7 @@ async fn download_response_internal(
     if let (Some(cb), Some(n)) = (&progress, &name) {
         cb(InstallProgress::DownloadCompleted {
             name: n.clone(),
-            total_bytes: downloaded,
+            total_bytes: counter.downloaded.load(Ordering::Relaxed),
         });
     }
 
@@ -567,6 +801,108 @@ mod tests {
             }),
         };
         (consumer, seen, committed)
+    }
+
+    /// Serves `body`, answering a `Range: bytes=a-b` request with that slice
+    /// as a CDN does (unless `honour` is off), and counts ranged requests.
+    struct Ranged {
+        body: Arc<Vec<u8>>,
+        honour: bool,
+        ranged: Arc<AtomicUsize>,
+    }
+
+    impl wiremock::Respond for Ranged {
+        fn respond(&self, request: &Request) -> ResponseTemplate {
+            let range = request
+                .headers
+                .get("range")
+                .and_then(|v| v.to_str().ok())
+                .and_then(|v| v.strip_prefix("bytes="))
+                .and_then(|v| v.split_once('-'))
+                .and_then(|(a, b)| Some((a.parse::<usize>().ok()?, b.parse::<usize>().ok()?)));
+            match range {
+                Some((start, end)) if self.honour => {
+                    self.ranged.fetch_add(1, Ordering::SeqCst);
+                    let len = self.body.len();
+                    ResponseTemplate::new(206)
+                        .insert_header("accept-ranges", "bytes")
+                        .insert_header("content-range", format!("bytes {start}-{end}/{len}"))
+                        .set_body_bytes(self.body[start..=end].to_vec())
+                }
+                _ => ResponseTemplate::new(200)
+                    .insert_header("accept-ranges", "bytes")
+                    .set_body_bytes(self.body.to_vec()),
+            }
+        }
+    }
+
+    async fn serve_ranged(
+        server: &MockServer,
+        size: usize,
+        honour: bool,
+    ) -> (Vec<u8>, String, Arc<AtomicUsize>) {
+        let body: Vec<u8> = (0..size)
+            .map(|i| (i % 251) as u8 ^ (i >> 16) as u8)
+            .collect();
+        let sha = crate::checksum::sha256_hex(Sha256::new_with_prefix(&body));
+        let ranged = Arc::new(AtomicUsize::new(0));
+        Mock::given(method("GET"))
+            .and(path("/large.tar.gz"))
+            .respond_with(Ranged {
+                body: Arc::new(body.clone()),
+                honour,
+                ranged: ranged.clone(),
+            })
+            .mount(server)
+            .await;
+        (body, sha, ranged)
+    }
+
+    #[tokio::test]
+    async fn a_large_body_is_fetched_in_parallel_ranges() {
+        let server = MockServer::start().await;
+        let (body, sha, ranged) = serve_ranged(&server, 9 * 1024 * 1024 + 123, true).await;
+        let (consumer, seen, committed) = recording_consumer();
+
+        let tmp = TempDir::new().unwrap();
+        let url = format!("{}/large.tar.gz", server.uri());
+        let blob = downloader(&tmp)
+            .download_with_progress(&url, &sha, None, None, Some(consumer))
+            .await
+            .unwrap();
+
+        assert!(ranged.load(Ordering::SeqCst) >= 2, "{ranged:?}");
+        assert!(std::fs::read(blob).unwrap() == body);
+        assert!(
+            *seen.lock().unwrap() == body,
+            "the consumer sees the body in order"
+        );
+        assert_eq!(committed.load(Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
+    async fn a_small_body_is_fetched_in_one_request() {
+        let server = MockServer::start().await;
+        let (body, sha, ranged) = serve_ranged(&server, 1024 * 1024, true).await;
+
+        let tmp = TempDir::new().unwrap();
+        let url = format!("{}/large.tar.gz", server.uri());
+        let blob = downloader(&tmp).download(&url, &sha).await.unwrap();
+
+        assert_eq!(ranged.load(Ordering::SeqCst), 0);
+        assert!(std::fs::read(blob).unwrap() == body);
+    }
+
+    #[tokio::test]
+    async fn a_server_that_ignores_ranges_still_gives_the_whole_body() {
+        let server = MockServer::start().await;
+        let (body, sha, _) = serve_ranged(&server, 9 * 1024 * 1024, false).await;
+
+        let tmp = TempDir::new().unwrap();
+        let url = format!("{}/large.tar.gz", server.uri());
+        let blob = downloader(&tmp).download(&url, &sha).await.unwrap();
+
+        assert!(std::fs::read(blob).unwrap() == body);
     }
 
     #[tokio::test]
