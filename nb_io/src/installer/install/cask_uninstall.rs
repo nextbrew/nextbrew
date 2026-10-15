@@ -325,39 +325,58 @@ fn expand_tokens(ctx: &PostInstallContext, home: &Path, s: &str) -> String {
     }
 }
 
-/// The existing paths `pattern` names. Only the last component may be a
-/// glob.
-// ponytail: last-component globs only (22 of ~23k cask paths glob a parent), walk with globset if they matter.
+/// The existing paths `pattern` names, globbed component by component as
+/// Ruby's `Dir.glob` (Homebrew's `Pathname.glob`) does: `*`, `?`, `[...]`
+/// and `{a,b}` within a component, never matching a leading `.` unless the
+/// pattern starts with one, and `**` for any number of directories.
 fn expand(ctx: &PostInstallContext, home: &Path, pattern: &str) -> Result<Vec<PathBuf>, String> {
     let path = PathBuf::from(expand_tokens(ctx, home, pattern));
     if !path.is_absolute() || path.components().any(|c| c.as_os_str() == "..") {
         return Err(format!("{pattern}: not an absolute path; skipped"));
     }
-    let name = path.file_name().unwrap_or_default().to_string_lossy();
-    if !name.contains(['*', '?', '[', '{']) {
-        return Ok(if path.symlink_metadata().is_ok() {
-            vec![path]
+    let mut found = vec![PathBuf::from("/")];
+    for component in path.components().skip(1) {
+        let part = component.as_os_str().to_string_lossy();
+        found = if part == "**" {
+            found.iter().flat_map(|dir| subdirectories(dir)).collect()
+        } else if part.contains(['*', '?', '[', '{']) {
+            let matcher = Glob::new(&part)
+                .map_err(|e| format!("{pattern}: {e}"))?
+                .compile_matcher();
+            let dot = part.starts_with('.');
+            found
+                .iter()
+                .filter_map(|dir| fs::read_dir(dir).ok())
+                .flat_map(|entries| entries.flatten())
+                .filter(|e| {
+                    let name = e.file_name();
+                    (dot || !name.to_string_lossy().starts_with('.')) && matcher.is_match(&name)
+                })
+                .map(|e| e.path())
+                .collect()
         } else {
-            Vec::new()
-        });
+            found.iter().map(|dir| dir.join(component)).collect()
+        };
     }
-    let parent = path.parent().unwrap_or(Path::new("/"));
-    if parent.to_string_lossy().contains(['*', '?', '[', '{']) {
-        return Err(format!(
-            "{pattern}: globbed parent directories are not supported; skipped"
-        ));
+    found.retain(|p| p.symlink_metadata().is_ok());
+    found.sort();
+    found.dedup();
+    Ok(found)
+}
+
+/// `dir` and every directory below it, not entering dot directories or
+/// following links, as `**` does.
+fn subdirectories(dir: &Path) -> Vec<PathBuf> {
+    let mut all = vec![dir.to_path_buf()];
+    if let Ok(entries) = fs::read_dir(dir) {
+        for entry in entries.flatten() {
+            let is_dir = entry.file_type().is_ok_and(|t| t.is_dir());
+            if is_dir && !entry.file_name().to_string_lossy().starts_with('.') {
+                all.extend(subdirectories(&entry.path()));
+            }
+        }
     }
-    let matcher = Glob::new(&name)
-        .map_err(|e| e.to_string())?
-        .compile_matcher();
-    let Ok(entries) = fs::read_dir(parent) else {
-        return Ok(Vec::new());
-    };
-    Ok(entries
-        .flatten()
-        .filter(|e| matcher.is_match(e.file_name()))
-        .map(|e| e.path())
-        .collect())
+    all
 }
 
 /// Directories a cask may name but must never take away.
@@ -473,6 +492,62 @@ mod tests {
             cache: root.join("cache"),
             cask: None,
         }
+    }
+
+    fn names(paths: Vec<PathBuf>, home: &Path) -> Vec<String> {
+        let mut names: Vec<String> = paths
+            .iter()
+            .map(|p| p.strip_prefix(home).unwrap().display().to_string())
+            .collect();
+        names.sort();
+        names
+    }
+
+    #[test]
+    fn globs_in_parent_directories_match_like_ruby() {
+        // adobe-creative-cloud: ~/Library/*/Adobe/CoreSync
+        let tmp = TempDir::new().unwrap();
+        let home = tmp.path();
+        for dir in [
+            "Library/A/Adobe/CoreSync",
+            "Library/B/Adobe/CoreSync",
+            "Library/.h/Adobe/CoreSync",
+        ] {
+            fs::create_dir_all(home.join(dir)).unwrap();
+        }
+        let found = expand(&ctx(home), home, "~/Library/*/Adobe/CoreSync").unwrap();
+        assert_eq!(
+            names(found, home),
+            ["Library/A/Adobe/CoreSync", "Library/B/Adobe/CoreSync"],
+            "a * does not match a dot directory"
+        );
+    }
+
+    #[test]
+    fn a_double_star_matches_any_depth_including_none() {
+        // wine-stable: ~/.local/share/icons/hicolor/**/application-x-wine*
+        let tmp = TempDir::new().unwrap();
+        let home = tmp.path();
+        let icons = home.join(".local/share/icons/hicolor");
+        fs::create_dir_all(icons.join("48x48/apps")).unwrap();
+        fs::write(icons.join("48x48/apps/application-x-wine-a.png"), "").unwrap();
+        fs::write(icons.join("application-x-wine-b.png"), "").unwrap();
+        fs::write(icons.join("48x48/other.png"), "").unwrap();
+
+        let found = expand(
+            &ctx(home),
+            home,
+            "~/.local/share/icons/hicolor/**/application-x-wine*",
+        )
+        .unwrap();
+
+        assert_eq!(
+            names(found, home),
+            [
+                ".local/share/icons/hicolor/48x48/apps/application-x-wine-a.png",
+                ".local/share/icons/hicolor/application-x-wine-b.png",
+            ]
+        );
     }
 
     #[test]
