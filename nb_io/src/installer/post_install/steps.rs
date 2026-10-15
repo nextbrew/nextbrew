@@ -717,9 +717,12 @@ fn create_symlink(source: &Path, link: &Path, force: bool) -> Result<(), StepErr
 
 /// The environment a step command runs with: the prefix first on `PATH`
 /// and a private `HOME`, as under Homebrew's sandbox.
-fn command_env(ctx: &PostInstallContext, home: &Path) -> Vec<(String, String)> {
+fn command_env(
+    ctx: &PostInstallContext,
+    home: Option<&tempfile::TempDir>,
+) -> Vec<(String, String)> {
     let system_path = std::env::var("PATH").unwrap_or_default();
-    vec![
+    let mut vars = vec![
         (
             "PATH".into(),
             format!(
@@ -728,11 +731,27 @@ fn command_env(ctx: &PostInstallContext, home: &Path) -> Vec<(String, String)> {
                 ctx.prefix.join("sbin").display()
             ),
         ),
-        ("HOME".into(), home.display().to_string()),
         ("HOMEBREW_PREFIX".into(), ctx.prefix.display().to_string()),
         ("HOMEBREW_CELLAR".into(), ctx.cellar.display().to_string()),
         ("NEXTBREW_PREFIX".into(), ctx.prefix.display().to_string()),
-    ]
+    ];
+    if let Some(home) = home {
+        vars.push(("HOME".into(), home.path().display().to_string()));
+    }
+    vars
+}
+
+/// A throwaway HOME for a formula's post-install, as Homebrew's
+/// `Formula#run_post_install` gives it; cask hooks run in the user's own.
+fn isolated_home(ctx: &PostInstallContext) -> Result<Option<tempfile::TempDir>, StepError> {
+    if ctx.cask.is_some() {
+        return Ok(None);
+    }
+    tempfile::Builder::new()
+        .prefix(&format!("{}-postinstall-", ctx.name))
+        .tempdir_in(&ctx.temp)
+        .map(Some)
+        .map_err(StepError::io("creating a temporary home"))
 }
 
 fn output_tail(output: &[u8]) -> String {
@@ -754,12 +773,8 @@ fn run_command(
     allow_failure: bool,
     root: bool,
 ) -> Result<(), StepError> {
-    let home = tempfile::Builder::new()
-        .prefix(&format!("{}-postinstall-", ctx.name))
-        .tempdir_in(&ctx.temp)
-        .map_err(StepError::io("creating a temporary home"))?;
-
-    let mut vars = command_env(ctx, home.path());
+    let home = isolated_home(ctx)?;
+    let mut vars = command_env(ctx, home.as_ref());
     for (key, value) in env {
         vars.push((key.clone(), expand(ctx, value)?));
     }
@@ -1037,13 +1052,10 @@ fn run_formula_tool(
             tool.display()
         )));
     }
-    let home = tempfile::Builder::new()
-        .prefix(&format!("{}-postinstall-", ctx.name))
-        .tempdir_in(&ctx.temp)
-        .map_err(StepError::io("creating a temporary home"))?;
+    let home = isolated_home(ctx)?;
     let output = Command::new(&tool)
         .args(args)
-        .envs(command_env(ctx, home.path()))
+        .envs(command_env(ctx, home.as_ref()))
         .output()
         .map_err(StepError::io(format!("running {}", tool.display())))?;
     if output.status.success() {
@@ -1674,6 +1686,38 @@ mod tests {
         )
         .unwrap();
         assert_eq!(fs::read_to_string(&counted).unwrap().trim(), "2");
+    }
+
+    #[test]
+    fn cask_run_steps_keep_the_users_home() {
+        // gcloud-cli creates ~/.config/gcloud/virtenv in one step and uses
+        // it in the next, as Homebrew runs cask hooks in the user's HOME.
+        let tmp = TempDir::new().unwrap();
+        let mut ctx = context(tmp.path(), "x", "1");
+        ctx.cask = Some(super::super::CaskDirs {
+            staged: tmp.path().join("staged"),
+            appdir: tmp.path().join("Applications"),
+            caskroom: tmp.path().join("caskroom"),
+        });
+        let out = tmp.path().join("home");
+        run(
+            &ctx,
+            StepAction::Run {
+                command: PathSpec::absolute("sh"),
+                args: vec!["-c".into(), "echo \"$HOME\"".into()],
+                env: BTreeMap::new(),
+                stdin_path: None,
+                stdout_path: Some(abs(&out)),
+                chdir: None,
+                allow_failure: false,
+                sudo: Sudo::Never,
+            },
+        )
+        .unwrap();
+        assert_eq!(
+            fs::read_to_string(&out).unwrap().trim(),
+            std::env::var("HOME").unwrap()
+        );
     }
 
     #[test]
