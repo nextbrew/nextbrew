@@ -135,9 +135,16 @@ pub(super) fn any_exists(ctx: &PostInstallContext, spec: &PathSpec) -> Result<bo
 }
 
 /// Make a relative path absolute against the working directory.
+/// Ruby's `Pathname#expand_path`: a leading `~` is the home folder, and a
+/// relative path is taken from the working directory.
 fn absolute(path: PathBuf) -> Result<PathBuf, StepError> {
     if path.is_absolute() {
         return Ok(path);
+    }
+    if let Ok(rest) = path.strip_prefix("~")
+        && let Some(home) = std::env::var_os("HOME")
+    {
+        return Ok(PathBuf::from(home).join(rest));
     }
     std::env::current_dir()
         .map(|cwd| cwd.join(path))
@@ -233,6 +240,18 @@ mod tests {
         );
         let spec = PathSpec::based(PathBase::FormulaOptPrefix, "bin");
         assert!(matches!(resolve(&ctx, &spec), Err(StepError::Failed(_))));
+    }
+
+    #[test]
+    fn absolute_specs_expand_a_leading_tilde_like_ruby() {
+        let tmp = TempDir::new().unwrap();
+        let ctx = context(tmp.path(), "x", "1");
+        let home = PathBuf::from(std::env::var_os("HOME").unwrap());
+        let spec = PathSpec::absolute("~/.config/gcloud/virtenv");
+        assert_eq!(
+            resolve(&ctx, &spec).unwrap(),
+            home.join(".config/gcloud/virtenv")
+        );
     }
 
     #[test]
