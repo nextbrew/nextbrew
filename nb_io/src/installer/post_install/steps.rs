@@ -109,13 +109,7 @@ pub(super) fn run_step(
             sudo,
             uninstall: _,
         } => {
-            // `if_needed` only escalates when the link's directory is not
-            // ours to write.
-            let root = match sudo {
-                Sudo::Never => false,
-                Sudo::Always => true,
-                Sudo::IfNeeded => !writable_parent(&resolve(ctx, target)?),
-            };
+            let root = needs_root(sudo, &resolve(ctx, target)?);
             make_symlink(ctx, source, target, *force, *source_glob, root)?;
         }
         StepAction::Write {
@@ -271,7 +265,17 @@ pub(super) fn run_step(
 }
 
 /// Run a `sudo` command; the password prompt needs the terminal.
-fn run_root(cmd: &mut Command) -> Result<(), StepError> {
+/// Whether changing `path` goes through sudo: `if_needed` only escalates
+/// when the directory holding it is not ours to write.
+pub(super) fn needs_root(sudo: &Sudo, path: &Path) -> bool {
+    match sudo {
+        Sudo::Never => false,
+        Sudo::Always => true,
+        Sudo::IfNeeded => !writable_parent(path),
+    }
+}
+
+pub(super) fn run_root(cmd: &mut Command) -> Result<(), StepError> {
     let status = cmd.status().map_err(StepError::io("running sudo"))?;
     if status.success() {
         Ok(())
@@ -1061,6 +1065,21 @@ mod tests {
     use nb_core::PathBase;
     use std::os::unix::fs::PermissionsExt;
     use tempfile::TempDir;
+
+    #[test]
+    fn if_needed_escalates_only_for_unwritable_directories() {
+        let tmp = TempDir::new().unwrap();
+        let locked = tmp.path().join("locked");
+        fs::create_dir(&locked).unwrap();
+        fs::set_permissions(&locked, fs::Permissions::from_mode(0o555)).unwrap();
+
+        assert!(!needs_root(&Sudo::IfNeeded, &tmp.path().join("link")));
+        assert!(needs_root(&Sudo::IfNeeded, &locked.join("link")));
+        assert!(needs_root(&Sudo::Always, &tmp.path().join("link")));
+        assert!(!needs_root(&Sudo::Never, &locked.join("link")));
+
+        fs::set_permissions(&locked, fs::Permissions::from_mode(0o755)).unwrap();
+    }
 
     fn run(ctx: &PostInstallContext, action: StepAction) -> Result<Option<String>, StepError> {
         run_step(ctx, &action)

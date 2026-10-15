@@ -139,7 +139,8 @@ pub fn run_steps(
 }
 
 /// Remove the links made by `symlink` steps marked `uninstall`, as a cask
-/// uninstall does. A link that now points elsewhere is left alone.
+/// uninstall does. A link that now points elsewhere is left alone, and one
+/// made with sudo is removed with sudo.
 pub fn remove_uninstall_links(
     ctx: &PostInstallContext,
     steps: &[PostInstallStep],
@@ -148,6 +149,7 @@ pub fn remove_uninstall_links(
         let StepAction::Symlink {
             source,
             target,
+            sudo,
             uninstall: true,
             ..
         } = &step.action
@@ -155,7 +157,16 @@ pub fn remove_uninstall_links(
             continue;
         };
         let target = paths::resolve(ctx, target)?;
-        if std::fs::read_link(&target).ok() == Some(paths::link_target(ctx, source)?) {
+        if std::fs::read_link(&target).ok() != Some(paths::link_target(ctx, source)?) {
+            continue;
+        }
+        if steps::needs_root(sudo, &target) {
+            steps::run_root(
+                crate::installer::sudo::command("/bin/rm")
+                    .args(["-f", "--"])
+                    .arg(&target),
+            )?;
+        } else {
             std::fs::remove_file(&target)
                 .map_err(StepError::io(format!("removing {}", target.display())))?;
         }
