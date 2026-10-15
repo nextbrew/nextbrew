@@ -19,6 +19,7 @@ use tracing::warn;
 use super::Installer;
 use super::bottle::{resolve_cask_source_path, stage_cask_binaries};
 use super::cask_uninstall::run_stanza;
+use super::quarantine;
 use crate::installer::cask::{ResolvedCask, for_current_platform, resolve_cask};
 use crate::installer::post_install::{
     CaskDirs, PostInstallContext, remove_uninstall_links, run_steps,
@@ -174,6 +175,7 @@ pub(super) fn stage_cask(
     let _ = fs::remove_dir_all(&dirs.staged);
     fs::create_dir_all(&dirs.staged).map_err(Error::store("failed to create staged dir"))?;
     unpack(blob, &dirs.staged, cask)?;
+    quarantine::propagate(blob, &dirs.staged)?;
     fs::write(ctx.keg.join(CASK_JSON), json.to_string())
         .map_err(Error::store("failed to save cask.json"))?;
 

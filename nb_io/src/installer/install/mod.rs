@@ -5,6 +5,7 @@ pub mod doctor;
 mod outdated;
 mod plan;
 mod post_install;
+mod quarantine;
 mod source;
 mod uninstall;
 mod upgrade;

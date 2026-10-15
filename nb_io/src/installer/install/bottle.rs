@@ -4,6 +4,7 @@ use std::path::{Path, PathBuf};
 use nb_core::{Error, InstallMethod, formula_token};
 use tracing::warn;
 
+use super::quarantine::{propagate, quarantine_download};
 use crate::cellar::link::Linker;
 use crate::cellar::materialize::Cellar;
 use crate::installer::cask::{for_current_platform, resolve_cask};
@@ -196,6 +197,8 @@ impl Installer {
                 None,
             )
             .await?;
+        let homepage = cask_json["homepage"].as_str().unwrap_or_default();
+        quarantine_download(&blob_path, &cask.url, homepage)?;
 
         let keg_path = self.cellar.keg_path(&cask.install_name, &cask.version);
         let mut cleanup = FailedInstallGuard::new(
@@ -216,12 +219,16 @@ impl Installer {
             stage_cask(&blob_path, &cask, &cask_json, &ctx)?;
         } else if crate::extraction::is_archive(&blob_path)? {
             // Cask archives are staged file by file; nothing to prepare.
+            // v2: entries carry the download's quarantine.
             let extracted =
                 self.store
-                    .ensure_entry(&cask.sha256, &blob_path, "cask v1\n", |_| Ok(()))?;
+                    .ensure_entry(&cask.sha256, &blob_path, "cask v2\n", |dir| {
+                        propagate(&blob_path, dir)
+                    })?;
             stage_cask_binaries(&extracted, None, &keg_path, &cask)?;
         } else {
             stage_raw_cask_binary(&blob_path, &keg_path, &cask)?;
+            propagate(&blob_path, &keg_path)?;
         }
 
         let linked_files = if link {
