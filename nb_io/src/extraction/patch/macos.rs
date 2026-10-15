@@ -335,9 +335,9 @@ fn write_ranges(path: &Path, contents: &[u8], ranges: &[Range<usize>]) -> Result
     Ok(())
 }
 
-/// Apply the load-path changes that did not fit in place. `install_name_tool`
-/// can grow a load command into the header padding; one run handles every
-/// change in the file.
+/// Apply the load-path changes that did not fit even in the header padding.
+/// `install_name_tool` (from the Command Line Tools) handles every such
+/// change in the file in one run.
 fn change_with_install_name_tool(path: &Path, changes: &[UnfitChange]) -> Result<(), Error> {
     let mut command = Command::new("install_name_tool");
     for change in changes {
@@ -1028,7 +1028,7 @@ echo "Hello from $PREFIX"
     }
 
     #[test]
-    fn relocates_through_install_name_tool_when_paths_do_not_fit() {
+    fn relocates_by_growing_load_commands_when_paths_do_not_fit() {
         // A deep temp dir: the prefix is longer than the placeholders.
         let tmp = TempDir::new().unwrap();
         let prefix = tmp.path().join("a-prefix-longer-than-any-placeholder");
@@ -1045,7 +1045,9 @@ echo "Hello from $PREFIX"
 
         let mut bytes = fs::read(&built.dylib).unwrap();
         let rewrite = macho::rewrite(&mut bytes, |_, p| relocation.load_path(p)).unwrap();
-        assert_eq!(rewrite.unfit.len(), 2, "both changes need the tool");
+        // The linker's header padding takes both: no install_name_tool,
+        // which needs the Command Line Tools.
+        assert!(rewrite.unfit.is_empty(), "{:?}", rewrite.unfit);
 
         relocate_keg(&built.keg, &cellar, "x", "1.0", "/opt/homebrew").unwrap();
 

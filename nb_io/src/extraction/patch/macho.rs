@@ -4,9 +4,10 @@
 //! the libraries a file loads and its rpaths. `install_name_tool` rewrites the
 //! whole file for every change. The strings live in the load commands at the
 //! start of the file, NUL-terminated and padded to an 8-byte boundary, so a
-//! replacement that fits is a handful of bytes written in place. Only the
-//! strings change; the layout stays valid and the caller only has to re-sign
-//! the file.
+//! replacement that fits is a handful of bytes written in place. One that
+//! does not grows its command into the zero padding the linker leaves before
+//! the first section, as `install_name_tool` and Homebrew's ruby-macho do.
+//! The file keeps its length; the caller only has to re-sign it.
 
 use std::fmt;
 use std::ops::Range;
@@ -36,6 +37,25 @@ pub(crate) struct LoadPath {
     offset: usize,
     /// Bytes available for the string and its NUL terminator.
     capacity: usize,
+    /// Offset of the load command in the file, and its size.
+    command: usize,
+    cmdsize: usize,
+    /// Index of the architecture slice, in [`MachoInfo::layouts`].
+    slice: usize,
+}
+
+/// Where one architecture's load commands are and how far they may grow.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct SliceLayout {
+    start: usize,
+    endian: Endian,
+    header_size: usize,
+    sizeofcmds: usize,
+    /// Commands are padded to this: 8 bytes in 64-bit files, 4 in 32-bit.
+    align: usize,
+    /// Offset of the first section data in the file: the commands may grow
+    /// up to here (ruby-macho's `low_fileoff`).
+    low_fileoff: usize,
 }
 
 /// What the load commands of a file say.
@@ -44,10 +64,11 @@ pub(crate) struct MachoInfo {
     pub(crate) paths: Vec<LoadPath>,
     /// Whether every architecture in the file carries an `LC_CODE_SIGNATURE`.
     pub(crate) signed: bool,
+    layouts: Vec<SliceLayout>,
 }
 
-/// A change that did not fit in the load command and needs
-/// `install_name_tool`, which can grow the command into the header padding.
+/// A change that did not fit in the load command or the header padding, left
+/// to `install_name_tool`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct UnfitChange {
     pub(crate) kind: PathKind,
@@ -120,6 +141,7 @@ pub(crate) fn inspect(data: &[u8]) -> Result<MachoInfo, MachoError> {
     let mut info = MachoInfo {
         paths: Vec::new(),
         signed: true,
+        layouts: Vec::new(),
     };
     for slice in slices(data)? {
         parse_slice(data, slice, &mut info)?;
@@ -129,18 +151,24 @@ pub(crate) fn inspect(data: &[u8]) -> Result<MachoInfo, MachoError> {
 
 /// Replace load paths in place. `map` returns the new path for a kind and
 /// current value, or `None` to leave it alone. A replacement that fits is
-/// written and NUL-padded; one that does not is reported in `unfit` and the
-/// file is left as it was for that command.
+/// written and NUL-padded, one that does not grows its command into the
+/// header padding, and one the padding cannot take is reported in `unfit`
+/// with the file left as it was for that command.
 pub(crate) fn rewrite(
     data: &mut [u8],
     mut map: impl FnMut(PathKind, &str) -> Option<String>,
 ) -> Result<Rewrite, MachoError> {
-    let info = inspect(data)?;
+    let MachoInfo {
+        paths,
+        signed,
+        mut layouts,
+    } = inspect(data)?;
     let mut rewrite = Rewrite {
-        signed: info.signed,
+        signed,
         ..Rewrite::default()
     };
-    for path in info.paths {
+    let mut grow_later = Vec::new();
+    for path in paths {
         // A path that is not UTF-8 cannot be matched against the prefixes we
         // know, and writing a lossy decoding back would corrupt it.
         let Ok(current) = std::str::from_utf8(&path.raw) else {
@@ -152,12 +180,16 @@ pub(crate) fn rewrite(
         if new == current {
             continue;
         }
-        if new.len() + 1 > path.capacity || new.as_bytes().contains(&0) {
+        if new.as_bytes().contains(&0) {
             rewrite.unfit.push(UnfitChange {
                 kind: path.kind,
                 old: current.to_string(),
                 new,
             });
+            continue;
+        }
+        if new.len() + 1 > path.capacity {
+            grow_later.push((path, new));
             continue;
         }
         let range = path.offset..path.offset + path.capacity;
@@ -166,7 +198,61 @@ pub(crate) fn rewrite(
         slot[new.len()..].fill(0);
         rewrite.written.push(range);
     }
+
+    // Last command first, so growing one moves only commands already done.
+    grow_later.sort_by_key(|(path, _)| std::cmp::Reverse(path.command));
+    for (path, new) in grow_later {
+        match grow(data, &mut layouts[path.slice], &path, &new) {
+            Some(ranges) => rewrite.written.extend(ranges),
+            None => rewrite.unfit.push(UnfitChange {
+                kind: path.kind,
+                old: String::from_utf8_lossy(&path.raw).into_owned(),
+                new,
+            }),
+        }
+    }
     Ok(rewrite)
+}
+
+/// Grow the load command holding `path` so `new` fits, moving the commands
+/// after it into the header padding. `None` when the padding is too small or
+/// not all zero.
+fn grow(
+    data: &mut [u8],
+    layout: &mut SliceLayout,
+    path: &LoadPath,
+    new: &str,
+) -> Option<[Range<usize>; 2]> {
+    let string_offset = path.offset - path.command;
+    let size = (string_offset + new.len() + 1).next_multiple_of(layout.align);
+    let delta = size.checked_sub(path.cmdsize)?;
+    let commands_end = layout.start + layout.header_size + layout.sizeofcmds;
+    let grown_end = commands_end + delta;
+    if grown_end > layout.low_fileoff || data.get(commands_end..grown_end)?.iter().any(|b| *b != 0)
+    {
+        return None;
+    }
+    let sizeofcmds = u32::try_from(layout.sizeofcmds + delta).ok()?;
+
+    let command_end = path.command + path.cmdsize;
+    data.copy_within(command_end..commands_end, command_end + delta);
+    write_u32(data, path.command + 4, size as u32, layout.endian);
+    data[path.offset..path.command + size].fill(0);
+    data[path.offset..path.offset + new.len()].copy_from_slice(new.as_bytes());
+    write_u32(data, layout.start + 20, sizeofcmds, layout.endian);
+    layout.sizeofcmds += delta;
+    Some([
+        layout.start + 20..layout.start + 24,
+        path.command..grown_end,
+    ])
+}
+
+fn write_u32(data: &mut [u8], offset: usize, value: u32, endian: Endian) {
+    let bytes = match endian {
+        Endian::Little => value.to_le_bytes(),
+        Endian::Big => value.to_be_bytes(),
+    };
+    data[offset..offset + 4].copy_from_slice(&bytes);
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -258,6 +344,7 @@ fn slices(data: &[u8]) -> Result<Vec<Slice>, MachoError> {
 struct ThinHeader {
     endian: Endian,
     size: usize,
+    is64: bool,
 }
 
 /// Decode the magic at `offset`. The magic is stored in the file's own byte
@@ -270,7 +357,11 @@ fn thin_header(data: &[u8], offset: usize) -> Option<ThinHeader> {
         macho::MH_CIGAM => (Endian::Big, 28),
         _ => return None,
     };
-    Some(ThinHeader { endian, size })
+    Some(ThinHeader {
+        endian,
+        size,
+        is64: size == 32,
+    })
 }
 
 fn parse_slice(data: &[u8], slice: Slice, info: &mut MachoInfo) -> Result<(), MachoError> {
@@ -286,6 +377,8 @@ fn parse_slice(data: &[u8], slice: Slice, info: &mut MachoInfo) -> Result<(), Ma
         .filter(|end| *end <= slice.end)
         .ok_or(MachoError::Truncated("load commands"))?;
     let mut signed = false;
+    let slice_index = info.layouts.len();
+    let mut low_fileoff = slice.end;
 
     for index in 0..ncmds {
         let cmd = read_u32(data, offset, endian).ok_or(MachoError::Truncated("load command"))?;
@@ -305,6 +398,12 @@ fn parse_slice(data: &[u8], slice: Slice, info: &mut MachoInfo) -> Result<(), Ma
             macho::LC_RPATH => Some(PathKind::Rpath),
             macho::LC_CODE_SIGNATURE => {
                 signed = true;
+                None
+            }
+            macho::LC_SEGMENT | macho::LC_SEGMENT_64 => {
+                if let Some(first) = first_section_data(data, offset, cmdsize, endian) {
+                    low_fileoff = low_fileoff.min(slice.start + first);
+                }
                 None
             }
             _ => None,
@@ -333,6 +432,9 @@ fn parse_slice(data: &[u8], slice: Slice, info: &mut MachoInfo) -> Result<(), Ma
                 raw,
                 offset: start,
                 capacity,
+                command: offset,
+                cmdsize,
+                slice: slice_index,
             });
         }
 
@@ -340,7 +442,51 @@ fn parse_slice(data: &[u8], slice: Slice, info: &mut MachoInfo) -> Result<(), Ma
     }
 
     info.signed &= signed;
+    info.layouts.push(SliceLayout {
+        start: slice.start,
+        endian,
+        header_size: header.size,
+        sizeofcmds: sizeofcmds as usize,
+        align: if header.is64 { 8 } else { 4 },
+        low_fileoff,
+    });
     Ok(())
+}
+
+/// The lowest file offset (from the start of the slice) of a segment's
+/// section data, skipping empty and zero-fill sections, which take no space
+/// in the file.
+fn first_section_data(
+    data: &[u8],
+    command: usize,
+    cmdsize: usize,
+    endian: Endian,
+) -> Option<usize> {
+    let is64 = read_u32(data, command, endian)? == macho::LC_SEGMENT_64;
+    let (nsects_at, header, section, size_at, offset_at, flags_at) = if is64 {
+        (64, 72, 80, 40, 48, 64)
+    } else {
+        (48, 56, 68, 36, 40, 56)
+    };
+    let nsects = read_u32(data, command + nsects_at, endian)? as usize;
+    (0..nsects)
+        .map(|i| command + header + i * section)
+        .take_while(|at| at + section <= command + cmdsize)
+        .filter_map(|at| {
+            let size = if is64 {
+                read_u64(data, at + size_at, endian)?
+            } else {
+                u64::from(read_u32(data, at + size_at, endian)?)
+            };
+            let kind = read_u32(data, at + flags_at, endian)? & macho::SECTION_TYPE;
+            let zero_fill = matches!(
+                kind,
+                macho::S_ZEROFILL | macho::S_GB_ZEROFILL | macho::S_THREAD_LOCAL_ZEROFILL
+            );
+            let offset = read_u32(data, at + offset_at, endian)? as usize;
+            (size > 0 && !zero_fill && offset > 0).then_some(offset)
+        })
+        .min()
 }
 
 #[cfg(test)]
@@ -607,6 +753,60 @@ mod tests {
             }]
         );
         assert_eq!(data, original);
+    }
+
+    /// Insert `pad` zero bytes between a thin file's load commands and the
+    /// code after them, as a linker leaves header padding.
+    fn with_header_padding(mut data: Vec<u8>, pad: usize) -> Vec<u8> {
+        let header = thin_header(&data, 0).unwrap();
+        let sizeofcmds = read_u32(&data, 20, header.endian).unwrap() as usize;
+        let at = header.size + sizeofcmds;
+        data.splice(at..at, std::iter::repeat_n(0u8, pad));
+        data
+    }
+
+    #[test]
+    fn a_replacement_that_does_not_fit_grows_into_the_header_padding() {
+        // icu4c@78's makeconv: the Cellar path is a byte longer than its slot.
+        let old = "@@HOMEBREW_CELLAR@@/icu4c@78/78.3/lib/libicutu.78.dylib";
+        let new = "/opt/nextbrew/Cellar/icu4c@78/78.3/lib/libicutu.78.dylib";
+        let slice = |endian, is64| {
+            with_header_padding(
+                thin(
+                    endian,
+                    is64,
+                    &[
+                        Cmd::Padded(PathKind::Dylib, old, 0),
+                        Cmd::Load("/usr/lib/libSystem.B.dylib"),
+                        Cmd::Signature,
+                    ],
+                ),
+                64,
+            )
+        };
+        let original = fat(&[slice(Endian::Little, true), slice(Endian::Big, false)]);
+        let mut data = original.clone();
+
+        let rewrite = rewrite(&mut data, |_, path| {
+            Some(path.replace("@@HOMEBREW_CELLAR@@", "/opt/nextbrew/Cellar"))
+        })
+        .unwrap();
+
+        assert!(rewrite.unfit.is_empty(), "{:?}", rewrite.unfit);
+        assert_eq!(data.len(), original.len());
+        let info = inspect(&data).unwrap();
+        let dylibs = [
+            (PathKind::Dylib, new),
+            (PathKind::Dylib, "/usr/lib/libSystem.B.dylib"),
+        ];
+        assert_eq!(values(&info), [dylibs, dylibs].concat());
+        assert!(info.signed, "the commands after it moved, not lost");
+        // Writing back only the reported ranges gives the same file.
+        let mut patched = original.clone();
+        for range in &rewrite.written {
+            patched[range.clone()].copy_from_slice(&data[range.clone()]);
+        }
+        assert_eq!(patched, data);
     }
 
     #[test]
