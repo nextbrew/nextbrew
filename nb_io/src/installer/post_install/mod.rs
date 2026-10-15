@@ -16,6 +16,9 @@ mod clang;
 mod paths;
 mod steps;
 mod template;
+// Only the macOS CA bundle build reads certificates.
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+mod x509;
 
 use std::collections::HashMap;
 use std::fmt;

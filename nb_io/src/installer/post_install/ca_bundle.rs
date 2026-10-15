@@ -10,9 +10,10 @@
 //! it.
 //!
 //! On a miss, a script nextbrew knows (by its SHA-256) is followed step by
-//! step with the same `openssl` and `security` commands, the per-certificate
-//! ones run concurrently and their results taken in the script's order, so
-//! the bundle is the script's own bytes in a fraction of the time. Any other
+//! step: what it asks `openssl` is read from each certificate as LibreSSL
+//! would answer, `security verify-cert` still decides trust, the checks run
+//! concurrently and their results are taken in the script's order, so the
+//! bundle is the script's own bytes in a fraction of the time. Any other
 //! script, or anything unexpected, runs the script unchanged.
 
 use std::ffi::OsStr;
@@ -177,6 +178,7 @@ fn build(source: &Path) -> Option<Vec<u8>> {
     use std::collections::HashSet;
 
     let work = tempfile::tempdir().ok()?;
+    let now = chrono::Utc::now();
     let mut seen = HashSet::new();
     let mut bundle = Vec::new();
     let mut append = |certificates: &[Vec<u8>], fingerprints: Vec<Option<String>>| {
@@ -210,14 +212,17 @@ fn build(source: &Path) -> Option<Vec<u8>> {
             .enumerate()
             .map(|(i, certificate)| {
                 let file = work.path().join(format!("{purpose}-{i}.pem"));
-                trusted_fingerprint(certificate, purpose, &file)
+                trusted_fingerprint(certificate, purpose, &file, now)
             })
             .collect();
         append(&certificates, fingerprints);
     }
 
     let certificates = split_certificates(&fs::read(source).ok()?);
-    let fingerprints = certificates.par_iter().map(|c| fingerprint(c)).collect();
+    let fingerprints = certificates
+        .par_iter()
+        .map(|c| super::x509::inspect(c, now).map(|facts| facts.fingerprint))
+        .collect();
     append(&certificates, fingerprints);
     Some(bundle)
 }
@@ -227,24 +232,21 @@ fn build(_source: &Path) -> Option<Vec<u8>> {
     None
 }
 
-/// `append_keychain`'s checks, then the fingerprint. The script's three
-/// `openssl` runs (expiry, purpose, fingerprint) are one here: with
-/// `-checkend` the exit status is the expiry check, and the purpose and
-/// fingerprint lines are the ones the separate runs print.
+/// `append_keychain`'s checks, then the fingerprint. What the script asks
+/// `openssl x509` (expiry, purpose, fingerprint) is read from the
+/// certificate here, the way LibreSSL answers it (see [`super::x509`]);
+/// the trust decision is still `security verify-cert`'s.
 #[cfg(target_os = "macos")]
-fn trusted_fingerprint(certificate: &[u8], purpose: &str, file: &Path) -> Option<String> {
-    let out = openssl(
-        certificate,
-        &["-checkend", "0", "-purpose", "-fingerprint", "-sha256"],
-    )
-    .filter(|out| out.status.success())?;
-    if !contains(&out.stdout, b"SSL server CA : Yes") {
+fn trusted_fingerprint(
+    certificate: &[u8],
+    purpose: &str,
+    file: &Path,
+    now: chrono::DateTime<chrono::Utc>,
+) -> Option<String> {
+    let facts = super::x509::inspect(certificate, now)?;
+    if !facts.unexpired || !facts.ssl_server_ca {
         return None;
     }
-    let fingerprint = String::from_utf8_lossy(&out.stdout)
-        .lines()
-        .find(|line| line.contains(" Fingerprint="))?
-        .to_string();
     fs::write(file, certificate).ok()?;
     std::process::Command::new("/usr/bin/security")
         .args(["verify-cert", "-l", "-L", "-c"])
@@ -255,41 +257,7 @@ fn trusted_fingerprint(certificate: &[u8], purpose: &str, file: &Path) -> Option
         .status()
         .ok()
         .filter(|status| status.success())?;
-    Some(fingerprint)
-}
-
-/// `openssl x509 -fingerprint -sha256` as `$(...)` captures it, or `None`
-/// when openssl cannot read the certificate.
-#[cfg(target_os = "macos")]
-fn fingerprint(certificate: &[u8]) -> Option<String> {
-    let out =
-        openssl(certificate, &["-fingerprint", "-sha256"]).filter(|out| out.status.success())?;
-    Some(
-        String::from_utf8_lossy(&out.stdout)
-            .trim_end_matches('\n')
-            .to_string(),
-    )
-}
-
-/// `/usr/bin/openssl x509 -inform pem <args> -noout` with the certificate on
-/// stdin.
-#[cfg(target_os = "macos")]
-fn openssl(certificate: &[u8], args: &[&str]) -> Option<std::process::Output> {
-    use std::io::Write;
-    use std::process::{Command, Stdio};
-
-    let mut child = Command::new("/usr/bin/openssl")
-        .args(["x509", "-inform", "pem"])
-        .args(args)
-        .arg("-noout")
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::null())
-        .spawn()
-        .ok()?;
-    // A closed stdin means openssl has given up; its status says so.
-    let _ = child.stdin.take()?.write_all(certificate);
-    child.wait_with_output().ok()
+    Some(facts.fingerprint)
 }
 
 #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
@@ -319,7 +287,7 @@ fn split_certificates(pem: &[u8]) -> Vec<Vec<u8>> {
 /// The script's `split_certificates` awk: every line from a BEGIN marker
 /// through the next END marker, newline-terminated; a new BEGIN starts over.
 #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
-fn read_certificates(pem: &[u8]) -> Vec<Vec<u8>> {
+pub(super) fn read_certificates(pem: &[u8]) -> Vec<Vec<u8>> {
     let pem = pem.strip_suffix(b"\n").unwrap_or(pem);
     let mut certificates = Vec::new();
     let mut certificate = Vec::new();
