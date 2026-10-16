@@ -250,6 +250,9 @@ pub(super) fn stage_cask(
         }
         let _ = fs::remove_file(&marker);
         symlink(&target, &marker).map_err(Error::store("failed to record placed app"))?;
+        // As Homebrew's post_move: what is moved is still reachable from
+        // where it was, for the artifacts that name it there.
+        symlink(&target, &source).map_err(Error::store("failed to link moved app"))?;
     }
 
     cask_artifacts::place_moved(&places, cask)?;
@@ -799,6 +802,10 @@ mod tests {
             fs::read_link(ctx.keg.join("bin/foo")).unwrap(),
             app.join("Contents/MacOS/foo")
         );
+        assert_eq!(
+            fs::read_link(ctx.keg.join(STAGED_DIR).join("Foo.app")).unwrap(),
+            app
+        );
 
         // Uninstall reads the hooks back from the keg.
         let saved: Value =
@@ -807,6 +814,47 @@ mod tests {
         assert!(!app.exists());
         assert!(root.join("link").symlink_metadata().is_err());
         assert!(ctx.keg.join("uninstalled").exists());
+    }
+
+    #[test]
+    fn binary_inside_a_moved_suite_is_found_through_the_staged_path() {
+        let tmp = TempDir::new().unwrap();
+        let root = tmp.path();
+        let src = root.join("src");
+        fs::create_dir_all(src.join("sdk/bin")).unwrap();
+        fs::write(src.join("sdk/bin/dart"), "#!/bin/sh\n").unwrap();
+        let blob = root.join("sdk.tar.gz");
+        let status = Command::new("tar")
+            .arg("-czf")
+            .arg(&blob)
+            .arg("-C")
+            .arg(&src)
+            .arg("sdk")
+            .status()
+            .unwrap();
+        assert!(status.success());
+        let json = serde_json::json!({
+            "token": "foo",
+            "version": "1.0",
+            "url": "https://example.com/sdk.tar.gz",
+            "sha256": "aaa",
+            "artifacts": [
+                { "suite": ["sdk", { "target": "$HOMEBREW_PREFIX/share/sdk" }] },
+                { "binary": ["sdk/bin/dart"], "target": "$HOMEBREW_PREFIX/bin/dart" }
+            ]
+        });
+        let cask = resolve_cask("foo", &json).unwrap();
+        let ctx = context(root);
+
+        stage_cask(&blob, &cask, &json, &ctx).unwrap();
+
+        let moved = ctx.keg.join("share/sdk");
+        assert!(moved.join("bin/dart").is_file());
+        assert_eq!(
+            fs::read_link(ctx.keg.join(STAGED_DIR).join("sdk")).unwrap(),
+            moved
+        );
+        assert!(ctx.keg.join("bin/dart").is_file());
     }
 
     #[test]

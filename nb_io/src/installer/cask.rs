@@ -256,9 +256,25 @@ pub fn resolve_cask(token: &str, cask: &Value) -> Result<ResolvedCask, Error> {
 
     let binaries = parse_artifacts(artifacts, "binary")?;
     // A suite is a folder of apps, moved into the Applications folder the
-    // same way.
-    let mut apps = parse_artifacts(artifacts, "app")?;
-    apps.extend(parse_artifacts(artifacts, "suite")?);
+    // same way. One given a path as its target goes where that says.
+    let mut apps = Vec::new();
+    let mut moved_apps = Vec::new();
+    for kind in ["app", "suite"] {
+        for (app, path_target) in parse_artifacts(artifacts, kind)?
+            .into_iter()
+            .zip(path_targets(artifacts, kind))
+        {
+            match path_target {
+                Some(target) => moved_apps.push(PlacedArtifact {
+                    kind: kind.to_string(),
+                    source: app.source,
+                    target,
+                    linked: false,
+                }),
+                None => apps.push(app),
+            }
+        }
+    }
     // Homebrew runs `installer` before `pkg`.
     let installers: Vec<Value> = ["installer", "pkg"]
         .iter()
@@ -282,7 +298,8 @@ pub fn resolve_cask(token: &str, cask: &Value) -> Result<ResolvedCask, Error> {
             ),
         });
     }
-    let placed = parse_placed(token, artifacts)?;
+    let mut placed = moved_apps;
+    placed.extend(parse_placed(token, artifacts)?);
     let wrappers = parse_wrappers(token, artifacts)?;
     let generated_scripts = parse_generated_scripts(token, artifacts)?;
     let completions = parse_completions(artifacts);
@@ -514,6 +531,36 @@ fn parse_artifacts(artifacts: &[Value], kind: &str) -> Result<Vec<CaskArtifact>,
     Ok(parsed)
 }
 
+/// For each `kind` stanza, in [`parse_artifacts`]'s order, its target when
+/// that is a path rather than a name, as Homebrew's `resolve_target` takes
+/// it: absolute as given, `~` from the home folder, otherwise in `$APPDIR`.
+fn path_targets(artifacts: &[Value], kind: &str) -> Vec<Option<String>> {
+    artifacts
+        .iter()
+        .filter_map(|artifact| artifact.get(kind).and_then(Value::as_array))
+        .flat_map(|args| {
+            if args.first().is_some_and(Value::is_array) {
+                args.iter().filter_map(Value::as_array).collect()
+            } else {
+                vec![args]
+            }
+        })
+        .map(|stanza| {
+            let target = stanza.get(1)?.get("target")?.as_str()?;
+            if !target.contains('/') {
+                return None;
+            }
+            Some(if let Some(in_home) = target.strip_prefix("~/") {
+                format!("/$HOME/{in_home}")
+            } else if target.starts_with('/') || target.starts_with('$') {
+                target.to_string()
+            } else {
+                format!("$APPDIR/{target}")
+            })
+        })
+        .collect()
+}
+
 fn parse_stanza(kind: &str, args: &[Value]) -> Result<CaskArtifact, Error> {
     let source = args
         .first()
@@ -555,6 +602,40 @@ fn basename(path: &str) -> Result<String, Error> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn apps_given_a_path_target_are_moved_there() {
+        let json = serde_json::json!({
+            "token": "box-tools",
+            "version": "1.0",
+            "url": "https://example.com/a.zip",
+            "sha256": "aaa",
+            "artifacts": [
+                { "app": ["A.app"], "target": "/Applications/A.app" },
+                { "app": ["B.app", { "target": "~/Library/Box/B.app" }] },
+                { "app": ["C.app", { "target": "Box/C.app" }] },
+                { "suite": ["sdk", { "target": "$HOMEBREW_PREFIX/share/sdk" }],
+                  "target": "/Applications/$HOMEBREW_PREFIX/share/sdk" }
+            ]
+        });
+        let cask = resolve_cask("box-tools", &json).unwrap();
+
+        assert_eq!(cask.apps.len(), 1);
+        assert_eq!(cask.apps[0].target, "A.app");
+        let placed: Vec<_> = cask
+            .placed
+            .iter()
+            .map(|p| (p.kind.as_str(), p.source.as_str(), p.target.as_str()))
+            .collect();
+        assert_eq!(
+            placed,
+            [
+                ("app", "B.app", "/$HOME/Library/Box/B.app"),
+                ("app", "C.app", "$APPDIR/Box/C.app"),
+                ("suite", "sdk", "$HOMEBREW_PREFIX/share/sdk"),
+            ]
+        );
+    }
 
     fn date(s: &str) -> NaiveDate {
         NaiveDate::parse_from_str(s, "%Y-%m-%d").unwrap()

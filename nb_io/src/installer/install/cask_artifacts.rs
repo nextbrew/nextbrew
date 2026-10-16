@@ -91,6 +91,8 @@ pub(super) fn place_moved(places: &Places, cask: &ResolvedCask) -> Result<(), Er
         let (destination, in_keg) = places.destination(&target);
         let marker = (!in_keg).then(|| next_marker(places.keg)).transpose()?;
         move_into_place(&source, &destination, marker.as_deref(), cask)?;
+        // As Homebrew's post_move, so a binary under a moved suite is found.
+        symlink(&destination, &source).map_err(Error::store("failed to link moved artifact"))?;
         if let Some(marker) = marker {
             symlink(&destination, &marker)
                 .map_err(Error::store("failed to record a placed artifact"))?;
@@ -557,9 +559,11 @@ mod tests {
 
         let font = f.home.join("Library/Fonts/X.otf");
         assert_eq!(fs::read_to_string(&font).unwrap(), "font");
-        assert!(!f.staged.join("fonts/X.otf").exists());
+        // As Homebrew's post_move, the staged path now leads to it.
+        assert_eq!(fs::read_link(f.staged.join("fonts/X.otf")).unwrap(), font);
 
-        // A reinstall replaces this keg's own font.
+        // A reinstall unpacks afresh and replaces this keg's own font.
+        fs::remove_file(f.staged.join("fonts/X.otf")).unwrap();
         fs::write(f.staged.join("fonts/X.otf"), "font v2").unwrap();
         place_moved(&f.places(), &cask).unwrap();
         assert_eq!(fs::read_to_string(&font).unwrap(), "font v2");
