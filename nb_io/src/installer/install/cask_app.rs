@@ -471,9 +471,7 @@ fn placed_appdir(keg: &Path) -> Option<PathBuf> {
     Some(fs::read_link(entry.path()).ok()?.parent()?.to_path_buf())
 }
 
-/// Unpack `blob` into the existing directory `dest`. A DMG is mounted and
-/// its contents copied, as Homebrew does, so hooks can change them.
-/// Unpack `blob` the way Homebrew picks a strategy: a DMG is mounted and
+/// Unpack `blob` into the existing directory `dest`, the way Homebrew picks a strategy: a DMG is mounted and
 /// copied, a zip goes through `ditto`, an installer package is staged whole
 /// under the name its `pkg` stanza uses (`UnpackStrategy::Pkg`, before
 /// `Xar`), and anything else goes to `tar`.
@@ -498,19 +496,8 @@ fn unpack(blob: &Path, dest: &Path, cask: &ResolvedCask) -> Result<(), Error> {
     }
 
     let mount = tempfile::tempdir().map_err(Error::store("failed to create mount point"))?;
-    // ponytail: DMGs with a license agreement fail to attach here;
-    // convert them first (`hdiutil convert -format UDTO`) if needed.
-    run(Command::new("hdiutil")
-        .args([
-            "attach",
-            "-nobrowse",
-            "-readonly",
-            "-noautoopen",
-            "-noverify",
-            "-mountpoint",
-        ])
-        .arg(mount.path())
-        .arg(blob))?;
+    let work = tempfile::tempdir().map_err(Error::store("failed to create work dir"))?;
+    attach_dmg(blob, mount.path(), work.path())?;
     let copied = copy_volume(mount.path(), dest);
     let _ = Command::new("hdiutil")
         .args(["detach", "-force"])
@@ -519,6 +506,63 @@ fn unpack(blob: &Path, dest: &Path, cask: &ResolvedCask) -> Result<(), Error> {
         .stderr(Stdio::null())
         .status();
     copied
+}
+
+/// Mount `image` at `mount` as Homebrew's `UnpackStrategy::Dmg` does: the
+/// first attach answers a license agreement's pager with `qn`, declining
+/// it; if there was one, the image is converted to a plain one (`UDTO`),
+/// which has no agreement, and that is attached.
+fn attach_dmg(image: &Path, mount: &Path, work: &Path) -> Result<(), Error> {
+    let attach = |image: &Path| {
+        let mut cmd = Command::new("hdiutil");
+        cmd.args([
+            "attach",
+            "-nobrowse",
+            "-readonly",
+            "-noautoopen",
+            "-noverify",
+            "-mountpoint",
+        ])
+        .arg(mount)
+        .arg(image);
+        cmd
+    };
+    let mut first = attach(image)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .map_err(|e| Error::ExecutionError {
+            message: format!("failed to run hdiutil: {e}"),
+        })?;
+    if let Some(mut stdin) = first.stdin.take() {
+        use std::io::Write;
+        // The pager may be gone before it reads this.
+        let _ = stdin.write_all(b"qn\n");
+    }
+    let without_eula = first
+        .wait_with_output()
+        .map_err(|e| Error::ExecutionError {
+            message: format!("failed to run hdiutil: {e}"),
+        })?;
+    if without_eula.status.success() {
+        return Ok(());
+    }
+    // No agreement was shown: it failed for some other reason.
+    if without_eula.stdout.is_empty() {
+        return Err(Error::ExecutionError {
+            message: format!(
+                "hdiutil failed: {}",
+                String::from_utf8_lossy(&without_eula.stderr).trim()
+            ),
+        });
+    }
+    let cdr = work.join("image.cdr");
+    run(Command::new("hdiutil")
+        .args(["convert", "-quiet", "-format", "UDTO", "-o"])
+        .arg(&cdr)
+        .arg(image))?;
+    run(&mut attach(&cdr))
 }
 
 /// Copy a mounted DMG's contents as Homebrew's `UnpackStrategy::Dmg` does:
