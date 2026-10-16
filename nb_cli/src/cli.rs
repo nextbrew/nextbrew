@@ -204,6 +204,14 @@ pub enum Commands {
         #[arg(long, help = "Do not create symlinks after installation")]
         no_link: bool,
     },
+    /// Search formulae and casks by name, or by /regex/
+    Search {
+        query: String,
+        #[arg(long, conflicts_with = "cask", help = "Only search formulae")]
+        formula: bool,
+        #[arg(long, help = "Only search casks")]
+        cask: bool,
+    },
     /// Show the runtime dependencies of formulae
     Deps {
         #[arg(required = true, num_args = 1..)]

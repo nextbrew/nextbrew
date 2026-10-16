@@ -117,6 +117,27 @@ impl<'a> RubySourceLocator<'a> {
     }
 }
 
+/// `brew search`'s matching: `/regex/`, or a substring of the name once
+/// both are lowercased and stripped to letters, digits, `@` and `+`.
+type Matcher = Box<dyn Fn(&str) -> bool>;
+
+fn search_matcher(query: &str) -> Result<Matcher, Error> {
+    if let Some(pattern) = query.strip_prefix('/').and_then(|q| q.strip_suffix('/')) {
+        let regex = regex::Regex::new(pattern).map_err(|_| Error::InvalidArgument {
+            message: format!("{query} is not a valid regex."),
+        })?;
+        return Ok(Box::new(move |name| regex.is_match(name)));
+    }
+    fn simplify(s: &str) -> String {
+        s.chars()
+            .filter(|c| c.is_ascii_alphanumeric() || *c == '@' || *c == '+')
+            .collect::<String>()
+            .to_ascii_lowercase()
+    }
+    let query = simplify(query);
+    Ok(Box::new(move |name| simplify(name).contains(&query)))
+}
+
 enum CachedGetResult {
     Cached(String),
     Fresh(reqwest::Response),
@@ -375,14 +396,20 @@ impl ApiClient {
 
     async fn fetch_formula_json(&self, name: &str) -> Result<String, Error> {
         let url = format!("{}/{}.json", self.base_url, name);
+        self.cached_body(&url)
+            .await?
+            .ok_or_else(|| Error::MissingFormula {
+                name: name.to_string(),
+            })
+    }
 
-        match self.cached_get(&url).await? {
-            CachedGetResult::Cached(body) => Ok(body),
+    /// The body at `url` through the response cache, or `None` on a 404.
+    async fn cached_body(&self, url: &str) -> Result<Option<String>, Error> {
+        match self.cached_get(url).await? {
+            CachedGetResult::Cached(body) => Ok(Some(body)),
             CachedGetResult::Fresh(response) => {
                 if response.status() == reqwest::StatusCode::NOT_FOUND {
-                    return Err(Error::MissingFormula {
-                        name: name.to_string(),
-                    });
+                    return Ok(None);
                 }
                 if !response.status().is_success() {
                     return Err(Error::NetworkFailure {
@@ -390,26 +417,85 @@ impl ApiClient {
                     });
                 }
 
-                let etag = response
-                    .headers()
-                    .get("etag")
-                    .and_then(|v| v.to_str().ok())
-                    .map(|s| s.to_string());
-                let last_modified = response
-                    .headers()
-                    .get("last-modified")
-                    .and_then(|v| v.to_str().ok())
-                    .map(|s| s.to_string());
+                let header = |name: &str| {
+                    response
+                        .headers()
+                        .get(name)
+                        .and_then(|v| v.to_str().ok())
+                        .map(|s| s.to_string())
+                };
+                let (etag, last_modified) = (header("etag"), header("last-modified"));
 
                 let body = response
                     .text()
                     .await
                     .map_err(Error::network("failed to read response body"))?;
 
-                self.store_response_in_cache(&url, etag, last_modified, &body);
-                Ok(body)
+                self.store_response_in_cache(url, etag, last_modified, &body);
+                Ok(Some(body))
             }
         }
+    }
+
+    /// Formula names and aliases matching `query`, as `brew search` lists
+    /// them: an alias only when its formula's own name did not match, and
+    /// unversioned formulae before versioned ones.
+    ///
+    // ponytail: no fuzzy or did-you-mean results, which brew adds for a
+    // plain-string query; add them if near misses come up empty too often.
+    pub async fn search_formulas(&self, query: &str) -> Result<Vec<String>, Error> {
+        let matches = search_matcher(query)?;
+        let candidates = self.formula_candidates().await?;
+        let found: Vec<&String> = candidates.iter().filter(|name| matches(name)).collect();
+        // The index keeps old names with the aliases; brew searches only the latter.
+        let alias_of = |name: &str| {
+            let cache = self.cache.as_ref()?;
+            let formula = cache.index_alias(name)?;
+            let body: serde_json::Value =
+                serde_json::from_str(&cache.index_formula(&formula)?).ok()?;
+            let old = body["oldnames"]
+                .as_array()
+                .is_some_and(|old| old.iter().any(|old| old == name));
+            Some((formula, old))
+        };
+        let mut results: Vec<String> = found
+            .iter()
+            .filter(|name| match alias_of(name) {
+                Some((_, true)) => false,
+                Some((formula, false)) => !found.contains(&&formula),
+                None => true,
+            })
+            .map(|name| name.to_string())
+            .collect();
+        results.sort_by_cached_key(|name| {
+            let (base, version) = name.split_once('@').unwrap_or((name, ""));
+            let parts: Vec<u64> = version.split('.').map(|p| p.parse().unwrap_or(0)).collect();
+            (base.to_string(), parts)
+        });
+        results.dedup();
+        Ok(results)
+    }
+
+    /// Cask tokens matching `query`, sorted, from the bulk cask API file.
+    pub async fn search_casks(&self, query: &str) -> Result<Vec<String>, Error> {
+        let matches = search_matcher(query)?;
+        #[derive(serde::Deserialize)]
+        struct Cask {
+            token: String,
+        }
+        let url = format!("{}.json", self.cask_base_url);
+        let body = self.cached_body(&url).await?.ok_or(Error::NetworkFailure {
+            message: format!("{url} not found"),
+        })?;
+        let casks: Vec<Cask> =
+            serde_json::from_str(&body).map_err(Error::network("failed to parse cask list"))?;
+        let mut tokens: Vec<String> = casks
+            .into_iter()
+            .map(|cask| cask.token)
+            .filter(|token| matches(token))
+            .collect();
+        tokens.sort();
+        Ok(tokens)
     }
 
     fn index_url(&self) -> String {
@@ -1172,6 +1258,15 @@ end
         assert!(matches!(err, Error::ChecksumMismatch { .. }));
     }
 
+    #[test]
+    fn search_matches_like_brew() {
+        let plain = search_matcher("Node-JS").unwrap();
+        assert!(plain("nodejs") && plain("node.js@22") && !plain("node"));
+        let regex = search_matcher("/^jq$/").unwrap();
+        assert!(regex("jq") && !regex("gojq"));
+        assert!(search_matcher("/(/").is_err());
+    }
+
     #[tokio::test]
     async fn fetches_cask_json() {
         let mock_server = MockServer::start().await;
@@ -1265,6 +1360,30 @@ end
         ApiClient::with_base_url(format!("{}/formula", server.uri()))
             .unwrap()
             .with_cache(cache)
+    }
+
+    #[tokio::test]
+    async fn search_lists_formulae_like_brew() {
+        let mock_server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/formula.json"))
+            .respond_with(ResponseTemplate::new(200).set_body_string(
+                r#"[{"name":"node","aliases":["nodejs"]},{"name":"node@22"},
+                    {"name":"node@9"},{"name":"node-build"},
+                    {"name":"certifi","oldnames":["python-certifi"]},
+                    {"name":"lua","aliases":["luajit-node"]}]"#,
+            ))
+            .mount(&mock_server)
+            .await;
+        let client = indexed_client(&mock_server, ApiCache::in_memory().unwrap());
+
+        // nodejs is dropped for node; luajit-node stays, its formula didn't match.
+        let found = client.search_formulas("node").await.unwrap();
+        assert_eq!(
+            found,
+            ["luajit-node", "node", "node@9", "node@22", "node-build"]
+        );
+        assert!(client.search_formulas("python").await.unwrap().is_empty());
     }
 
     #[tokio::test]

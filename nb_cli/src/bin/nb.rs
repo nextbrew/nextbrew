@@ -92,6 +92,11 @@ async fn run(cli: Cli) -> Result<(), nb_core::Error> {
             )
             .await
         }
+        Commands::Search {
+            query,
+            formula,
+            cask,
+        } => commands::search::execute(&installer, query, formula, cask).await,
         Commands::Deps {
             formulas,
             direct,
