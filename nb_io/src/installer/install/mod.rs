@@ -1,3 +1,4 @@
+mod autoremove;
 mod bottle;
 mod cask_app;
 mod cask_artifacts;
@@ -809,6 +810,10 @@ mod tests {
 
         assert!(installer.db.get_installed("mainpkg").unwrap().on_request);
         assert!(!installer.db.get_installed("deplib").unwrap().on_request);
+
+        assert!(installer.unneeded_formulae().await.unwrap().is_empty());
+        installer.uninstall("mainpkg").unwrap();
+        assert_eq!(installer.unneeded_formulae().await.unwrap(), ["deplib"]);
     }
 
     #[tokio::test]

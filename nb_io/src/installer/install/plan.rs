@@ -270,7 +270,7 @@ impl Installer {
         (formulas, failures)
     }
 
-    async fn fetch_all_formulas(
+    pub(super) async fn fetch_all_formulas(
         &self,
         names: &[String],
     ) -> Result<BTreeMap<String, Formula>, Error> {

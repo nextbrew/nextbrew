@@ -34,7 +34,7 @@ const KEG_APPS_DIR: &str = "Applications";
 /// Keg directory the download is unpacked into: the cask's `staged_path`.
 const STAGED_DIR: &str = "staged";
 /// The cask's API JSON, kept for its uninstall hooks.
-const CASK_JSON: &str = "cask.json";
+pub(super) const CASK_JSON: &str = "cask.json";
 /// Volume clutter Homebrew leaves out when copying a DMG.
 const DMG_SKIP: &[&str] = &[
     ".background",

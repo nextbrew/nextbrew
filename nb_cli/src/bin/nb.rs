@@ -64,6 +64,9 @@ async fn run(cli: Cli) -> Result<(), nb_core::Error> {
         Commands::Uninstall { formulas, all, zap } => {
             commands::uninstall::execute(&mut installer, formulas, all, zap, &mut ui)
         }
+        Commands::Autoremove { dry_run } => {
+            commands::autoremove::execute(&mut installer, dry_run, &mut ui).await
+        }
         Commands::Migrate { yes, force } => {
             commands::migrate::execute(&mut installer, yes, force, &mut ui).await
         }

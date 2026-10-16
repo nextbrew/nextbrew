@@ -163,7 +163,7 @@ fn pretty_name(version: &str) -> &'static str {
 }
 
 /// One name or a list of them.
-fn names(value: &Value) -> Vec<String> {
+pub(super) fn names(value: &Value) -> Vec<String> {
     match value {
         Value::String(one) => vec![one.clone()],
         Value::Array(list) => list
@@ -444,6 +444,12 @@ mod tests {
             assert!(installer.is_installed("cask:helper"));
             assert!(installer.is_installed("deplib"));
             assert!(installer.is_installed("cask:main"));
+
+            // The cask keeps its formula dependency until it goes.
+            assert!(!installer.get_installed("deplib").unwrap().on_request);
+            assert!(installer.unneeded_formulae().await.unwrap().is_empty());
+            installer.uninstall("cask:main").unwrap();
+            assert_eq!(installer.unneeded_formulae().await.unwrap(), ["deplib"]);
         }
 
         #[tokio::test]

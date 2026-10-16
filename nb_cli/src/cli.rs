@@ -133,6 +133,15 @@ pub enum Commands {
         #[arg(long, help = "Also remove the casks' user data (zap stanza)")]
         zap: bool,
     },
+    /// Uninstall formulae that were only installed as dependencies and are no longer needed
+    Autoremove {
+        #[arg(
+            long,
+            short = 'n',
+            help = "List what would be removed without removing it"
+        )]
+        dry_run: bool,
+    },
     /// Migrate packages from Homebrew
     Migrate {
         #[arg(long, short = 'y', help = "Skip confirmation prompts")]

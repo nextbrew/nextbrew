@@ -1,3 +1,4 @@
+pub mod autoremove;
 pub mod bundle;
 pub mod completion;
 pub mod doctor;
