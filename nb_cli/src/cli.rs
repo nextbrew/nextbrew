@@ -204,6 +204,31 @@ pub enum Commands {
         #[arg(long, help = "Do not create symlinks after installation")]
         no_link: bool,
     },
+    /// Show the runtime dependencies of formulae
+    Deps {
+        #[arg(required = true, num_args = 1..)]
+        formulas: Vec<String>,
+        #[arg(
+            long,
+            short = '1',
+            help = "Only the dependencies the formulae name themselves"
+        )]
+        direct: bool,
+        #[arg(
+            long,
+            help = "Show the dependencies of any of the formulae, not only shared ones"
+        )]
+        union: bool,
+    },
+    /// Show the installed formulae that depend on formulae
+    Uses {
+        #[arg(required = true, num_args = 1..)]
+        formulas: Vec<String>,
+        #[arg(long, help = "Only search installed formulae")]
+        installed: bool,
+        #[arg(long, help = "Also count dependencies of dependencies")]
+        recursive: bool,
+    },
     /// Symlink installed formulae into the prefix
     Link {
         #[arg(required = true, num_args = 1..)]

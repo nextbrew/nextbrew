@@ -92,6 +92,16 @@ async fn run(cli: Cli) -> Result<(), nb_core::Error> {
             )
             .await
         }
+        Commands::Deps {
+            formulas,
+            direct,
+            union,
+        } => commands::deps::deps(&installer, formulas, direct, union).await,
+        Commands::Uses {
+            formulas,
+            installed,
+            recursive,
+        } => commands::deps::uses(&installer, formulas, installed, recursive).await,
         Commands::Link { formulas, force } => {
             commands::link::link(&mut installer, formulas, force).await
         }

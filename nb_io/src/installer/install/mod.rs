@@ -6,6 +6,7 @@ mod cask_app;
 mod cask_artifacts;
 mod cask_deps;
 mod cask_uninstall;
+mod deps;
 pub mod doctor;
 mod outdated;
 mod plan;
@@ -825,6 +826,20 @@ mod tests {
 
         assert!(installer.db.get_installed("mainpkg").unwrap().on_request);
         assert!(!installer.db.get_installed("deplib").unwrap().on_request);
+
+        let deps = installer.dependencies("mainpkg", false).await.unwrap();
+        assert_eq!(deps.into_iter().collect::<Vec<_>>(), ["deplib"]);
+        assert!(
+            installer
+                .dependencies("deplib", true)
+                .await
+                .unwrap()
+                .is_empty()
+        );
+        let uses = installer
+            .installed_dependents(&["deplib".to_string()], false)
+            .await;
+        assert_eq!(uses.unwrap(), ["mainpkg"]);
 
         assert!(installer.unneeded_formulae().await.unwrap().is_empty());
         installer.uninstall("mainpkg").unwrap();
