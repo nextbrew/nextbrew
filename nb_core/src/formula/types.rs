@@ -146,6 +146,26 @@ pub struct Formula {
     /// Homebrew's declarative post-install steps, run after linking.
     #[serde(default)]
     pub post_install_steps: Vec<PostInstallStep>,
+    #[serde(flatten)]
+    pub lifecycle: Lifecycle,
+}
+
+/// The `deprecate!` / `disable!` keys of the formula JSON, under their API
+/// names so they serialize back for the shared message builder.
+#[derive(Debug, Clone, Default, Deserialize, serde::Serialize, PartialEq, Eq)]
+pub struct Lifecycle {
+    #[serde(default)]
+    pub deprecated: bool,
+    pub deprecation_date: Option<String>,
+    pub deprecation_reason: Option<String>,
+    pub deprecation_replacement_formula: Option<String>,
+    pub deprecation_replacement_cask: Option<String>,
+    #[serde(default)]
+    pub disabled: bool,
+    pub disable_date: Option<String>,
+    pub disable_reason: Option<String>,
+    pub disable_replacement_formula: Option<String>,
+    pub disable_replacement_cask: Option<String>,
 }
 
 impl Formula {

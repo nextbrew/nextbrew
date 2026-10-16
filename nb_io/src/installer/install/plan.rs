@@ -145,6 +145,7 @@ impl Installer {
         formula: Formula,
         build_from_source: bool,
     ) -> Result<PlannedInstall, Error> {
+        crate::installer::cask::check_formula_deprecate_disable(&formula)?;
         let method = if build_from_source {
             match BuildPlan::from_formula(&formula, &self.prefix) {
                 Some(plan) => InstallMethod::Source(plan),

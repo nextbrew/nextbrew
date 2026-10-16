@@ -162,6 +162,8 @@ pub enum DeprecateDisable {
 }
 
 /// See [`DeprecateDisable`]; the wording follows `DeprecateDisable.message`.
+/// Takes cask JSON, or formula JSON (told apart by `token`, which only
+/// casks have, as the reason codes differ).
 pub fn deprecate_disable(cask: &Value, today: NaiveDate) -> Option<DeprecateDisable> {
     let flag = |key: &str| cask[key].as_bool() == Some(true);
     let text = |key: &str| cask[key].as_str().filter(|s| !s.is_empty());
@@ -174,9 +176,14 @@ pub fn deprecate_disable(cask: &Value, today: NaiveDate) -> Option<DeprecateDisa
     } else {
         return None;
     };
-    let mut message = format!("{} has been {kind}", text("token").unwrap_or_default());
+    let token = text("token");
+    let name = token.or(text("name")).unwrap_or_default();
+    let mut message = format!("{name} has been {kind}");
     match reason {
-        Some(reason) => message += &format!(" because it {}!", reason_text(reason)),
+        Some(reason) if token.is_some() => {
+            message += &format!(" because it {}!", reason_text(reason))
+        }
+        Some(reason) => message += &format!(" because it {}!", formula_reason_text(reason)),
         None => message += "!",
     }
 
@@ -223,6 +230,35 @@ pub fn check_deprecate_disable(cask: &Value) -> Result<(), Error> {
         }
         Some(DeprecateDisable::Disabled(message)) => Err(Error::InvalidArgument { message }),
         None => Ok(()),
+    }
+}
+
+/// Warn about a deprecated formula and refuse a disabled one, as Homebrew's
+/// `FormulaInstaller#prelude` does for each formula it installs.
+pub fn check_formula_deprecate_disable(formula: &nb_core::Formula) -> Result<(), Error> {
+    let mut json = serde_json::to_value(&formula.lifecycle).unwrap_or_default();
+    json["name"] = Value::from(formula.name.as_str());
+    check_deprecate_disable(&json)
+}
+
+/// Homebrew's wording for its formula reason codes; anything else is free text.
+fn formula_reason_text(reason: &str) -> &str {
+    match reason {
+        "does_not_build" => "does not build",
+        "no_license" => "has no license",
+        "repo_archived" => "has an archived upstream repository",
+        "repo_removed" => "has a removed upstream repository",
+        "unmaintained" => "is not maintained upstream",
+        "unreachable" => "is no longer reliably reachable upstream",
+        "unsupported" => "is not supported upstream",
+        "deprecated_upstream" => "is deprecated upstream",
+        "versioned_formula" => "is a versioned formula",
+        "checksum_mismatch" => {
+            "was built with an initially released source file that had a different checksum \
+             than the current one. Upstream's repository might have been compromised. We can \
+             re-package this once upstream has confirmed that they retagged their release"
+        }
+        other => other,
     }
 }
 
@@ -702,6 +738,22 @@ mod tests {
         assert_eq!(
             deprecate_disable(&serde_json::json!({ "token": "fine" }), date("2026-10-15")),
             None
+        );
+    }
+
+    #[test]
+    fn a_disabled_formula_is_refused_with_its_reason() {
+        let formula: nb_core::Formula = serde_json::from_value(serde_json::json!({
+            "name": "oldlib", "versions": {"stable": "1.0"}, "dependencies": [],
+            "bottle": {"stable": {"files": {}}}, "disabled": true, "disable_date": "2020-01-01",
+            "disable_reason": "does_not_build", "disable_replacement_formula": "newlib"
+        }))
+        .unwrap();
+        let err = check_formula_deprecate_disable(&formula).unwrap_err();
+        assert_eq!(
+            err.to_string(),
+            "invalid argument: oldlib has been disabled because it does not build! \
+             It was disabled on 2020-01-01.\nReplacement:\n  nb install newlib\n"
         );
     }
 
