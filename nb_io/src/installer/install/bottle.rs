@@ -210,22 +210,43 @@ impl Installer {
         check_deprecate_disable(&cask_json)?;
         check_requirements(&cask_json)?;
         self.check_conflicts(&cask_json)?;
-        let cask = resolve_cask(token, &cask_json)?;
+        let mut cask = resolve_cask(token, &cask_json)?;
 
         let blob_path = self
             .downloader
-            .download_single(
-                DownloadRequest::new(
-                    cask.url.clone(),
-                    cask.sha256.clone(),
-                    cask.install_name.clone(),
-                ),
-                None,
-            )
+            .download_single(cask_download(&cask, &cask_json), None)
             .await?;
+        if !cask.no_check {
+            return self
+                .install_downloaded_cask(cask, &cask_json, &blob_path, link, chain)
+                .await;
+        }
+        // An unverified download is kept by what it is, and fetched afresh
+        // next time, whether this install works or not.
+        let key = std::mem::take(&mut cask.sha256);
+        let result = match crate::checksum::sha256_file(&blob_path) {
+            Ok(actual) => {
+                cask.sha256 = actual;
+                self.install_downloaded_cask(cask, &cask_json, &blob_path, link, chain)
+                    .await
+            }
+            Err(e) => Err(e),
+        };
+        self.downloader.remove_blob(&key);
+        result
+    }
+
+    async fn install_downloaded_cask(
+        &mut self,
+        cask: crate::installer::cask::ResolvedCask,
+        cask_json: &serde_json::Value,
+        blob_path: &Path,
+        link: bool,
+        chain: &mut Vec<String>,
+    ) -> Result<(), Error> {
         let homepage = cask_json["homepage"].as_str().unwrap_or_default();
-        quarantine_download(&blob_path, &cask.url, homepage)?;
-        self.install_cask_dependencies(&cask_json, link, chain)
+        quarantine_download(blob_path, &cask.url, homepage)?;
+        self.install_cask_dependencies(cask_json, link, chain)
             .await?;
 
         let keg_path = self.cellar.keg_path(&cask.install_name, &cask.version);
@@ -245,25 +266,25 @@ impl Installer {
             || !cask.wrappers.is_empty()
             || !cask.completions.is_empty()
             || !cask.generated_scripts.is_empty()
-            || is_dmg(&blob_path)?
+            || is_dmg(blob_path)?
         {
             let ctx = self.cask_context(&cask, &keg_path, app_dir()?);
-            stage_cask(&blob_path, &cask, &cask_json, &ctx)?;
-        } else if crate::extraction::is_archive(&blob_path)? {
+            stage_cask(blob_path, &cask, cask_json, &ctx)?;
+        } else if crate::extraction::is_archive(blob_path)? {
             // Cask archives are staged file by file; nothing to prepare.
             // v2: entries carry the download's quarantine.
             let extracted =
                 self.store
-                    .ensure_entry(&cask.sha256, &blob_path, "cask v2\n", |dir| {
-                        propagate(&blob_path, dir)
+                    .ensure_entry(&cask.sha256, blob_path, "cask v2\n", |dir| {
+                        propagate(blob_path, dir)
                     })?;
             stage_cask_binaries(&extracted, None, &keg_path, &cask)?;
         } else {
-            stage_raw_cask_binary(&blob_path, &keg_path, &cask)?;
-            propagate(&blob_path, &keg_path)?;
+            stage_raw_cask_binary(blob_path, &keg_path, &cask)?;
+            propagate(blob_path, &keg_path)?;
         }
         if !keg_path.join("cask.json").exists() {
-            super::cask_app::save_cask_json(&keg_path, &cask_json)?;
+            super::cask_app::save_cask_json(&keg_path, cask_json)?;
         }
 
         let linked_files = if link {
@@ -287,6 +308,30 @@ impl Installer {
         cleanup.disarm();
         Ok(())
     }
+}
+
+/// The download of a cask. One with `sha256 :no_check` is not verified,
+/// as Homebrew does for its own casks; that is said only for a cask that
+/// does not update itself, since one that does is expected to change.
+pub(super) fn cask_download(
+    cask: &crate::installer::cask::ResolvedCask,
+    json: &serde_json::Value,
+) -> DownloadRequest {
+    let request = DownloadRequest::new(
+        cask.url.clone(),
+        cask.sha256.clone(),
+        cask.install_name.clone(),
+    );
+    if !cask.no_check {
+        return request;
+    }
+    if !json["auto_updates"].as_bool().unwrap_or(false) {
+        warn!(
+            "No checksum defined for cask '{}', skipping verification.",
+            cask.token
+        );
+    }
+    request.unverified()
 }
 
 /// What it takes to turn a downloaded bottle into a store entry.

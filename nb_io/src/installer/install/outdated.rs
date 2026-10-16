@@ -5,7 +5,8 @@ use crate::installer::cask::{for_current_platform, resolve_cask};
 use crate::storage::db::InstalledKeg;
 
 impl Installer {
-    /// A cask is outdated when the API's artifact checksum moved on.
+    /// A cask is outdated when the API's artifact checksum moved on, or,
+    /// with no checksum, its version; a `latest` one only when `greedy`.
     /// `auto_updates` casks update themselves, so like `brew outdated` they
     /// only count when `greedy` (named explicitly).
     async fn cask_outdated(
@@ -17,7 +18,12 @@ impl Installer {
         let json = for_current_platform(&self.api_client.get_cask(token).await?);
         let auto_updates = json["auto_updates"].as_bool().unwrap_or(false);
         let cask = resolve_cask(token, &json)?;
-        if keg.store_key == cask.sha256 || (auto_updates && !greedy) {
+        let current = if cask.no_check {
+            keg.version == cask.version && !(cask.version == "latest" && greedy)
+        } else {
+            keg.store_key == cask.sha256
+        };
+        if current || (auto_updates && !greedy) {
             return Ok(None);
         }
         Ok(Some(OutdatedPackage {

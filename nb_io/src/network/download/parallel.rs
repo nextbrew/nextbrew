@@ -16,6 +16,9 @@ pub struct DownloadRequest {
     pub name: String,
     /// Work to do on the body as it streams in; see [`BodyConsumer`].
     pub consumer: Option<BodyConsumer>,
+    /// Whether the body must hash to `sha256`; when not, `sha256` only
+    /// names the blob.
+    pub verify: bool,
 }
 
 impl DownloadRequest {
@@ -25,7 +28,14 @@ impl DownloadRequest {
             sha256: sha256.into(),
             name: name.into(),
             consumer: None,
+            verify: true,
         }
+    }
+
+    /// Keep the body without checking it, under `sha256` as a name.
+    pub fn unverified(mut self) -> Self {
+        self.verify = false;
+        self
     }
 
     pub fn with_consumer(mut self, consumer: BodyConsumer) -> Self {
@@ -199,9 +209,10 @@ impl ParallelDownloader {
             .map_err(Error::network("semaphore error"))?;
 
         let result = downloader
-            .download_with_progress(
+            .fetch(
                 &req.url,
                 &req.sha256,
+                req.verify,
                 Some(req.name),
                 progress,
                 req.consumer,

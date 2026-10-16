@@ -57,10 +57,7 @@ impl Installer {
             self.check_conflicts(&json)?;
             let cask = crate::installer::cask::resolve_cask(token, &json)?;
             self.downloader
-                .download_single(
-                    DownloadRequest::new(cask.url, cask.sha256, cask.install_name),
-                    None,
-                )
+                .download_single(super::bottle::cask_download(&cask, &json), None)
                 .await?;
             self.uninstall_by_version(name, &old.version)?;
             self.install_single_cask(token, link).await?;
@@ -635,6 +632,74 @@ mod tests {
         installer.uninstall("cask:tool").unwrap();
 
         assert!(!leftover.exists(), "the uninstall stanza ran");
+    }
+
+    async fn serve_unchecked_cask(server: &MockServer, version: &str, body: &str) {
+        let uri = server.uri();
+        server.reset().await;
+        Mock::given(method("GET"))
+            .and(path("/cask/tool.json"))
+            .respond_with(ResponseTemplate::new(200).set_body_string(format!(
+                r#"{{"token": "tool", "version": "{version}", "url": "{uri}/dl/tool",
+                    "sha256": "no_check", "artifacts": [{{"binary": ["tool"]}}]}}"#
+            )))
+            .mount(server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/dl/tool"))
+            .respond_with(ResponseTemplate::new(200).set_body_string(body.to_string()))
+            .mount(server)
+            .await;
+    }
+
+    #[tokio::test]
+    async fn a_cask_without_a_checksum_installs_unverified_and_fresh() {
+        let server = MockServer::start().await;
+        let tmp = TempDir::new().unwrap();
+        let root = tmp.path().join("nextbrew");
+        let prefix = tmp.path().join("homebrew");
+        let mut installer = make_installer(&root, &prefix, &server.uri());
+
+        serve_unchecked_cask(&server, "latest", "#!/bin/sh\necho one\n").await;
+        installer
+            .install(&["cask:tool".to_string()], true)
+            .await
+            .unwrap();
+        let installed = installer.get_installed("cask:tool").unwrap();
+        assert_eq!(installed.store_key, sha256_hex(b"#!/bin/sh\necho one\n"));
+        let blobs = fs::read_dir(root.join("cache/blobs")).unwrap().count();
+        assert_eq!(blobs, 0, "an unverified download is not kept");
+
+        // `latest` is outdated only when asked for by name (greedy).
+        assert!(installer.check_outdated().await.unwrap().0.is_empty());
+        assert!(installer.is_outdated("cask:tool").await.unwrap().is_some());
+
+        serve_unchecked_cask(&server, "latest", "#!/bin/sh\necho two\n").await;
+        installer
+            .upgrade("cask:tool", false, true, None)
+            .await
+            .unwrap();
+        let linked = fs::read_to_string(prefix.join("bin/tool")).unwrap();
+        assert!(linked.contains("echo two"), "fetched afresh: {linked}");
+    }
+
+    #[tokio::test]
+    async fn a_cask_without_a_checksum_is_outdated_by_version() {
+        let server = MockServer::start().await;
+        let tmp = TempDir::new().unwrap();
+        let root = tmp.path().join("nextbrew");
+        let prefix = tmp.path().join("homebrew");
+        let mut installer = make_installer(&root, &prefix, &server.uri());
+
+        serve_unchecked_cask(&server, "1.0", "#!/bin/sh\n").await;
+        installer
+            .install(&["cask:tool".to_string()], true)
+            .await
+            .unwrap();
+        assert!(installer.is_outdated("cask:tool").await.unwrap().is_none());
+
+        serve_unchecked_cask(&server, "2.0", "#!/bin/sh\n").await;
+        assert_eq!(installer.check_outdated().await.unwrap().0.len(), 1);
     }
 
     #[tokio::test]

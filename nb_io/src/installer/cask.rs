@@ -49,7 +49,12 @@ pub struct ResolvedCask {
     pub token: String,
     pub version: String,
     pub url: String,
+    /// The download's checksum; for a `no_check` cask, a name for its blob
+    /// made from the URL and version.
     pub sha256: String,
+    /// `sha256 :no_check`: the download is not verified, as Homebrew does
+    /// for its own casks.
+    pub no_check: bool,
     pub binaries: Vec<CaskArtifact>,
     pub apps: Vec<CaskArtifact>,
     pub hooks: CaskHooks,
@@ -241,11 +246,14 @@ pub fn resolve_cask(token: &str, cask: &Value) -> Result<ResolvedCask, Error> {
     let sha256 = required_string(cask, "sha256")?;
     let version = required_string(cask, "version")?;
 
-    if sha256 == "no_check" {
-        return Err(Error::InvalidArgument {
-            message: format!("cask '{token}' uses an unsupported checksum mode: no_check"),
-        });
-    }
+    let no_check = sha256 == "no_check";
+    let sha256 = if no_check {
+        use sha2::{Digest, Sha256};
+        let key = Sha256::new().chain_update(format!("no_check\0{url}\0{version}"));
+        crate::checksum::sha256_hex(key)
+    } else {
+        sha256
+    };
 
     let artifacts = cask
         .get("artifacts")
@@ -321,6 +329,7 @@ pub fn resolve_cask(token: &str, cask: &Value) -> Result<ResolvedCask, Error> {
         version,
         url,
         sha256,
+        no_check,
         binaries,
         apps,
         hooks: CaskHooks {

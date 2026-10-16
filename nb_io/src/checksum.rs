@@ -13,6 +13,22 @@ pub fn sha256_hex(hasher: Sha256) -> String {
         })
 }
 
+/// The SHA-256 of a file's contents, as lowercase hex.
+pub fn sha256_file(path: &std::path::Path) -> Result<String, Error> {
+    let mut file =
+        std::fs::File::open(path).map_err(Error::store("failed to open file to hash"))?;
+    let mut hasher = Sha256::new();
+    let mut buf = vec![0u8; 256 * 1024];
+    loop {
+        let n = std::io::Read::read(&mut file, &mut buf)
+            .map_err(Error::store("failed to hash file"))?;
+        if n == 0 {
+            return Ok(sha256_hex(hasher));
+        }
+        hasher.update(&buf[..n]);
+    }
+}
+
 /// Verify the SHA-256 checksum of a byte slice.
 ///
 /// When `expected_sha256` is `None` the check is skipped (caller opted out).

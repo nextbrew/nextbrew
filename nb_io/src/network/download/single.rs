@@ -127,6 +127,23 @@ impl Downloader {
         progress: Option<DownloadProgressCallback>,
         consumer: Option<BodyConsumer>,
     ) -> Result<PathBuf, Error> {
+        self.fetch(url, expected_sha256, true, name, progress, consumer)
+            .await
+    }
+
+    /// Download into the blob cache under `key`; the body must hash to it
+    /// when `verify`, otherwise `key` only names the blob (a cask with
+    /// `sha256 :no_check`).
+    pub async fn fetch(
+        &self,
+        url: &str,
+        key: &str,
+        verify: bool,
+        name: Option<String>,
+        progress: Option<DownloadProgressCallback>,
+        consumer: Option<BodyConsumer>,
+    ) -> Result<PathBuf, Error> {
+        let expected_sha256 = key;
         if self.blob_cache.has_blob(expected_sha256) {
             if let (Some(cb), Some(n)) = (&progress, &name) {
                 cb(InstallProgress::DownloadCompleted {
@@ -139,7 +156,7 @@ impl Downloader {
 
         let mut urls = vec![url.to_string()];
         urls.extend(get_alternate_urls(url));
-        self.download_from(&urls, expected_sha256, name, progress, consumer)
+        self.download_from(&urls, expected_sha256, verify, name, progress, consumer)
             .await
     }
 
@@ -151,6 +168,7 @@ impl Downloader {
         &self,
         urls: &[String],
         expected_sha256: &str,
+        verify: bool,
         name: Option<String>,
         progress: Option<DownloadProgressCallback>,
         mut consumer: Option<BodyConsumer>,
@@ -163,6 +181,7 @@ impl Downloader {
                     .download_once(
                         url,
                         expected_sha256,
+                        verify,
                         name.clone(),
                         progress.clone(),
                         consumer.take(),
@@ -198,6 +217,7 @@ impl Downloader {
         &self,
         url: &str,
         expected_sha256: &str,
+        verify: bool,
         name: Option<String>,
         progress: Option<DownloadProgressCallback>,
         consumer: Option<BodyConsumer>,
@@ -208,13 +228,23 @@ impl Downloader {
             &self.blob_cache,
             &self.range_client,
             response,
-            expected_sha256,
+            BlobKey {
+                sha256: expected_sha256,
+                verify,
+            },
             name,
             progress,
             consumer,
         )
         .await
     }
+}
+
+/// Where a body goes in the blob cache, and whether it must hash to that.
+#[derive(Clone, Copy)]
+struct BlobKey<'a> {
+    sha256: &'a str,
+    verify: bool,
 }
 
 /// How many body chunks may wait for a slow consumer before the download
@@ -463,11 +493,12 @@ async fn download_response_internal(
     blob_cache: &BlobCache,
     range_client: &reqwest::Client,
     response: reqwest::Response,
-    expected_sha256: &str,
+    key: BlobKey<'_>,
     name: Option<String>,
     progress: Option<DownloadProgressCallback>,
     consumer: Option<BodyConsumer>,
 ) -> Result<PathBuf, DownloadError> {
+    let expected_sha256 = key.sha256;
     let total_bytes = response
         .headers()
         .get(CONTENT_LENGTH)
@@ -575,7 +606,7 @@ async fn download_response_internal(
     } = sink;
     let actual_hash = crate::checksum::sha256_hex(hasher);
 
-    if actual_hash != expected_sha256 {
+    if key.verify && actual_hash != expected_sha256 {
         // Most often a truncated or mangled transfer; the next attempt may
         // get the real thing. Whatever the consumer made of it is dropped.
         return Err(DownloadError::transient(Error::ChecksumMismatch {
@@ -676,6 +707,27 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn unverified_fetch_keeps_the_body_under_its_key() {
+        let mock_server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/latest.zip"))
+            .respond_with(ResponseTemplate::new(200).set_body_bytes(b"hello world".to_vec()))
+            .mount(&mock_server)
+            .await;
+        let tmp = TempDir::new().unwrap();
+        let key = "1".repeat(64);
+
+        let url = format!("{}/latest.zip", mock_server.uri());
+        let blob = downloader(&tmp)
+            .fetch(&url, &key, false, None, None, None)
+            .await
+            .unwrap();
+
+        assert_eq!(std::fs::read(&blob).unwrap(), b"hello world");
+        assert!(blob.to_string_lossy().contains(&key));
+    }
+
+    #[tokio::test]
     async fn skips_download_if_blob_exists() {
         let mock_server = MockServer::start().await;
         let content = b"hello world";
@@ -772,7 +824,7 @@ mod tests {
             format!("{}/x.tar.gz", mirror.uri()),
         ];
         let path = downloader(&tmp)
-            .download_from(&urls, HELLO_SHA, None, None, None)
+            .download_from(&urls, HELLO_SHA, true, None, None, None)
             .await
             .unwrap();
 
