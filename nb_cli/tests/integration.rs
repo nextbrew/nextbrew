@@ -34,6 +34,8 @@ impl TestEnv {
             // and prevent a host-level NEXTBREW_PREFIX from leaking into the test.
             .env("NEXTBREW_PREFIX", self.prefix())
             .env("NEXTBREW_AUTO_INIT", "true")
+            // Auto-init edits shell rc files; keep it off the real ~/.zshrc.
+            .env("HOME", self.root.path())
             .args(args)
             .output()
             .unwrap_or_else(|_| panic!("failed to execute {nb} command"))
@@ -205,7 +207,6 @@ fn test_install_uninstall_and_reinstall() {
     assert_eq!(String::from_utf8_lossy(&output.stdout), "2\n");
 
     assert_success(&t.nb(&["uninstall", "jq"]), "nb uninstall jq");
-    assert_success(&t.nb(&["uninstall", "oniguruma"]), "nb uninstall oniguruma");
     assert!(!t.bin_dir().join("jq").exists());
     assert_no_installed_symlinks(&t.prefix());
 
@@ -232,7 +233,6 @@ fn test_list_installed_formulas() {
     assert_stdout_contains(&output, "jq");
 
     assert_success(&t.nb(&["uninstall", "jq"]), "nb uninstall jq");
-    assert_success(&t.nb(&["uninstall", "oniguruma"]), "nb uninstall oniguruma");
 
     let output = t.nb(&["list"]);
     assert_success(&output, "nb list (empty)");
@@ -272,7 +272,6 @@ fn test_gc_removes_unused_store_entries() {
     assert!(entries_before > 0);
 
     assert_success(&t.nb(&["uninstall", "jq"]), "nb uninstall jq");
-    assert_success(&t.nb(&["uninstall", "oniguruma"]), "nb uninstall oniguruma");
     assert_eq!(t.count_store_entries(), entries_before);
 
     assert_success(&t.nb(&["gc"]), "nb gc");
