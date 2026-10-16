@@ -670,8 +670,9 @@ fn baseline_nb() -> Option<PathBuf> {
 /// tool's own work shows in the numbers, too big for the byte comparison.
 const TIMING_ONLY: &[&str] = &["node", "python@3.14"];
 
-/// How many times each nb build installs each formula; the fastest run of
-/// each kind counts, since the slow ones are the network.
+/// How many times each tool (and the last release) installs each formula;
+/// the fastest run of each kind counts, since the slow ones are the
+/// network. Homebrew gets as many tries as nb, so neither is favoured.
 const NB_TIMING_ROUNDS: usize = 3;
 
 /// Cold is a first install: nothing cached. Warm is a reinstall: the
@@ -880,13 +881,13 @@ fn install_timings() {
 
     let mut timings = Vec::new();
     for formula in formulas {
-        let brew_times = time_brew(&brew, formula);
-
-        // Rounds alternate which build goes first, so neither always gets
-        // the warmer CDN edge.
+        // Rounds alternate which nb build goes first, so neither always
+        // gets the warmer CDN edge.
+        let mut brew_runs = Vec::new();
         let mut nb_runs = Vec::new();
         let mut release_runs = Vec::new();
         for round in 0..NB_TIMING_ROUNDS {
+            brew_runs.push(time_brew(&brew, formula));
             match &release {
                 Some(bin) if round % 2 == 1 => {
                     release_runs.push(time_nb(Some(bin), formula));
@@ -907,7 +908,7 @@ fn install_timings() {
         };
         timings.push(Timing {
             formula,
-            brew: brew_times,
+            brew: fastest(&brew_runs).expect("at least one round"),
             nb: fastest(&nb_runs).expect("at least one round"),
             baseline: fastest(&release_runs),
         });
