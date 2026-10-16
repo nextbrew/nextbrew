@@ -596,6 +596,12 @@ impl Linker {
 
     pub fn unlink_keg(&self, keg_path: &Path) -> Result<Vec<PathBuf>, Error> {
         self.unlink_opt(keg_path)?;
+        self.unlink_files(keg_path)
+    }
+
+    /// Remove the keg's links in the prefix but keep `opt/`, as `brew
+    /// unlink` does, so dependents built against the opt path keep working.
+    pub fn unlink_files(&self, keg_path: &Path) -> Result<Vec<PathBuf>, Error> {
         let mut unlinked = Vec::new();
         for dir_name in LINK_DIRS.iter().chain(LEGACY_LINK_DIRS) {
             let src_dir = keg_path.join(dir_name);

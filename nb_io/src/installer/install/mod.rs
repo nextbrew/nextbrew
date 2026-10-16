@@ -1,5 +1,7 @@
 mod autoremove;
 mod bottle;
+mod link;
+pub use link::LinkOutcome;
 mod cask_app;
 mod cask_artifacts;
 mod cask_deps;
@@ -728,6 +730,19 @@ mod tests {
         let installed = installer.db.get_installed("testpkg");
         assert!(installed.is_some());
         assert_eq!(installed.unwrap().version, "1.0.0");
+        // `brew unlink` keeps opt/ for dependents; `brew link` puts the rest back.
+        assert!(installer.unlink("testpkg").unwrap() > 0);
+        assert!(!prefix.join("bin/testpkg").exists());
+        assert!(prefix.join("opt/testpkg").exists());
+        assert!(matches!(
+            installer.link("testpkg", false).await.unwrap(),
+            super::LinkOutcome::Linked(n) if n > 0
+        ));
+        assert!(prefix.join("bin/testpkg").exists());
+        assert_eq!(
+            installer.link("testpkg", false).await.unwrap(),
+            super::LinkOutcome::AlreadyLinked
+        );
     }
 
     #[tokio::test]

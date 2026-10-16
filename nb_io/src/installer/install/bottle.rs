@@ -115,7 +115,7 @@ impl Installer {
         Ok(())
     }
 
-    fn record_linked_files(
+    pub(super) fn record_linked_files(
         &mut self,
         name: &str,
         version: &str,

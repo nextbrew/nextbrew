@@ -204,6 +204,18 @@ pub enum Commands {
         #[arg(long, help = "Do not create symlinks after installation")]
         no_link: bool,
     },
+    /// Symlink installed formulae into the prefix
+    Link {
+        #[arg(required = true, num_args = 1..)]
+        formulas: Vec<String>,
+        #[arg(long, short = 'f', help = "Also link keg-only formulae")]
+        force: bool,
+    },
+    /// Remove installed formulae's symlinks from the prefix
+    Unlink {
+        #[arg(required = true, num_args = 1..)]
+        formulas: Vec<String>,
+    },
     /// Keep installed formulae at their versions on upgrade
     Pin {
         #[arg(required = true, num_args = 1..)]
