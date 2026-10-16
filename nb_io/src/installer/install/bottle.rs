@@ -197,6 +197,15 @@ impl Installer {
         link: bool,
         chain: &mut Vec<String>,
     ) -> Result<(), Error> {
+        // Only homebrew/cask comes from the API; other taps are Phase 3.
+        let token = token.strip_prefix("homebrew/cask/").unwrap_or(token);
+        if let Some((tap, _)) = token.rsplit_once('/') {
+            return Err(Error::InvalidArgument {
+                message: format!(
+                    "cask '{token}' is from the '{tap}' tap; nextbrew installs homebrew/cask casks only"
+                ),
+            });
+        }
         let cask_json = for_current_platform(&self.api_client.get_cask(token).await?);
         check_deprecate_disable(&cask_json)?;
         check_requirements(&cask_json)?;

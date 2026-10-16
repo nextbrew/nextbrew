@@ -483,6 +483,21 @@ mod tests {
         }
 
         #[tokio::test]
+        async fn a_cask_from_another_tap_is_refused_by_name() {
+            let server = MockServer::start().await;
+            let tmp = TempDir::new().unwrap();
+            let mut installer = installer(tmp.path(), &server);
+
+            let err = installer
+                .install(&["cask:microsoft/git/microsoft-git".to_string()], true)
+                .await
+                .unwrap_err()
+                .to_string();
+
+            assert!(err.contains("'microsoft/git' tap"), "{err}");
+        }
+
+        #[tokio::test]
         async fn refuses_a_dependency_cycle() {
             let server = MockServer::start().await;
             let tmp = TempDir::new().unwrap();
