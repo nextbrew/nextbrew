@@ -499,7 +499,8 @@ pub(super) fn stage_cask_binaries(
     fs::create_dir_all(&bin_dir).map_err(Error::store("failed to create cask bin dir"))?;
 
     for binary in &cask.binaries {
-        let source = resolve_cask_source_path(extracted_root, appdir, cask, &binary.source)?;
+        let source =
+            resolve_cask_source_path(extracted_root, appdir, Some(keg_path), cask, &binary.source)?;
         if !source.exists() {
             return Err(Error::InvalidArgument {
                 message: format!(
@@ -518,7 +519,7 @@ pub(super) fn stage_cask_binaries(
         // Homebrew links a binary to where it lies, so a script that finds
         // its files through its own path still works. That is the app or
         // this keg's staged directory; out of the shared store it is copied.
-        if binary.source.starts_with("$APPDIR/") || extracted_root.starts_with(keg_path) {
+        if !source.starts_with(extracted_root) || extracted_root.starts_with(keg_path) {
             make_executable(&source)?;
             std::os::unix::fs::symlink(&source, &target)
                 .map_err(Error::store("failed to link cask binary"))?;
@@ -590,9 +591,14 @@ fn stage_raw_cask_binary(
     Ok(())
 }
 
+/// Where an artifact's `source` is: in the app for `$APPDIR/…`, in the keg
+/// for `$HOMEBREW_PREFIX/…` (what the cask placed in the prefix is made
+/// there), as given when absolute (a pkg's `/usr/local/…`), else in the
+/// unpacked download.
 pub(super) fn resolve_cask_source_path(
     extracted_root: &Path,
     appdir: Option<&Path>,
+    keg: Option<&Path>,
     cask: &crate::installer::cask::ResolvedCask,
     source: &str,
 ) -> Result<std::path::PathBuf, Error> {
@@ -615,16 +621,11 @@ pub(super) fn resolve_cask_source_path(
         normalized = stripped.to_string();
     }
 
-    let source_path = Path::new(&normalized);
-    if source_path.is_absolute() {
-        return Err(Error::InvalidArgument {
-            message: format!(
-                "cask '{}' binary source '{}' must be a relative path",
-                cask.token, source
-            ),
-        });
+    if let (Some(rel), Some(keg)) = (normalized.strip_prefix("$HOMEBREW_PREFIX/"), keg) {
+        normalized = keg.join(rel).to_string_lossy().into_owned();
     }
 
+    let source_path = Path::new(&normalized);
     for component in source_path.components() {
         if matches!(component, std::path::Component::ParentDir) {
             return Err(Error::InvalidArgument {
@@ -636,6 +637,9 @@ pub(super) fn resolve_cask_source_path(
         }
     }
 
+    if source_path.is_absolute() {
+        return Ok(source_path.to_path_buf());
+    }
     Ok(root.join(source_path))
 }
 
@@ -697,6 +701,48 @@ mod tests {
         );
         assert!(matches!(error, Error::ExecutionError { .. }), "{error:?}");
         assert!(error.to_string().contains("failed to relocate icu4c@78"));
+    }
+
+    #[test]
+    fn binaries_from_the_prefix_or_an_absolute_path_are_linked() {
+        // android-commandlinetools: a binary in what its `artifact` moved
+        // into the prefix; dotnet-sdk: one its pkg put in /usr/local.
+        let tmp = TempDir::new().unwrap();
+        let keg_path = tmp.path().join("keg");
+        let staged = keg_path.join("staged");
+        fs::create_dir_all(&staged).unwrap();
+        let moved = keg_path.join("share/t/latest/bin/apkanalyzer");
+        fs::create_dir_all(moved.parent().unwrap()).unwrap();
+        fs::write(&moved, b"#!/bin/sh\n").unwrap();
+        let absolute = tmp.path().join("usr-local/dotnet");
+        fs::create_dir_all(absolute.parent().unwrap()).unwrap();
+        fs::write(&absolute, b"#!/bin/sh\n").unwrap();
+        let cask = crate::installer::cask::ResolvedCask {
+            token: "t".to_string(),
+            version: "1".to_string(),
+            binaries: vec![
+                crate::installer::cask::CaskArtifact {
+                    source: "$HOMEBREW_PREFIX/share/t/latest/bin/apkanalyzer".to_string(),
+                    target: "apkanalyzer".to_string(),
+                },
+                crate::installer::cask::CaskArtifact {
+                    source: absolute.display().to_string(),
+                    target: "dotnet".to_string(),
+                },
+            ],
+            ..Default::default()
+        };
+
+        stage_cask_binaries(&staged, None, &keg_path, &cask).unwrap();
+
+        assert_eq!(
+            fs::read_link(keg_path.join("bin/apkanalyzer")).unwrap(),
+            moved
+        );
+        assert_eq!(
+            fs::read_link(keg_path.join("bin/dotnet")).unwrap(),
+            absolute
+        );
     }
 
     #[test]

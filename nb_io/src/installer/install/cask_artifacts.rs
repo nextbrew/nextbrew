@@ -171,8 +171,13 @@ fn source_path(
     cask: &ResolvedCask,
     artifact: &PlacedArtifact,
 ) -> Result<PathBuf, Error> {
-    let source =
-        resolve_cask_source_path(places.staged, Some(places.appdir), cask, &artifact.source)?;
+    let source = resolve_cask_source_path(
+        places.staged,
+        Some(places.appdir),
+        Some(places.keg),
+        cask,
+        &artifact.source,
+    )?;
     if source.symlink_metadata().is_err() {
         return Err(Error::InvalidArgument {
             message: format!(
@@ -310,8 +315,9 @@ fn generate_completions(places: &Places, cask: &ResolvedCask, completion: &Gener
         return;
     };
     let first = places.expand(cask, first);
+    // A command in the prefix's bin is this keg's own, not linked yet.
     let executable = if Path::new(&first).is_absolute() {
-        PathBuf::from(&first)
+        places.destination(Path::new(&first)).0
     } else {
         places.staged.join(&first)
     };

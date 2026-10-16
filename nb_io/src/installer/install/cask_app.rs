@@ -213,7 +213,7 @@ pub(super) fn stage_cask(
     let keg_apps = ctx.keg.join(KEG_APPS_DIR);
     fs::create_dir_all(&keg_apps).map_err(Error::store("failed to create keg apps dir"))?;
     for app in &cask.apps {
-        let source = resolve_cask_source_path(&dirs.staged, None, cask, &app.source)?;
+        let source = resolve_cask_source_path(&dirs.staged, None, None, cask, &app.source)?;
         if !source.exists() {
             return Err(Error::InvalidArgument {
                 message: format!(
