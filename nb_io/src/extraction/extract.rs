@@ -168,6 +168,7 @@ fn extract_zip_archive(path: &Path, dest_dir: &Path) -> Result<(), Error> {
         validate_path(&raw_path, dest_dir)?;
 
         let out_path = dest_dir.join(&raw_path);
+        refuse_symlinked_parent(&raw_path, dest_dir)?;
 
         if entry.is_dir() {
             std::fs::create_dir_all(&out_path)
@@ -178,6 +179,17 @@ fn extract_zip_archive(path: &Path, dest_dir: &Path) -> Result<(), Error> {
         if let Some(parent) = out_path.parent() {
             std::fs::create_dir_all(parent)
                 .map_err(Error::store("failed to create output parent directory"))?;
+        }
+
+        if entry.is_symlink() {
+            let mut link_target = String::new();
+            entry
+                .read_to_string(&mut link_target)
+                .map_err(Error::store("failed to read zip symlink"))?;
+            let _ = std::fs::remove_file(&out_path);
+            std::os::unix::fs::symlink(&link_target, &out_path)
+                .map_err(Error::store("failed to create zip symlink"))?;
+            continue;
         }
 
         let mut output =
@@ -196,6 +208,25 @@ fn extract_zip_archive(path: &Path, dest_dir: &Path) -> Result<(), Error> {
         }
     }
 
+    Ok(())
+}
+
+/// Refuse an entry whose directory is a symlink made by an earlier entry,
+/// so nothing is written outside the destination through it.
+fn refuse_symlinked_parent(path: &Path, dest_dir: &Path) -> Result<(), Error> {
+    let mut current = dest_dir.to_path_buf();
+    let components: Vec<_> = path.components().collect();
+    for component in components.iter().take(components.len().saturating_sub(1)) {
+        current.push(component);
+        if current
+            .symlink_metadata()
+            .is_ok_and(|m| m.file_type().is_symlink())
+        {
+            return Err(Error::StoreCorruption {
+                message: format!("zip entry written through a symlink: {}", path.display()),
+            });
+        }
+    }
     Ok(())
 }
 
@@ -471,6 +502,55 @@ mod tests {
 
         let content = fs::read_to_string(dest.join("op")).unwrap();
         assert_eq!(content, "#!/bin/sh\necho op");
+    }
+
+    #[test]
+    fn extracts_zip_symlink_as_link() {
+        use zip::write::SimpleFileOptions;
+
+        let tmp = TempDir::new().unwrap();
+        let mut zip = zip::ZipWriter::new(std::io::Cursor::new(Vec::new()));
+        zip.start_file("sdk/bin/dart", SimpleFileOptions::default())
+            .unwrap();
+        zip.write_all(b"#!/bin/sh").unwrap();
+        zip.add_symlink("sdk/bin/latest", "dart", SimpleFileOptions::default())
+            .unwrap();
+        let zip_path = tmp.path().join("test.zip");
+        fs::write(&zip_path, zip.finish().unwrap().into_inner()).unwrap();
+        let dest = tmp.path().join("extracted");
+        fs::create_dir(&dest).unwrap();
+
+        extract_archive(&zip_path, &dest).unwrap();
+
+        let link = dest.join("sdk/bin/latest");
+        assert_eq!(fs::read_link(&link).unwrap(), Path::new("dart"));
+        assert_eq!(fs::read_to_string(&link).unwrap(), "#!/bin/sh");
+    }
+
+    #[test]
+    fn rejects_zip_entry_written_through_symlink() {
+        use zip::write::SimpleFileOptions;
+
+        let tmp = TempDir::new().unwrap();
+        let outside = tmp.path().join("outside");
+        fs::create_dir(&outside).unwrap();
+        let mut zip = zip::ZipWriter::new(std::io::Cursor::new(Vec::new()));
+        zip.add_symlink(
+            "escape",
+            outside.to_str().unwrap(),
+            SimpleFileOptions::default(),
+        )
+        .unwrap();
+        zip.start_file("escape/planted", SimpleFileOptions::default())
+            .unwrap();
+        zip.write_all(b"x").unwrap();
+        let zip_path = tmp.path().join("test.zip");
+        fs::write(&zip_path, zip.finish().unwrap().into_inner()).unwrap();
+        let dest = tmp.path().join("extracted");
+        fs::create_dir(&dest).unwrap();
+
+        assert!(extract_archive(&zip_path, &dest).is_err());
+        assert!(!outside.join("planted").exists());
     }
 
     #[test]
