@@ -93,6 +93,9 @@ pub(super) fn place_moved(places: &Places, cask: &ResolvedCask) -> Result<(), Er
         move_into_place(&source, &destination, marker.as_deref(), cask)?;
         // As Homebrew's post_move, so a binary under a moved suite is found.
         symlink(&destination, &source).map_err(Error::store("failed to link moved artifact"))?;
+        if artifact.kind == "app" {
+            super::cask_app::fix_app_permissions(&destination, places.home)?;
+        }
         if let Some(marker) = marker {
             symlink(&destination, &marker)
                 .map_err(Error::store("failed to record a placed artifact"))?;

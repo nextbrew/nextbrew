@@ -250,6 +250,7 @@ pub(super) fn stage_cask(
         }
         let _ = fs::remove_file(&marker);
         symlink(&target, &marker).map_err(Error::store("failed to record placed app"))?;
+        fix_app_permissions(&target, &home)?;
         // As Homebrew's post_move: what is moved is still reachable from
         // where it was, for the artifacts that name it there.
         symlink(&target, &source).map_err(Error::store("failed to link moved app"))?;
@@ -260,6 +261,56 @@ pub(super) fn stage_cask(
     cask_artifacts::place_wrappers(&places, cask)?;
     cask_artifacts::place_linked(&places, cask)?;
     run_hooks(ctx, cask, "postflight", &cask.hooks.postflight)
+}
+
+/// What Homebrew's `App` artifact does after the move: take away others'
+/// write access, open the app to every user when it is in a system folder,
+/// and give it the group Homebrew gives its Caskroom.
+pub(super) fn fix_app_permissions(target: &Path, home: &Path) -> Result<(), Error> {
+    let parent = target.parent();
+    let system_dir = target
+        .ancestors()
+        .take_while(|dir| *dir != home && (*dir != Path::new("/") || Some(*dir) == parent))
+        .any(super::undeletable::system_dir);
+    let permissions = if system_dir { "a+rX,go-w" } else { "go-w" };
+    run(Command::new("chmod").arg("-R").arg(permissions).arg(target))?;
+
+    let chgrp = |cmd: &mut Command| run(cmd.arg("-hR").arg(caskroom_group()).arg(target));
+    match chgrp(&mut Command::new("chgrp")) {
+        Ok(()) => Ok(()),
+        // Elsewhere it is a nicety, as in Homebrew.
+        Err(_) if !system_dir => Ok(()),
+        Err(_) => chgrp(&mut sudo::command("chgrp")),
+    }
+}
+
+/// Homebrew's `Caskroom.expected_caskroom_group`: `admin` for a member of
+/// it, otherwise the user's own group.
+fn caskroom_group() -> String {
+    // SAFETY: the group database calls return pointers into static storage
+    // that are read at once, and `getgroups` fills a buffer of the size it
+    // was given.
+    unsafe {
+        let admin = libc::getgrnam(c"admin".as_ptr());
+        if !admin.is_null() {
+            let gid = (*admin).gr_gid;
+            let count = libc::getgroups(0, std::ptr::null_mut());
+            let mut groups = vec![0; count.max(0) as usize];
+            let count = libc::getgroups(count, groups.as_mut_ptr());
+            groups.truncate(count.max(0) as usize);
+            if groups.contains(&gid) {
+                return "admin".to_string();
+            }
+        }
+        let egid = libc::getegid();
+        let group = libc::getgrgid(egid);
+        if group.is_null() {
+            return egid.to_string();
+        }
+        std::ffi::CStr::from_ptr((*group).gr_name)
+            .to_string_lossy()
+            .into_owned()
+    }
 }
 
 fn home_dir() -> Result<PathBuf, Error> {
@@ -899,6 +950,33 @@ mod tests {
             moved
         );
         assert!(ctx.keg.join("bin/dart").is_file());
+    }
+
+    #[test]
+    fn an_app_loses_others_write_access_and_takes_the_caskroom_group() {
+        use std::os::unix::fs::MetadataExt;
+
+        let tmp = TempDir::new().unwrap();
+        let app = tmp.path().join("Apps/Foo.app");
+        fs::create_dir_all(app.join("Contents")).unwrap();
+        fs::write(app.join("Contents/foo"), "x").unwrap();
+        fs::set_permissions(app.join("Contents/foo"), fs::Permissions::from_mode(0o666)).unwrap();
+        symlink("/nonexistent", app.join("Contents/link")).unwrap();
+
+        fix_app_permissions(&app, tmp.path()).unwrap();
+
+        let meta = fs::metadata(app.join("Contents/foo")).unwrap();
+        assert_eq!(meta.mode() & 0o777, 0o644);
+        let group = std::ffi::CString::new(caskroom_group()).unwrap();
+        let gid = unsafe { (*libc::getgrnam(group.as_ptr())).gr_gid };
+        assert_eq!(meta.gid(), gid);
+        // `-h`: the link itself, not what it points at.
+        assert_eq!(
+            fs::symlink_metadata(app.join("Contents/link"))
+                .unwrap()
+                .gid(),
+            gid
+        );
     }
 
     #[test]
