@@ -195,6 +195,16 @@ pub enum Commands {
         #[arg(long, help = "Do not create symlinks after installation")]
         no_link: bool,
     },
+    /// Keep installed formulae at their versions on upgrade
+    Pin {
+        #[arg(required = true, num_args = 1..)]
+        formulas: Vec<String>,
+    },
+    /// Let pinned formulae be upgraded again
+    Unpin {
+        #[arg(required = true, num_args = 1..)]
+        formulas: Vec<String>,
+    },
     /// Run the post-install steps of installed packages again
     Postinstall {
         #[arg(required = true, num_args = 1..)]

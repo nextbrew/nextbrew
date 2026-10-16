@@ -35,7 +35,10 @@ impl Installer {
             items.push(self.plan_item(install_name, formula, build_from_source)?);
         }
 
-        Ok(InstallPlan { items })
+        Ok(InstallPlan {
+            items,
+            roots: roots.into_iter().collect(),
+        })
     }
 
     pub async fn plan_best_effort(
@@ -48,6 +51,7 @@ impl Installer {
         let mut failures = Vec::new();
         let mut valid_roots = Vec::new();
         let mut seen_roots = HashSet::new();
+        let mut plan_roots = Vec::new();
 
         for name in names {
             if !seen_roots.insert(name.clone()) {
@@ -82,6 +86,7 @@ impl Installer {
             match nb_core::resolve_closure(&valid_roots, &formulas) {
                 Ok(ordered) => {
                     let roots = root_install_names(&valid_roots, &formulas);
+                    plan_roots.extend(roots.iter().cloned());
                     let mut planned = HashSet::new();
                     for requested in ordered {
                         let formula = formulas.get(&requested).cloned().unwrap();
@@ -110,7 +115,13 @@ impl Installer {
             }
         }
 
-        (InstallPlan { items }, failures)
+        (
+            InstallPlan {
+                items,
+                roots: plan_roots,
+            },
+            failures,
+        )
     }
 
     /// Whether a package is recorded as installed and its keg is on disk, at

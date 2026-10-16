@@ -8,6 +8,7 @@ pub mod install;
 pub mod list;
 pub mod migrate;
 pub mod outdated;
+pub mod pin;
 pub mod postinstall;
 pub mod reset;
 pub mod run;

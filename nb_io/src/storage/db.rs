@@ -14,6 +14,11 @@ pub struct InstalledKeg {
     pub version: String,
     pub store_key: String,
     pub installed_at: i64,
+    /// Kept back by `upgrade` until unpinned.
+    pub pinned: bool,
+    /// Asked for by the user, as opposed to pulled in as a dependency;
+    /// `autoremove` only removes the latter.
+    pub on_request: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -31,7 +36,7 @@ pub struct KegFileRecord {
 }
 
 impl Database {
-    const SCHEMA_VERSION: u32 = 1;
+    const SCHEMA_VERSION: u32 = 2;
 
     pub fn open(path: &Path) -> Result<Self, Error> {
         let conn = Connection::open(path).map_err(Error::store("failed to open database"))?;
@@ -89,6 +94,7 @@ impl Database {
     fn migrate_to_version(conn: &Connection, version: u32) -> Result<(), Error> {
         match version {
             1 => Self::migrate_to_v1(conn),
+            2 => Self::migrate_to_v2(conn),
             _ => Err(Error::StoreCorruption {
                 message: format!("unknown migration version {}", version),
             }),
@@ -124,6 +130,18 @@ impl Database {
         Ok(())
     }
 
+    /// Kegs installed before this have no record of why, so they count as
+    /// requested and `autoremove` leaves them alone.
+    fn migrate_to_v2(conn: &Connection) -> Result<(), Error> {
+        conn.execute_batch(
+            "
+            ALTER TABLE installed_kegs ADD COLUMN pinned INTEGER NOT NULL DEFAULT 0;
+            ALTER TABLE installed_kegs ADD COLUMN on_request INTEGER NOT NULL DEFAULT 1;
+            ",
+        )
+        .map_err(Error::store("failed to add pinned and on_request columns"))
+    }
+
     pub fn transaction(&mut self) -> Result<InstallTransaction<'_>, Error> {
         let tx = self
             .conn
@@ -136,7 +154,8 @@ impl Database {
     pub fn get_installed(&self, name: &str) -> Option<InstalledKeg> {
         self.conn
             .query_row(
-                "SELECT name, version, store_key, installed_at FROM installed_kegs WHERE name = ?1",
+                "SELECT name, version, store_key, installed_at, pinned, on_request
+                 FROM installed_kegs WHERE name = ?1",
                 params![name],
                 |row| {
                     Ok(InstalledKeg {
@@ -144,6 +163,8 @@ impl Database {
                         version: row.get(1)?,
                         store_key: row.get(2)?,
                         installed_at: row.get(3)?,
+                        pinned: row.get(4)?,
+                        on_request: row.get(5)?,
                     })
                 },
             )
@@ -154,7 +175,8 @@ impl Database {
         let mut stmt = self
             .conn
             .prepare(
-                "SELECT name, version, store_key, installed_at FROM installed_kegs ORDER BY name",
+                "SELECT name, version, store_key, installed_at, pinned, on_request
+                 FROM installed_kegs ORDER BY name",
             )
             .map_err(Error::store("failed to prepare statement"))?;
 
@@ -165,6 +187,8 @@ impl Database {
                     version: row.get(1)?,
                     store_key: row.get(2)?,
                     installed_at: row.get(3)?,
+                    pinned: row.get(4)?,
+                    on_request: row.get(5)?,
                 })
             })
             .map_err(Error::store("failed to query installed kegs"))?
@@ -172,6 +196,26 @@ impl Database {
             .map_err(Error::store("failed to collect results"))?;
 
         Ok(kegs)
+    }
+
+    pub fn set_pinned(&self, name: &str, pinned: bool) -> Result<(), Error> {
+        self.conn
+            .execute(
+                "UPDATE installed_kegs SET pinned = ?2 WHERE name = ?1",
+                params![name, pinned],
+            )
+            .map_err(Error::store("failed to update pin"))?;
+        Ok(())
+    }
+
+    pub fn set_on_request(&self, name: &str) -> Result<(), Error> {
+        self.conn
+            .execute(
+                "UPDATE installed_kegs SET on_request = 1 WHERE name = ?1",
+                params![name],
+            )
+            .map_err(Error::store("failed to mark install as requested"))?;
+        Ok(())
     }
 
     pub fn get_store_refcount(&self, store_key: &str) -> i64 {
@@ -336,8 +380,8 @@ impl<'a> InstallTransaction<'a> {
 
         self.tx
             .execute(
-                "INSERT INTO installed_kegs (name, version, store_key, installed_at)
-                 VALUES (?1, ?2, ?3, ?4)
+                "INSERT INTO installed_kegs (name, version, store_key, installed_at, on_request)
+                 VALUES (?1, ?2, ?3, ?4, 0)
                  ON CONFLICT(name) DO UPDATE SET
                      version = excluded.version,
                      store_key = excluded.store_key,
@@ -672,10 +716,10 @@ mod tests {
     }
 
     #[test]
-    fn new_database_starts_at_version_1() {
+    fn new_database_starts_at_version_2() {
         let db = Database::in_memory().expect("failed to create database");
         let version = Database::get_schema_version(&db.conn).expect("failed to get version");
-        assert_eq!(version, 1);
+        assert_eq!(version, 2);
     }
 
     #[test]
@@ -684,7 +728,7 @@ mod tests {
         Database::migrate(&db.conn).expect("first migration failed");
         Database::migrate(&db.conn).expect("second migration failed");
         let version = Database::get_schema_version(&db.conn).expect("failed to get version");
-        assert_eq!(version, 1);
+        assert_eq!(version, 2);
     }
 
     #[test]
@@ -722,5 +766,30 @@ mod tests {
             .query_row("SELECT name FROM installed_kegs", [], |row| row.get(0))
             .expect("failed to query data");
         assert_eq!(name, "test");
+    }
+
+    #[test]
+    fn existing_kegs_count_as_requested_and_new_ones_as_dependencies() {
+        let conn = Connection::open_in_memory().unwrap();
+        Database::migrate_to_v1(&conn).unwrap();
+        Database::set_schema_version(&conn, 1).unwrap();
+        conn.execute_batch("INSERT INTO installed_kegs VALUES ('old', '1.0', 'k', 0);")
+            .unwrap();
+        Database::migrate(&conn).unwrap();
+        let mut db = Database { conn };
+
+        let tx = db.transaction().unwrap();
+        tx.record_install("new", "1.0", "k2").unwrap();
+        tx.commit().unwrap();
+        assert!(db.get_installed("old").unwrap().on_request);
+        assert!(!db.get_installed("new").unwrap().on_request);
+
+        db.set_on_request("new").unwrap();
+        db.set_pinned("new", true).unwrap();
+        let tx = db.transaction().unwrap();
+        tx.record_install("new", "1.1", "k3").unwrap();
+        tx.commit().unwrap();
+        let new = db.get_installed("new").unwrap();
+        assert!(new.on_request && new.pinned);
     }
 }

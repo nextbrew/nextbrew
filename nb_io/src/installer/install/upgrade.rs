@@ -61,6 +61,7 @@ impl Installer {
                 .await?;
             self.uninstall_by_version(name, &old.version)?;
             self.install_single_cask(token, link).await?;
+            self.keep_on_request(&old)?;
             return Ok(ExecuteResult {
                 installed: 1,
                 ..Default::default()
@@ -78,7 +79,18 @@ impl Installer {
         self.uninstall_by_version(name, &old.version)?;
 
         // We already hold the lock, so call the no-lock variant.
-        self.execute_inner(plan, link, progress).await
+        let result = self.execute_inner(plan, link, progress).await;
+        self.keep_on_request(&old)?;
+        result
+    }
+
+    /// The reinstall records a new keg, which would otherwise count as a
+    /// dependency.
+    fn keep_on_request(&self, old: &crate::storage::db::InstalledKeg) -> Result<(), Error> {
+        if old.on_request {
+            self.mark_on_request(std::slice::from_ref(&old.name))?;
+        }
+        Ok(())
     }
 
     /// Pre-download bottle artifacts in `plan` into the blob cache. No-op
@@ -183,6 +195,26 @@ mod tests {
         )
     }
 
+    #[test]
+    fn pins_only_installed_formulae() {
+        let tmp = TempDir::new().unwrap();
+        let root = tmp.path().join("nextbrew");
+        let mut installer = make_installer(&root, &tmp.path().join("prefix"), "http://unused");
+        let tx = installer.db.transaction().unwrap();
+        tx.record_install("jq", "1.7.1", "sha").unwrap();
+        tx.commit().unwrap();
+
+        assert!(installer.set_pinned("jq", true).unwrap());
+        assert!(!installer.set_pinned("jq", true).unwrap());
+        assert!(installer.get_installed("jq").unwrap().pinned);
+        assert!(installer.set_pinned("jq", false).unwrap());
+        assert!(matches!(
+            installer.set_pinned("nope", true),
+            Err(nb_core::Error::NotInstalled { .. })
+        ));
+        assert!(installer.set_pinned("cask:foo", true).is_err());
+    }
+
     #[tokio::test]
     async fn upgrade_replaces_old_version_and_cleans_up() {
         let mock_server = MockServer::start().await;
@@ -244,6 +276,7 @@ mod tests {
             .upgrade("testpkg", false, true, None)
             .await
             .unwrap();
+        assert!(installer.get_installed("testpkg").unwrap().on_request);
 
         assert!(root.join("cellar/testpkg/2.0.0").exists());
         assert!(

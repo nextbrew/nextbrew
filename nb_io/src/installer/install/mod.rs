@@ -76,6 +76,8 @@ pub struct PlannedInstall {
 #[derive(Debug)]
 pub struct InstallPlan {
     pub items: Vec<PlannedInstall>,
+    /// Install names of the packages asked for, for `mark_on_request`.
+    pub roots: Vec<String>,
 }
 
 #[derive(Debug)]
@@ -163,7 +165,11 @@ impl Installer {
         progress: Option<Arc<ProgressCallback>>,
     ) -> Result<ExecuteResult, Error> {
         let _lock = acquire_install_lock(&self.locks_dir)?;
-        self.execute_inner(plan, link, progress).await
+        let roots = plan.roots.clone();
+        let result = self.execute_inner(plan, link, progress).await;
+        // Also after a partial failure: a root that did install was asked for.
+        self.mark_on_request(&roots)?;
+        result
     }
 
     /// No-lock variant of `execute_with_progress`. Callers MUST already hold
@@ -395,12 +401,38 @@ impl Installer {
                 .strip_prefix("cask:")
                 .expect("install_casks expects cask: prefixed names");
             self.install_single_cask(token, link).await?;
+            self.mark_on_request(std::slice::from_ref(name))?;
             installed += 1;
         }
         Ok(ExecuteResult {
             installed,
             ..Default::default()
         })
+    }
+
+    /// Record that the user asked for these packages, so `autoremove`
+    /// keeps them. Dependencies are recorded as not requested when installed.
+    pub fn mark_on_request(&self, names: &[String]) -> Result<(), Error> {
+        names
+            .iter()
+            .try_for_each(|name| self.db.set_on_request(name))
+    }
+
+    /// Pin or unpin an installed formula. Returns false when it already was.
+    pub fn set_pinned(&self, name: &str, pinned: bool) -> Result<bool, Error> {
+        if name.starts_with("cask:") {
+            return Err(Error::InvalidArgument {
+                message: "casks cannot be pinned".to_string(),
+            });
+        }
+        let keg = self.db.get_installed(name).ok_or(Error::NotInstalled {
+            name: name.to_string(),
+        })?;
+        if keg.pinned == pinned {
+            return Ok(false);
+        }
+        self.db.set_pinned(name, pinned)?;
+        Ok(true)
     }
 
     pub fn is_installed(&self, name: &str) -> bool {
@@ -775,8 +807,8 @@ mod tests {
             .await
             .unwrap();
 
-        assert!(installer.db.get_installed("mainpkg").is_some());
-        assert!(installer.db.get_installed("deplib").is_some());
+        assert!(installer.db.get_installed("mainpkg").unwrap().on_request);
+        assert!(!installer.db.get_installed("deplib").unwrap().on_request);
     }
 
     #[tokio::test]

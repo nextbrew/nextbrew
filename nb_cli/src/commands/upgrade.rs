@@ -66,6 +66,39 @@ pub async fn execute(
         outdated
     };
 
+    // As `brew upgrade`: pinned packages are skipped with a warning, and
+    // the command fails only when they were named.
+    let (pinned, outdated): (Vec<_>, Vec<_>) = outdated.into_iter().partition(|pkg| {
+        installer
+            .get_installed(&pkg.name)
+            .is_some_and(|keg| keg.pinned)
+    });
+    let mut pinned_error = None;
+    if !pinned.is_empty() {
+        let message = format!(
+            "Not upgrading {} pinned package{}: {}",
+            pinned.len(),
+            if pinned.len() == 1 { "" } else { "s" },
+            pinned
+                .iter()
+                .map(|pkg| format!("{} {}", pkg.name, pkg.installed_version))
+                .collect::<Vec<_>>()
+                .join(", ")
+        );
+        if formulas.is_empty() {
+            eprintln!("{} {}", style("Warning:").yellow().bold(), message);
+        } else {
+            pinned_error = Some(nb_core::Error::InvalidArgument { message });
+        }
+    }
+    if outdated.is_empty() {
+        return match (missing.into_iter().next(), pinned_error) {
+            (Some(name), _) => Err(nb_core::Error::NotInstalled { name }),
+            (None, Some(e)) => Err(e),
+            (None, None) => Ok(()),
+        };
+    }
+
     ui.heading(format!("Upgrading {}...", style(outdated.len()).bold()))
         .map_err(ui_error)?;
 
@@ -235,7 +268,7 @@ pub async fn execute(
             .map_err(ui_error)?;
     }
 
-    if errors.is_empty() && missing.is_empty() {
+    if errors.is_empty() && missing.is_empty() && pinned_error.is_none() {
         ui.heading(format!(
             "Upgraded {} packages in {:.2}s",
             style(upgraded).green().bold(),
@@ -245,6 +278,8 @@ pub async fn execute(
         super::install::report_post_install(ui, &notices, post_install_failures)
     } else if !errors.is_empty() {
         Err(errors.remove(0).1)
+    } else if let Some(e) = pinned_error {
+        Err(e)
     } else {
         Err(nb_core::Error::NotInstalled {
             name: missing.remove(0),
