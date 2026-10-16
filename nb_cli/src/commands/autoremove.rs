@@ -31,6 +31,17 @@ pub async fn execute(
     super::uninstall::execute(installer, unneeded, false, false, ui)
 }
 
+/// The autoremove `nb uninstall` ends with. Its failure, such as the API
+/// being unreachable, does not fail the uninstall that already happened.
+pub async fn after_uninstall(installer: &mut nb_io::Installer, ui: &mut StdUi) {
+    if let Err(e) = execute(installer, false, ui).await {
+        eprintln!(
+            "{} could not autoremove unneeded formulae: {e}",
+            console::style("Warning:").yellow().bold()
+        );
+    }
+}
+
 fn ui_error(err: std::io::Error) -> nb_core::Error {
     nb_core::Error::FileError {
         message: format!("failed to write CLI output: {err}"),
