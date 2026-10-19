@@ -146,6 +146,11 @@ pub enum Commands {
         all: bool,
         #[arg(long, help = "Also remove the casks' user data (zap stanza)")]
         zap: bool,
+        #[arg(
+            long,
+            help = "Uninstall even if other installed packages depend on these"
+        )]
+        ignore_dependencies: bool,
     },
     /// Uninstall formulae that were only installed as dependencies and are no longer needed
     Autoremove {

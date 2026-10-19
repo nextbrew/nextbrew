@@ -1089,13 +1089,20 @@ async fn cleanup(
                 .iter()
                 .map(|t| format!("cask:{t}"))
                 .collect();
-            let _ = super::uninstall::execute(installer, names, false, zap, ui);
+            let _ = super::uninstall::execute(installer, names, false, zap, false, ui).await;
             let n = casks_to_remove.len();
             println!("Uninstalled {n} cask{}", if n == 1 { "" } else { "s" });
         }
         if !formulae_to_remove.is_empty() {
-            let _ =
-                super::uninstall::execute(installer, formulae_to_remove.clone(), false, false, ui);
+            let _ = super::uninstall::execute(
+                installer,
+                formulae_to_remove.clone(),
+                false,
+                false,
+                false,
+                ui,
+            )
+            .await;
             let n = formulae_to_remove.len();
             println!("Uninstalled {n} formula{}", if n == 1 { "" } else { "e" });
         }

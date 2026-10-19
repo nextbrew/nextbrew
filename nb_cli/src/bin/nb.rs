@@ -79,8 +79,21 @@ async fn run(cli: Cli) -> Result<(), nb_core::Error> {
             let command = command.unwrap_or(nb_cli::cli::BundleCommands::Install(install));
             commands::bundle::execute(&mut installer, command, cli.verbose > 0, &mut ui).await
         }
-        Commands::Uninstall { formulas, all, zap } => {
-            let result = commands::uninstall::execute(&mut installer, formulas, all, zap, &mut ui);
+        Commands::Uninstall {
+            formulas,
+            all,
+            zap,
+            ignore_dependencies,
+        } => {
+            let result = commands::uninstall::execute(
+                &mut installer,
+                formulas,
+                all,
+                zap,
+                ignore_dependencies,
+                &mut ui,
+            )
+            .await;
             // As brew uninstall does, unless turned off; nothing is left after --all.
             if !all && std::env::var_os("NEXTBREW_NO_AUTOREMOVE").is_none() {
                 commands::autoremove::after_uninstall(&mut installer, &mut ui).await;

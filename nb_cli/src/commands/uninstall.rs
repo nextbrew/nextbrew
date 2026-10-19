@@ -2,14 +2,20 @@ use crate::ui::StdUi;
 use crate::utils::{normalize_formula_name, resolve_installed_name};
 use console::style;
 
-pub fn execute(
+/// `nb uninstall`. Unless `ignore_dependencies`, refuses, as `brew
+/// uninstall` does, to remove a formula another installed package needs
+/// (removing nothing), or a cask another installed cask needs (removing
+/// the formulae only).
+pub async fn execute(
     installer: &mut nb_io::Installer,
     formulas: Vec<String>,
     all: bool,
     zap: bool,
+    ignore_dependencies: bool,
     ui: &mut StdUi,
 ) -> Result<(), nb_core::Error> {
-    let formulas = if all {
+    let named_args = formulas.clone();
+    let mut formulas = if all {
         let installed = installer.list_installed()?;
         if installed.is_empty() {
             ui.info("No formulas installed.").map_err(ui_error)?;
@@ -26,6 +32,27 @@ pub fn execute(
         }
         normalized
     };
+
+    let mut refused_casks = None;
+    if !all && !ignore_dependencies {
+        let casks = installer.cask_dependents(&formulas)?;
+        if let Some(blocked) = installer.formula_dependents(&formulas).await? {
+            let mut message = blocked.message(&named_args);
+            if let Some(casks) = casks {
+                message = format!("{message}\n{}", casks.message(&named_args));
+            }
+            return Err(nb_core::Error::ExecutionError { message });
+        }
+        if let Some(casks) = casks {
+            formulas.retain(|name| !name.starts_with("cask:"));
+            refused_casks = Some(nb_core::Error::ExecutionError {
+                message: casks.message(&named_args),
+            });
+        }
+    }
+    if formulas.is_empty() {
+        return refused_casks.map_or(Ok(()), Err);
+    }
 
     ui.heading(format!(
         "Uninstalling {}...",
@@ -58,7 +85,7 @@ pub fn execute(
     }
 
     if errors.is_empty() {
-        Ok(())
+        refused_casks.map_or(Ok(()), Err)
     } else {
         for (name, err) in &errors {
             ui.error(format!(

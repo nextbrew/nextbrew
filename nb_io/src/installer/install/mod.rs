@@ -1,6 +1,7 @@
 mod autoremove;
 mod bottle;
 mod link;
+pub use dependents::RequiredBy;
 pub use deps::{Uses, UsesScope};
 pub use link::LinkOutcome;
 pub use services::ServiceFormula;
@@ -8,6 +9,7 @@ mod cask_app;
 mod cask_artifacts;
 mod cask_deps;
 mod cask_uninstall;
+mod dependents;
 mod deps;
 pub mod diagnostic;
 pub mod doctor;
@@ -919,6 +921,20 @@ mod tests {
         };
         let uses = installer.dependents(&["deplib".to_string()], scope).await;
         assert_eq!(uses.unwrap().dependents, ["mainpkg"]);
+
+        let blocked = installer
+            .formula_dependents(&["deplib".to_string()])
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            blocked.required,
+            [installer.keg_path("deplib", "1.0.0").display().to_string()]
+        );
+        assert_eq!(blocked.dependents, ["mainpkg"]);
+        let both = ["deplib".to_string(), "mainpkg".to_string()];
+        assert!(installer.formula_dependents(&both).await.unwrap().is_none());
+        assert!(installer.cask_dependents(&both).unwrap().is_none());
 
         assert!(installer.unneeded_formulae().await.unwrap().is_empty());
         installer.uninstall("mainpkg").unwrap();
