@@ -33,6 +33,7 @@ tar.workspace = true
 flate2.workspace = true
 sha2.workspace = true
 walkdir.workspace = true
+object = "0.39.1"
 
 [[test]]
 name = "parity"

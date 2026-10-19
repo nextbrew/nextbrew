@@ -15,7 +15,8 @@
 //! install times instead of files; CI runs it in a separate job on a fresh
 //! runner with a release build, see `.github/workflows/parity.yml`.
 //!
-//! macOS only for now: binaries are compared through `otool` and `codesign`.
+//! macOS only for now: binaries are compared by their load commands and
+//! checked with `codesign`. Set `NB_PARITY_NB` to run another nb build.
 #![cfg(target_os = "macos")]
 
 use std::collections::{BTreeMap, HashSet};
@@ -127,8 +128,13 @@ struct Nb {
 }
 
 impl Nb {
+    /// The nb this test was built with, or `NB_PARITY_NB` when the test
+    /// binary runs on another machine (a VM without the build tree).
     fn new() -> Self {
-        Self::with_binary(PathBuf::from(env!("CARGO_BIN_EXE_nb")))
+        let bin = std::env::var_os("NB_PARITY_NB")
+            .map(PathBuf::from)
+            .unwrap_or_else(|| PathBuf::from(env!("CARGO_BIN_EXE_nb")));
+        Self::with_binary(bin)
     }
 
     fn with_binary(bin: PathBuf) -> Self {
@@ -237,36 +243,67 @@ fn is_mach_o(path: &Path) -> bool {
         )
 }
 
-/// Dylib ID, linked libraries and rpaths, as `otool` reports them.
+/// Dylib ID, linked libraries and rpaths of every architecture, read with
+/// the `object` crate so no developer tools are needed.
 fn mach_o_load_commands(path: &Path) -> String {
-    let output = Command::new("otool")
-        .args(["-D", "-L", "-l"])
-        .arg(path)
-        .output()
-        .expect("failed to run otool");
-    assert!(
-        output.status.success(),
-        "otool failed on {}",
-        path.display()
-    );
-    let text = String::from_utf8_lossy(&output.stdout);
+    use object::read::macho::{FatArch, MachOFatFile32, MachOFatFile64};
+    use object::{Endianness, FileKind, macho};
+
+    let data = fs::read(path).expect("failed to read Mach-O file");
     let mut lines = Vec::new();
-    let mut in_rpath = false;
-    for line in text.lines() {
-        let trimmed = line.trim();
-        if trimmed == "cmd LC_RPATH" {
-            in_rpath = true;
-        } else if in_rpath && trimmed.starts_with("path ") {
-            lines.push(format!(
-                "rpath {}",
-                trimmed.split(" (offset").next().unwrap()
-            ));
-            in_rpath = false;
-        } else if trimmed.contains(".dylib") && !trimmed.ends_with(':') {
-            lines.push(trimmed.split(" (compatibility").next().unwrap().to_string());
+    let slices: Vec<&[u8]> = match FileKind::parse(&*data) {
+        Ok(FileKind::MachOFat32) => MachOFatFile32::parse(&*data)
+            .expect("bad fat header")
+            .arches()
+            .iter()
+            .map(|arch| arch.data(&*data).expect("bad fat arch"))
+            .collect(),
+        Ok(FileKind::MachOFat64) => MachOFatFile64::parse(&*data)
+            .expect("bad fat header")
+            .arches()
+            .iter()
+            .map(|arch| arch.data(&*data).expect("bad fat arch"))
+            .collect(),
+        _ => vec![&data[..]],
+    };
+    for slice in slices {
+        match FileKind::parse(slice) {
+            Ok(FileKind::MachO64) => {
+                describe_load_commands::<macho::MachHeader64<Endianness>>(slice, &mut lines)
+            }
+            Ok(FileKind::MachO32) => {
+                describe_load_commands::<macho::MachHeader32<Endianness>>(slice, &mut lines)
+            }
+            other => panic!("{} is not a Mach-O file: {other:?}", path.display()),
         }
     }
     lines.join("\n")
+}
+
+fn describe_load_commands<Mach>(data: &[u8], lines: &mut Vec<String>)
+where
+    Mach: object::read::macho::MachHeader<Endian = object::Endianness>,
+{
+    use object::read::macho::LoadCommandVariant;
+
+    let header = Mach::parse(data, 0).expect("bad Mach-O header");
+    let endian = header.endian().expect("bad Mach-O endian");
+    let mut commands = header
+        .load_commands(endian, data, 0)
+        .expect("bad load commands");
+    while let Some(command) = commands.next().expect("bad load command") {
+        let text = |s| String::from_utf8_lossy(command.string(endian, s).unwrap()).into_owned();
+        match command.variant().expect("bad load command") {
+            LoadCommandVariant::IdDylib(dylib) => {
+                lines.push(format!("id {}", text(dylib.dylib.name)))
+            }
+            LoadCommandVariant::Dylib(dylib) => {
+                lines.push(format!("dylib {}", text(dylib.dylib.name)))
+            }
+            LoadCommandVariant::Rpath(rpath) => lines.push(format!("rpath {}", text(rpath.path))),
+            _ => {}
+        }
+    }
 }
 
 /// Replace `prefix` with `marker`, including the form nextbrew writes into
@@ -532,6 +569,12 @@ fn check_executables_start(keg: &Path) {
             String::from_utf8_lossy(&output.stderr)
         );
     }
+}
+
+#[test]
+fn reads_the_load_commands_of_a_system_binary() {
+    let commands = mach_o_load_commands(Path::new("/bin/ls"));
+    assert!(commands.contains("dylib /usr/lib/libSystem.B.dylib"), "{commands}");
 }
 
 #[test]

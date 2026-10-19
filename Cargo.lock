@@ -1342,6 +1342,7 @@ dependencies = [
  "libc",
  "nb_core",
  "nb_io",
+ "object 0.39.1",
  "serde_json",
  "sha2",
  "tar",
