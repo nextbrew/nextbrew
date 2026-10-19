@@ -5,8 +5,8 @@
 //! whole file for every change. The strings live in the load commands at the
 //! start of the file, NUL-terminated and padded to an 8-byte boundary, so a
 //! replacement that fits is a handful of bytes written in place. One that
-//! does not grows its command into the zero padding the linker leaves before
-//! the first section, as `install_name_tool` and Homebrew's ruby-macho do.
+//! does not grows its command into the padding the linker leaves before the
+//! first section, as `install_name_tool` and Homebrew's ruby-macho do.
 //! The file keeps its length; the caller only has to re-sign it.
 
 use std::fmt;
@@ -67,8 +67,8 @@ pub(crate) struct MachoInfo {
     layouts: Vec<SliceLayout>,
 }
 
-/// A change that did not fit in the load command or the header padding, left
-/// to `install_name_tool`.
+/// A change that did not fit in the load command or the header padding.
+/// Homebrew cannot apply it either: ruby-macho raises `HeaderPadError`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct UnfitChange {
     pub(crate) kind: PathKind,
@@ -215,8 +215,8 @@ pub(crate) fn rewrite(
 }
 
 /// Grow the load command holding `path` so `new` fits, moving the commands
-/// after it into the header padding. `None` when the padding is too small or
-/// not all zero.
+/// after it into the header padding, whatever it holds, as ruby-macho does.
+/// `None` when the padding is too small.
 fn grow(
     data: &mut [u8],
     layout: &mut SliceLayout,
@@ -228,8 +228,7 @@ fn grow(
     let delta = size.checked_sub(path.cmdsize)?;
     let commands_end = layout.start + layout.header_size + layout.sizeofcmds;
     let grown_end = commands_end + delta;
-    if grown_end > layout.low_fileoff || data.get(commands_end..grown_end)?.iter().any(|b| *b != 0)
-    {
+    if grown_end > layout.low_fileoff || data.get(commands_end..grown_end).is_none() {
         return None;
     }
     let sizeofcmds = u32::try_from(layout.sizeofcmds + delta).ok()?;
@@ -807,6 +806,33 @@ mod tests {
             patched[range.clone()].copy_from_slice(&data[range.clone()]);
         }
         assert_eq!(patched, data);
+    }
+
+    #[test]
+    fn padding_need_not_be_zero_to_grow_into() {
+        let old = "@@HOMEBREW_CELLAR@@/x/1.0/lib/libx.dylib";
+        let mut data = with_header_padding(
+            thin(
+                Endian::Little,
+                true,
+                &[Cmd::Padded(PathKind::Dylib, old, 0)],
+            ),
+            64,
+        );
+        let header = thin_header(&data, 0).unwrap();
+        let end = header.size + read_u32(&data, 20, header.endian).unwrap() as usize;
+        data[end..end + 64].fill(0xaa);
+
+        let rewrite = rewrite(&mut data, |_, path| {
+            Some(path.replace("@@HOMEBREW_CELLAR@@", "/opt/nextbrew/Cellar"))
+        })
+        .unwrap();
+
+        assert!(rewrite.unfit.is_empty(), "{:?}", rewrite.unfit);
+        assert_eq!(
+            values(&inspect(&data).unwrap()),
+            [(PathKind::Dylib, "/opt/nextbrew/Cellar/x/1.0/lib/libx.dylib")]
+        );
     }
 
     #[test]

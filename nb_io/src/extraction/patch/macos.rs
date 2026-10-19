@@ -263,8 +263,8 @@ fn relocate_binary(path: &Path, relocation: &Relocation) -> Result<BinaryOutcome
 
     let writable = Writable::lift(path, &metadata)?;
     write_ranges(path, &contents, &written)?;
-    if !unfit.is_empty() {
-        change_with_install_name_tool(path, &unfit)?;
+    if let Some(change) = unfit.first() {
+        return Err(unfit_error(path, change));
     }
 
     Ok(BinaryOutcome::Changed {
@@ -294,8 +294,8 @@ pub(crate) fn set_install_name(path: &Path, id: &str) -> Result<(), Error> {
     }
     let writable = Writable::lift(path, &metadata)?;
     write_ranges(path, &contents, &rewrite.written)?;
-    if !rewrite.unfit.is_empty() {
-        change_with_install_name_tool(path, &rewrite.unfit)?;
+    if let Some(change) = rewrite.unfit.first() {
+        return Err(unfit_error(path, change));
     }
     sign(&[path]);
     writable.restore()
@@ -335,32 +335,22 @@ fn write_ranges(path: &Path, contents: &[u8], ranges: &[Range<usize>]) -> Result
     Ok(())
 }
 
-/// Apply the load-path changes that did not fit even in the header padding.
-/// `install_name_tool` (from the Command Line Tools) handles every such
-/// change in the file in one run.
-fn change_with_install_name_tool(path: &Path, changes: &[UnfitChange]) -> Result<(), Error> {
-    let mut command = Command::new("install_name_tool");
-    for change in changes {
-        match change.kind {
-            PathKind::InstallName => command.args(["-id", &change.new]),
-            PathKind::Dylib => command.args(["-change", &change.old, &change.new]),
-            PathKind::Rpath => command.args(["-rpath", &change.old, &change.new]),
-        };
-    }
-    let output = command
-        .arg(path)
-        .output()
-        .map_err(Error::store("failed to run install_name_tool"))?;
-    if output.status.success() {
-        return Ok(());
-    }
-    Err(Error::StoreCorruption {
+/// A load-path change the header padding cannot take fails the install,
+/// with Homebrew's message and ruby-macho's `HeaderPadError`.
+fn unfit_error(path: &Path, change: &UnfitChange) -> Error {
+    let file = path.display();
+    let what = match change.kind {
+        PathKind::InstallName => format!("Failed changing dylib ID of {file}"),
+        PathKind::Dylib => format!("Failed changing install name in {file}"),
+        PathKind::Rpath => format!("Failed changing rpath in {file}"),
+    };
+    Error::ExecutionError {
         message: format!(
-            "install_name_tool failed on {}: {}",
-            path.display(),
-            String::from_utf8_lossy(&output.stderr).trim()
+            "{what}\n  from {}\n    to {}\nUpdated load commands do not fit in the header of {file}. \
+             {file} needs to be relinked, possibly with -headerpad or -headerpad_max_install_names",
+            change.old, change.new
         ),
-    })
+    }
 }
 
 /// Ad-hoc sign files whose signature was invalidated by patching, keeping
@@ -1223,6 +1213,20 @@ echo "Hello from $PREFIX"
             .filter(|entry| entry.file_name().to_string_lossy().starts_with(".nb-sign"))
             .collect();
         assert!(leftovers.is_empty());
+    }
+
+    #[test]
+    fn a_change_that_does_not_fit_fails_as_in_homebrew() {
+        let change = UnfitChange {
+            kind: PathKind::Rpath,
+            old: "@@HOMEBREW_PREFIX@@/lib".into(),
+            new: "/opt/nextbrew/lib".into(),
+        };
+        let message = unfit_error(Path::new("/k/bin/x"), &change).to_string();
+        assert!(message.contains(
+            "Failed changing rpath in /k/bin/x\n  from @@HOMEBREW_PREFIX@@/lib\n    to /opt/nextbrew/lib"
+        ));
+        assert!(message.contains("Updated load commands do not fit in the header of /k/bin/x."));
     }
 
     #[test]
