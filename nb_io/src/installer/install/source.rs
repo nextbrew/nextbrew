@@ -108,7 +108,7 @@ impl Installer {
             warn!(formula = %install_name, error = %e, "failed to create opt link");
         }
 
-        let should_link = link && !item.formula.is_keg_only();
+        let should_link = link && (!item.formula.is_keg_only() || item.link_keg_only);
 
         if should_link {
             report(InstallProgress::LinkStarted {
@@ -150,7 +150,7 @@ impl Installer {
                     return Err(e);
                 }
             }
-        } else if link && item.formula.is_keg_only() {
+        } else if link {
             let reason = match &item.formula.keg_only {
                 nb_core::KegOnly::Reason(s) => s.clone(),
                 _ if item.formula.name.contains('@') => "versioned formula".to_string(),

@@ -76,6 +76,10 @@ pub struct PlannedInstall {
     pub install_name: String,
     pub formula: Formula,
     pub method: InstallMethod,
+    /// Link although keg-only: a versioned formula Homebrew links anyway
+    /// (see [`Installer::links_versioned_keg_only`]), or one that was linked
+    /// before an upgrade.
+    pub link_keg_only: bool,
 }
 
 #[derive(Debug)]
@@ -171,6 +175,12 @@ impl Installer {
     ) -> Result<ExecuteResult, Error> {
         let _lock = acquire_install_lock(&self.locks_dir)?;
         let roots = plan.roots.clone();
+        let mut plan = plan;
+        for item in &mut plan.items {
+            item.link_keg_only = roots.contains(&item.install_name)
+                && !self.is_installed(&item.install_name)
+                && self.links_versioned_keg_only(&item.formula).await?;
+        }
         let result = self.execute_inner(plan, link, progress).await;
         // Also after a partial failure: a root that did install was asked for.
         self.mark_on_request(&roots)?;
@@ -849,6 +859,81 @@ mod tests {
         assert!(installer.unneeded_formulae().await.unwrap().is_empty());
         installer.uninstall("mainpkg").unwrap();
         assert_eq!(installer.unneeded_formulae().await.unwrap(), ["deplib"]);
+    }
+
+    #[tokio::test]
+    async fn a_versioned_keg_only_formula_links_unless_a_sibling_is_installed() {
+        let mock_server = MockServer::start().await;
+        let tmp = TempDir::new().unwrap();
+        let tag = get_test_bottle_tag();
+        let mut bodies = Vec::new();
+        for name in ["foo@1", "foo@2"] {
+            let bottle = create_bottle_tarball(name);
+            let keg_only = if name == "foo@1" {
+                r#""keg_only":true,"keg_only_reason":{"reason":":versioned_formula","explanation":""},"#
+            } else {
+                ""
+            };
+            let json = format!(
+                r#"{{"name":"{name}",{keg_only}"versions":{{"stable":"1.0.0"}},"dependencies":[],"bottle":{{"stable":{{"files":{{"{tag}":{{"url":"{uri}/bottles/{name}.tar.gz","sha256":"{sha}"}}}}}}}}}}"#,
+                uri = mock_server.uri(),
+                sha = sha256_hex(&bottle),
+            );
+            Mock::given(method("GET"))
+                .and(path(format!("/formula/{name}.json")))
+                .respond_with(ResponseTemplate::new(200).set_body_string(&json))
+                .mount(&mock_server)
+                .await;
+            Mock::given(method("GET"))
+                .and(path(format!("/bottles/{name}.tar.gz")))
+                .respond_with(ResponseTemplate::new(200).set_body_bytes(bottle))
+                .mount(&mock_server)
+                .await;
+            bodies.push(json);
+        }
+        Mock::given(method("GET"))
+            .and(path("/formula.json"))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_string(format!("[{}]", bodies.join(","))),
+            )
+            .mount(&mock_server)
+            .await;
+
+        let root = tmp.path().join("nextbrew");
+        let prefix = tmp.path().join("homebrew");
+        fs::create_dir_all(root.join("db")).unwrap();
+        let mut installer = Installer::new(
+            ApiClient::with_base_url(format!("{}/formula", mock_server.uri())).unwrap(),
+            BlobCache::new(&root.join("cache")).unwrap(),
+            Store::new(&root).unwrap(),
+            Cellar::new(&root).unwrap(),
+            Linker::new(&prefix).unwrap(),
+            Database::open(&root.join("db/nb.sqlite3")).unwrap(),
+            prefix.clone(),
+            root.join("locks"),
+        );
+        installer
+            .install(&["foo@1".to_string()], true)
+            .await
+            .unwrap();
+        assert!(
+            prefix.join("bin/foo@1").exists(),
+            "linked: foo@2 is not installed"
+        );
+
+        installer.uninstall("foo@1").unwrap();
+        installer
+            .install(&["foo@2".to_string()], true)
+            .await
+            .unwrap();
+        installer
+            .install(&["foo@1".to_string()], true)
+            .await
+            .unwrap();
+        assert!(
+            !prefix.join("bin/foo@1").exists(),
+            "keg-only: foo@2 is installed"
+        );
     }
 
     #[tokio::test]

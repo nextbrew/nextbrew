@@ -176,6 +176,7 @@ impl Installer {
             install_name,
             formula,
             method,
+            link_keg_only: false,
         })
     }
 

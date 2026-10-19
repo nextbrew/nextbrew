@@ -68,9 +68,15 @@ impl Installer {
             });
         }
 
-        let plan = self
+        let mut plan = self
             .plan_with_options(&[name.to_string()], build_from_source)
             .await?;
+        // A keg-only formula stays linked if it was, as `brew upgrade` keeps it.
+        let (old_keg, _) = self.formula_keg(name)?;
+        let was_linked = !self.linker.collect_linked_files(&old_keg)?.is_empty();
+        for item in &mut plan.items {
+            item.link_keg_only = item.install_name == name && was_linked;
+        }
 
         // Fetch new bottles before touching the old install — a download
         // failure here leaves the existing keg intact.

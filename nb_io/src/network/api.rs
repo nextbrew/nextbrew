@@ -546,7 +546,7 @@ impl ApiClient {
     }
 
     /// Every formula's name, without its aliases and old names.
-    async fn formula_names(&self) -> Result<Vec<String>, Error> {
+    pub async fn formula_names(&self) -> Result<Vec<String>, Error> {
         if let Some(cache) = &self.cache
             && self.ensure_index().await
         {
