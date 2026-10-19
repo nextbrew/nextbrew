@@ -16,36 +16,84 @@ pub enum LinkOutcome {
     KegOnly,
 }
 
+/// What `brew link --dry-run` lists, and whether to add the keg-only note.
+#[derive(Debug, PartialEq, Eq)]
+pub struct LinkDryRun {
+    pub paths: Vec<String>,
+    pub keg_only: bool,
+}
+
+/// Keg-only only because it is a versioned formula, which links anyway.
+fn is_versioned(formula: &Formula) -> bool {
+    formula
+        .keg_only_reason
+        .as_ref()
+        .is_some_and(|reason| reason.reason == ":versioned_formula")
+}
+
 impl Installer {
-    /// `brew link`: symlink an installed formula into the prefix.
-    pub async fn link(&mut self, name: &str, force: bool) -> Result<LinkOutcome, Error> {
+    /// `brew link`: symlink an installed formula into the prefix, with
+    /// `overwrite` deleting the files in the way.
+    pub async fn link(
+        &mut self,
+        name: &str,
+        force: bool,
+        overwrite: bool,
+    ) -> Result<LinkOutcome, Error> {
         let (keg, version) = self.formula_keg(name)?;
         if !self.linker.collect_linked_files(&keg)?.is_empty() {
             return Ok(LinkOutcome::AlreadyLinked);
         }
-        if !force {
-            let formula = self.api_client.get_formula(name).await?;
-            // Versioned formulae link without --force, as in Homebrew.
-            let versioned = formula
-                .keg_only_reason
-                .as_ref()
-                .is_some_and(|reason| reason.reason == ":versioned_formula");
-            if formula.is_keg_only() && !versioned {
-                return Ok(LinkOutcome::KegOnly);
-            }
-        }
         let formula = self.api_client.get_formula(name).await?;
+        if !force && formula.is_keg_only() && !is_versioned(&formula) {
+            return Ok(LinkOutcome::KegOnly);
+        }
         let candidates = self
             .overwrite_candidates(&formula)
             .await
             .unwrap_or_default();
         let unlinked = self.unlink_overwritten(formula.is_keg_only(), &candidates)?;
-        let linked = self.linker.link_keg(&keg)?;
+        let linked = if overwrite {
+            // A directory in the way stops it part way; Homebrew then
+            // unlinks what it linked.
+            self.linker.link_keg_overwrite(&keg).inspect_err(|_| {
+                let _ = self.linker.unlink_files(&keg);
+            })?
+        } else {
+            self.linker.link_keg(&keg)?
+        };
         self.record_linked_files(name, &version, &linked);
         Ok(LinkOutcome::Linked {
             count: linked.len(),
             unlinked,
         })
+    }
+
+    /// `brew link --dry-run`: what linking would create, or with `overwrite`
+    /// delete, changing nothing. `None` when the keg is already linked.
+    pub async fn link_dry_run(
+        &self,
+        name: &str,
+        overwrite: bool,
+    ) -> Result<Option<LinkDryRun>, Error> {
+        let (keg, _) = self.formula_keg(name)?;
+        if !self.linker.collect_linked_files(&keg)?.is_empty() {
+            return Ok(None);
+        }
+        let formula = self.api_client.get_formula(name).await?;
+        let paths = if overwrite {
+            self.linker.would_overwrite(&keg)
+        } else {
+            self.linker
+                .would_link(&keg)
+                .iter()
+                .map(|p| p.display().to_string())
+                .collect()
+        };
+        Ok(Some(LinkDryRun {
+            paths,
+            keg_only: formula.is_keg_only() && !is_versioned(&formula),
+        }))
     }
 
     /// Homebrew's `auto_link_versioned_keg_only?` for a formula asked for

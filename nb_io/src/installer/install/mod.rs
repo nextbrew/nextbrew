@@ -3,7 +3,7 @@ mod bottle;
 mod link;
 pub use dependents::RequiredBy;
 pub use deps::{Uses, UsesScope};
-pub use link::LinkOutcome;
+pub use link::{LinkDryRun, LinkOutcome};
 pub use services::ServiceFormula;
 mod cask_app;
 mod cask_artifacts;
@@ -813,12 +813,12 @@ mod tests {
         assert!(!prefix.join("bin/testpkg").exists());
         assert!(prefix.join("opt/testpkg").exists());
         assert!(matches!(
-            installer.link("testpkg", false).await.unwrap(),
+            installer.link("testpkg", false, false).await.unwrap(),
             super::LinkOutcome::Linked { count, .. } if count > 0
         ));
         assert!(prefix.join("bin/testpkg").exists());
         assert_eq!(
-            installer.link("testpkg", false).await.unwrap(),
+            installer.link("testpkg", false, false).await.unwrap(),
             super::LinkOutcome::AlreadyLinked
         );
     }
@@ -1060,7 +1060,7 @@ mod tests {
         );
 
         // Linking it by hand unlinks foo@2 first, as `brew link` does.
-        match installer.link("foo@1", false).await.unwrap() {
+        match installer.link("foo@1", false, false).await.unwrap() {
             super::LinkOutcome::Linked { unlinked, .. } => {
                 assert_eq!(unlinked.len(), 1, "{unlinked:?}");
                 assert!(unlinked[0].0.ends_with("foo@2/1.0.0"));

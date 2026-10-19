@@ -276,6 +276,17 @@ pub enum Commands {
         formulas: Vec<String>,
         #[arg(long, short = 'f', help = "Also link keg-only formulae")]
         force: bool,
+        #[arg(
+            long,
+            help = "Delete files that already exist in the prefix while linking"
+        )]
+        overwrite: bool,
+        #[arg(
+            long,
+            short = 'n',
+            help = "List files which would be linked or deleted without linking or deleting any"
+        )]
+        dry_run: bool,
     },
     /// Remove installed formulae's symlinks from the prefix
     Unlink {

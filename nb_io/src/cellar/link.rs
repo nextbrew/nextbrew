@@ -7,13 +7,15 @@ use nb_core::{ConflictedLink, Error};
 /// Keg directories linked into the prefix. Like Homebrew, `libexec` is not
 /// linked: it holds files private to a keg, like the Python formulae's
 /// unversioned `python` and `pip`, which would collide across versions.
+/// In the order `Keg#link` links them, which `brew link --dry-run` lists in
+/// and which decides the conflict reported first.
 const LINK_DIRS: &[&str] = &[
+    "etc",
     "bin",
     "sbin",
-    "lib",
     "include",
     "share",
-    "etc",
+    "lib",
     "Frameworks",
 ];
 
@@ -251,6 +253,13 @@ fn can_replace_existing_link(src: &Path, dst: &Path) -> bool {
     }
 }
 
+/// `--overwrite`'s `dst.delete`: remove a file or link where a link has to
+/// go. A directory is left, and stays a conflict.
+fn remove_in_the_way(dst: &Path) -> bool {
+    let is_dir = dst.symlink_metadata().is_ok_and(|m| m.is_dir());
+    !is_dir && fs::remove_file(dst).is_ok()
+}
+
 impl Linker {
     pub fn new(prefix: &Path) -> io::Result<Self> {
         let bin_dir = prefix.join("bin");
@@ -440,13 +449,108 @@ impl Linker {
 
     pub fn link_keg(&self, keg_path: &Path) -> Result<Vec<LinkedFile>, Error> {
         self.check_conflicts(keg_path)?;
+        self.link_into_prefix(keg_path, false)
+    }
+
+    /// `brew link --overwrite`: link the keg, deleting whatever is in the
+    /// way. Only what sits at a destination itself is deleted, after another
+    /// keg's directory link there has been expanded, so no other keg's
+    /// files are touched.
+    pub fn link_keg_overwrite(&self, keg_path: &Path) -> Result<Vec<LinkedFile>, Error> {
+        self.link_into_prefix(keg_path, true)
+    }
+
+    /// `brew link --dry-run`: the links linking the keg would create.
+    pub fn would_link(&self, keg_path: &Path) -> Vec<PathBuf> {
+        let mut links = Vec::new();
+        for dir_name in LINK_DIRS {
+            let src_dir = keg_path.join(dir_name);
+            if src_dir.exists() {
+                Self::plan_links(
+                    &src_dir,
+                    &self.prefix.join(dir_name),
+                    dir_name,
+                    "",
+                    &mut links,
+                );
+            }
+        }
+        links
+    }
+
+    /// `brew link --overwrite --dry-run`: what `--overwrite` would delete,
+    /// a link as `path -> target` the way Homebrew lists it.
+    pub fn would_overwrite(&self, keg_path: &Path) -> Vec<String> {
+        let Err(Error::LinkConflict { conflicts }) = self.check_conflicts(keg_path) else {
+            return Vec::new();
+        };
+        conflicts
+            .iter()
+            .filter_map(|conflict| {
+                let path = &conflict.path;
+                match resolve_link_target(path) {
+                    Some(target) => Some(format!("{} -> {}", path.display(), target.display())),
+                    None => path.exists().then(|| path.display().to_string()),
+                }
+            })
+            .collect()
+    }
+
+    /// [`Self::link_recursive`]'s walk without touching anything.
+    fn plan_links(src: &Path, dst: &Path, top: &str, rel: &str, links: &mut Vec<PathBuf>) {
+        let Ok(entries) = fs::read_dir(src) else {
+            return;
+        };
+        let mut entries: Vec<_> = entries.flatten().collect();
+        entries.sort_by_key(|entry| entry.file_name());
+        for entry in entries {
+            let file_name = entry.file_name();
+            let src_path = entry.path();
+            let dst_path = dst.join(&file_name);
+            let entry_rel = if rel.is_empty() {
+                file_name.to_string_lossy().into_owned()
+            } else {
+                format!("{rel}/{}", file_name.to_string_lossy())
+            };
+            let same = || {
+                resolve_link_target(&dst_path)
+                    .is_some_and(|t| fs::canonicalize(t).ok() == fs::canonicalize(&src_path).ok())
+            };
+
+            if src_path.is_dir() {
+                let mode = dir_mode(top, &entry_rel);
+                if mode == DirMode::Skip || same() {
+                    continue;
+                }
+                let dst_meta = dst_path.symlink_metadata().ok();
+                let expands = dst_meta
+                    .as_ref()
+                    .is_some_and(|m| m.file_type().is_symlink());
+                let is_dir = dst_meta.as_ref().is_some_and(|m| m.is_dir());
+                if expands || is_dir || mode == DirMode::Mkpath {
+                    Self::plan_links(&src_path, &dst_path, top, &entry_rel, links);
+                } else {
+                    links.push(dst_path);
+                }
+                continue;
+            }
+            if is_skipped_file(top, &entry_rel) || same() {
+                continue;
+            }
+            links.push(dst_path);
+        }
+    }
+
+    fn link_into_prefix(&self, keg_path: &Path, overwrite: bool) -> Result<Vec<LinkedFile>, Error> {
         self.link_opt(keg_path, &[])?;
         let mut linked = Vec::new();
         for dir_name in LINK_DIRS {
             let src_dir = keg_path.join(dir_name);
             let dst_dir = self.prefix.join(dir_name);
             if src_dir.exists() {
-                linked.extend(Self::link_recursive(&src_dir, &dst_dir, dir_name, "")?);
+                linked.extend(Self::link_recursive(
+                    &src_dir, &dst_dir, dir_name, "", overwrite,
+                )?);
             }
         }
         Ok(linked)
@@ -465,6 +569,7 @@ impl Linker {
         dst: &Path,
         top: &str,
         rel: &str,
+        overwrite: bool,
     ) -> Result<Vec<LinkedFile>, Error> {
         let mut linked = Vec::new();
         if !dst.exists() {
@@ -519,19 +624,23 @@ impl Linker {
                     // A dangling directory symlink (e.g. the old keg was
                     // removed) has nothing left to expand.
                     if old_target.exists() {
-                        Self::link_recursive(&old_target, &dst_path, top, &entry_rel)?;
+                        Self::link_recursive(&old_target, &dst_path, top, &entry_rel, false)?;
                     }
-                    linked.extend(Self::link_recursive(&src_path, &dst_path, top, &entry_rel)?);
+                    linked.extend(Self::link_recursive(
+                        &src_path, &dst_path, top, &entry_rel, overwrite,
+                    )?);
                     continue;
                 }
 
                 if dst_is_dir || mode == DirMode::Mkpath {
-                    linked.extend(Self::link_recursive(&src_path, &dst_path, top, &entry_rel)?);
+                    linked.extend(Self::link_recursive(
+                        &src_path, &dst_path, top, &entry_rel, overwrite,
+                    )?);
                     continue;
                 }
 
                 // DirMode::Link
-                if dst_meta.is_some() {
+                if dst_meta.is_some() && !(overwrite && remove_in_the_way(&dst_path)) {
                     return Err(Error::LinkConflict {
                         conflicts: vec![ConflictedLink {
                             path: dst_path,
@@ -570,7 +679,9 @@ impl Linker {
                         } else {
                             let _ = fs::remove_file(&dst_path);
                         }
-                    } else if can_replace_existing_link(&src_path, &dst_path) {
+                    } else if can_replace_existing_link(&src_path, &dst_path)
+                        || (overwrite && remove_in_the_way(&dst_path))
+                    {
                         let _ = fs::remove_file(&dst_path);
                     } else {
                         return Err(Error::LinkConflict {
@@ -580,7 +691,7 @@ impl Linker {
                             }],
                         });
                     }
-                } else {
+                } else if !(overwrite && remove_in_the_way(&dst_path)) {
                     return Err(Error::LinkConflict {
                         conflicts: vec![ConflictedLink {
                             path: dst_path,
@@ -1082,6 +1193,65 @@ mod tests {
         linker.unlink_keg(&keg1).unwrap();
         assert!(!shared.join("a.h").exists());
         assert!(shared.join("b.h").exists());
+    }
+
+    #[test]
+    fn overwrite_replaces_what_is_in_the_way_and_dry_runs_list_it() {
+        let tmp = TempDir::new().unwrap();
+        let keg = setup_keg(&tmp, "foo");
+        let other = setup_keg(&tmp, "bar");
+        let linker = Linker::new(tmp.path()).unwrap();
+        linker.link_keg(&other).unwrap();
+        let bin = tmp.path().join("bin");
+        fs::write(bin.join("foo"), b"stray").unwrap();
+        // Another keg's link where foo's would go.
+        std::os::unix::fs::symlink(other.join("bin/bar"), bin.join("foo-alias")).unwrap();
+        fs::write(keg.join("bin/foo-alias"), b"").unwrap();
+
+        assert_eq!(
+            linker.would_link(&keg),
+            [bin.join("foo"), bin.join("foo-alias")]
+        );
+        assert_eq!(
+            linker.would_overwrite(&keg).len(),
+            2,
+            "{:?}",
+            linker.would_overwrite(&keg)
+        );
+        assert!(linker.would_overwrite(&keg).contains(&format!(
+            "{} -> {}",
+            bin.join("foo-alias").display(),
+            other.join("bin/bar").display()
+        )));
+        assert!(linker.link_keg(&keg).is_err());
+        assert_eq!(fs::read(bin.join("foo")).unwrap(), b"stray");
+
+        let linked = linker.link_keg_overwrite(&keg).unwrap();
+        assert_eq!(linked.len(), 2);
+        assert_eq!(fs::read_link(bin.join("foo")).unwrap(), keg.join("bin/foo"));
+        assert_eq!(fs::read(other.join("bin/bar")).unwrap(), b"hi");
+        assert!(linker.would_link(&keg).is_empty());
+    }
+
+    #[test]
+    fn overwrite_never_deletes_through_another_kegs_directory_link() {
+        let tmp = TempDir::new().unwrap();
+        let keg1 = tmp.path().join("cellar/a/1.0");
+        let keg2 = tmp.path().join("cellar/b/1.0");
+        fs::create_dir_all(keg1.join("include/shared")).unwrap();
+        fs::create_dir_all(keg2.join("include/shared")).unwrap();
+        fs::write(keg1.join("include/shared/same.h"), b"a").unwrap();
+        fs::write(keg2.join("include/shared/same.h"), b"b").unwrap();
+
+        let linker = Linker::new(tmp.path()).unwrap();
+        linker.link_keg(&keg1).unwrap();
+        assert!(linker.link_keg(&keg2).is_err());
+
+        linker.link_keg_overwrite(&keg2).unwrap();
+        let shared = tmp.path().join("include/shared");
+        assert!(!shared.is_symlink());
+        assert_eq!(fs::read(shared.join("same.h")).unwrap(), b"b");
+        assert_eq!(fs::read(keg1.join("include/shared/same.h")).unwrap(), b"a");
     }
 
     #[test]

@@ -16,8 +16,8 @@ pub use extraction::extract_tarball;
 pub use installer::cask_config::CaskConfig;
 pub use installer::{
     DiagnosticReport, ExecuteResult, Finding, HomebrewMigrationPackages, HomebrewPackage,
-    InstallPlan, Installer, LinkOutcome, OutdatedPackage, PlanFailure, PostInstallNotice,
-    RepairSummary, ServiceFormula, SystemEnv, Uses, UsesScope, create_installer,
+    InstallPlan, Installer, LinkDryRun, LinkOutcome, OutdatedPackage, PlanFailure,
+    PostInstallNotice, RepairSummary, ServiceFormula, SystemEnv, Uses, UsesScope, create_installer,
     get_homebrew_packages,
 };
 pub use network::{

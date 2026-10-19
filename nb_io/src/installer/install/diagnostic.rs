@@ -543,11 +543,20 @@ fn check_user_path(prefix: &Path, env: &SystemEnv) -> Vec<Finding> {
 /// `path_remediation`, with `Utils::Shell.prepend_path_in_profile` for the
 /// common shells.
 fn path_remediation(dir: &Path, shell: Option<&str>) -> String {
+    format!(
+        "Consider setting your PATH for example like so:\n  {}",
+        prepend_path_in_profile(dir, shell)
+    )
+}
+
+/// `Utils::Shell.prepend_path_in_profile` for the common shells: the line
+/// that puts `dir` first in `PATH` from the profile of `shell` (`$SHELL`).
+pub fn prepend_path_in_profile(dir: &Path, shell: Option<&str>) -> String {
     let shell = shell
         .and_then(|s| Path::new(s).file_name())
         .map(|s| s.to_string_lossy().into_owned())
         .unwrap_or_default();
-    let line = match shell.as_str() {
+    match shell.as_str() {
         "fish" => format!("fish_add_path {}", sh_quote(&dir.display().to_string())),
         _ => {
             let profile = match shell.as_str() {
@@ -569,8 +578,7 @@ fn path_remediation(dir: &Path, shell: Option<&str>) -> String {
                 ))
             )
         }
-    };
-    format!("Consider setting your PATH for example like so:\n  {line}")
+    }
 }
 
 /// `Utils::Shell.sh_quote`: unchanged when safe, else backslash-escaped.

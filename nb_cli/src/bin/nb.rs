@@ -157,9 +157,12 @@ async fn run(cli: Cli) -> Result<(), nb_core::Error> {
             };
             commands::deps::uses(&installer, formulas, scope).await
         }
-        Commands::Link { formulas, force } => {
-            commands::link::link(&mut installer, formulas, force).await
-        }
+        Commands::Link {
+            formulas,
+            force,
+            overwrite,
+            dry_run,
+        } => commands::link::link(&mut installer, formulas, force, overwrite, dry_run).await,
         Commands::Unlink { formulas } => commands::link::unlink(&mut installer, formulas),
         Commands::Pin { formulas } => commands::pin::execute(&installer, formulas, true),
         Commands::Unpin { formulas } => commands::pin::execute(&installer, formulas, false),

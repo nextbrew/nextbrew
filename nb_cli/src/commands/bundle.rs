@@ -788,7 +788,9 @@ async fn install_formula(
         _ => !keg_only,
     };
     match installer.is_linked(name) {
-        Ok(linked) if want_linked && !linked => ok &= installer.link(name, keg_only).await.is_ok(),
+        Ok(linked) if want_linked && !linked => {
+            ok &= installer.link(name, keg_only, false).await.is_ok()
+        }
         Ok(linked) if !want_linked && linked => ok &= installer.unlink(name).is_ok(),
         Ok(_) => {}
         Err(_) => ok = false,
