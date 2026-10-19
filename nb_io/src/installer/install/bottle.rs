@@ -211,6 +211,20 @@ impl Installer {
         check_requirements(&cask_json)?;
         self.check_conflicts(&cask_json)?;
         let mut cask = resolve_cask(token, &cask_json)?;
+        let config = self.cask_config.clone();
+        if cask.no_check && config.require_sha {
+            return Err(Error::InvalidArgument {
+                message: format!(
+                    "Cask '{token}' does not have a sha256 checksum defined and was not installed.\nThis means you have the `--require-sha` option set, perhaps in your `$HOMEBREW_CASK_OPTS`."
+                ),
+            });
+        }
+        for placed in &mut cask.placed {
+            placed.target = config.retarget(&placed.kind, &placed.target);
+        }
+        if config.no_binaries {
+            cask.binaries.clear();
+        }
 
         let blob_path = self
             .downloader
@@ -245,6 +259,7 @@ impl Installer {
         chain: &mut Vec<String>,
     ) -> Result<(), Error> {
         let homepage = cask_json["homepage"].as_str().unwrap_or_default();
+        let config = self.cask_config.clone();
         quarantine_download(blob_path, &cask.url, homepage)?;
         self.install_cask_dependencies(cask_json, link, chain)
             .await?;
@@ -268,7 +283,11 @@ impl Installer {
             || !cask.generated_scripts.is_empty()
             || is_dmg(blob_path)?
         {
-            let ctx = self.cask_context(&cask, &keg_path, app_dir()?);
+            let appdir = match config.appdir() {
+                Some(dir) => dir.to_path_buf(),
+                None => app_dir()?,
+            };
+            let ctx = self.cask_context(&cask, &keg_path, appdir);
             stage_cask(blob_path, &cask, cask_json, &ctx)?;
         } else if crate::extraction::is_archive(blob_path)? {
             // Cask archives are staged file by file; nothing to prepare.
@@ -286,6 +305,7 @@ impl Installer {
         if !keg_path.join("cask.json").exists() {
             super::cask_app::save_cask_json(&keg_path, cask_json)?;
         }
+        config.save(&keg_path)?;
 
         let linked_files = if link {
             self.linker.link_keg(&keg_path)?

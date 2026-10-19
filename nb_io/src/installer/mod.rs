@@ -1,4 +1,5 @@
 mod cask;
+pub mod cask_config;
 pub mod homebrew;
 pub mod install;
 pub mod post_install;

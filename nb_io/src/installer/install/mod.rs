@@ -71,6 +71,9 @@ pub struct Installer {
     locks_dir: PathBuf,
     /// `<root>/cache`, beside the blob cache.
     cache_dir: PathBuf,
+    /// The options casks are installed with (`--appdir`, `--no-quarantine`,
+    /// ...), over `$HOMEBREW_CASK_OPTS`.
+    cask_config: crate::installer::cask_config::CaskConfig,
 }
 
 #[derive(Debug)]
@@ -163,6 +166,7 @@ impl Installer {
             prefix,
             locks_dir,
             cache_dir,
+            cask_config: Default::default(),
         }
     }
 
@@ -500,6 +504,11 @@ impl Installer {
         self.db.list_installed()
     }
 
+    /// Install casks with `config` from now on.
+    pub fn set_cask_config(&mut self, config: crate::installer::cask_config::CaskConfig) {
+        self.cask_config = config;
+    }
+
     /// A formula as the API describes it.
     pub async fn formula(&self, name: &str) -> Result<Formula, Error> {
         self.api_client.get_formula(name).await
@@ -590,6 +599,7 @@ pub fn create_installer(
         prefix: prefix.to_path_buf(),
         locks_dir,
         cache_dir: root.join("cache"),
+        cask_config: Default::default(),
     })
 }
 

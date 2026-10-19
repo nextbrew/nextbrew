@@ -285,19 +285,31 @@ fn unsupported(entry: &Entry) -> Option<String> {
             if let Some(tap) = full_name(entry).and_then(|name| foreign_tap(&name)) {
                 return Some(format!("cask from the '{tap}' tap; install it with brew"));
             }
-            match entry.option("args") {
-                Some(Value::Hash(args)) if !args.is_empty() => Some(format!(
-                    "cask args ({}) are not supported by nextbrew",
-                    args.iter()
-                        .map(|(k, v)| format!("{k}: {v}"))
-                        .collect::<Vec<_>>()
-                        .join(", ")
-                )),
-                _ => None,
-            }
+            cask_config(entry).err().map(|e| e.to_string())
         }
         Kind::Extension(kind) => Some(format!("nextbrew does not install `{kind}` entries")),
     }
+}
+
+/// The options a cask entry installs with: `$HOMEBREW_CASK_OPTS` with its
+/// `args:` (and the Brewfile's `cask_args`) on top, each turned into an
+/// option as `Bundle::Cask` does: `true` a switch, `false` nothing, anything
+/// else `--key=value`.
+fn cask_config(entry: &Entry) -> Result<nb_io::CaskConfig, nb_core::Error> {
+    let mut explicit = nb_io::CaskConfig::default();
+    if let Some(Value::Hash(args)) = entry.option("args") {
+        for (key, value) in args {
+            match value {
+                Value::Bool(true) => explicit.apply_option(&format!("--{key}"), true)?,
+                Value::Bool(false) | Value::Nil => {}
+                Value::Str(v) | Value::Sym(v) => {
+                    explicit.apply_option(&format!("--{key}={v}"), true)?
+                }
+                other => explicit.apply_option(&format!("--{key}={other}"), true)?,
+            }
+        }
+    }
+    Ok(nb_io::CaskConfig::from_env()?.overlay(&explicit))
 }
 
 /// Where an entry stands before anything is installed.
@@ -333,7 +345,10 @@ impl Plan {
         };
         match self.entry.kind {
             Kind::Brew => !extra(&["full_name", "trusted"]),
-            Kind::Cask => !extra(&["full_name", "trusted", "args"]),
+            Kind::Cask => {
+                !extra(&["full_name", "trusted", "args"])
+                    && !matches!(self.entry.option("args"), Some(Value::Hash(args)) if !args.is_empty())
+            }
             _ => false,
         }
     }
@@ -382,6 +397,7 @@ async fn install_from_file(
         .into_iter()
         .filter(|entry| !skipped(entry))
         .collect();
+    installer.set_cask_config(nb_io::CaskConfig::from_env()?);
     let mut success = 0;
     let mut failure = 0;
 
@@ -649,11 +665,16 @@ async fn install_cask(
     ui: &mut StdUi,
 ) -> bool {
     if actionable {
+        let Ok(config) = cask_config(&plan.entry) else {
+            return false;
+        };
+        installer.set_cask_config(config);
         let result = if plan.installed {
             upgrade::execute(installer, vec![plan.install_name.clone()], false, false, ui).await
         } else {
             install::execute(installer, vec![plan.install_name.clone()], false, false, ui).await
         };
+        installer.set_cask_config(nb_io::CaskConfig::from_env().unwrap_or_default());
         if result.is_err() {
             return false;
         }
@@ -1104,6 +1125,27 @@ async fn dump_casks(
             line += &describe_lines(json.as_ref().and_then(|j| j["desc"].as_str()));
         }
         line += &format!("cask \"{token}\"");
+        // `explicit_s`: the directories it was installed with, home as `~`.
+        let name = format!("cask:{token}");
+        if let Some(keg) = installer.get_installed(&name) {
+            let config = nb_io::CaskConfig::load(&installer.keg_path(&name, &keg.version));
+            if !config.dirs.is_empty() {
+                let home = std::env::var("HOME").unwrap_or_default();
+                let args: Vec<String> = config
+                    .dirs
+                    .iter()
+                    .map(|(key, dir)| {
+                        let dir = dir.to_string_lossy();
+                        let dir = match dir.strip_prefix(&home) {
+                            Some(rest) if !home.is_empty() => format!("~{rest}"),
+                            _ => dir.into_owned(),
+                        };
+                        format!("{key}: \"{dir}\"")
+                    })
+                    .collect();
+                line += &format!(", args: {{ {} }}", args.join(", "));
+            }
+        }
         lines.push(line);
     }
     Ok(lines.join("\n"))
@@ -1126,7 +1168,7 @@ mod tests {
             "brew \"hashicorp/tap/terraform\"",
             "brew \"x\", args: [\"HEAD\"]",
             "cask \"microsoft/git/microsoft-git\"",
-            "cask_args appdir: \"~/Apps\"\ncask \"firefox\"",
+            "cask \"firefox\", args: { language: \"ja\" }",
             "mas \"Xcode\", id: 497799835",
         ] {
             assert!(unsupported(&entry(source)).is_some(), "{source}");

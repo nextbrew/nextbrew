@@ -118,6 +118,17 @@ pub enum Commands {
         no_link: bool,
         #[arg(long, short = 's', help = "Build from source instead of using bottles")]
         build_from_source: bool,
+        #[arg(
+            long,
+            visible_alias = "formulae",
+            conflicts_with = "cask",
+            help = "Treat the names as formulae"
+        )]
+        formula: bool,
+        #[arg(long, visible_alias = "casks", help = "Treat the names as casks")]
+        cask: bool,
+        #[command(flatten)]
+        cask_options: CaskOptions,
     },
     /// Install or dump from a Brewfile
     #[command(args_conflicts_with_subcommands = true)]
@@ -209,6 +220,8 @@ pub enum Commands {
         build_from_source: bool,
         #[arg(long, help = "Do not create symlinks after installation")]
         no_link: bool,
+        #[command(flatten)]
+        cask_options: CaskOptions,
     },
     /// Search formulae and casks by name, or by /regex/
     Search {
@@ -284,6 +297,153 @@ pub enum Commands {
         #[command(subcommand)]
         command: Option<ServicesCommands>,
     },
+}
+
+/// `brew install --cask`'s options, over `$HOMEBREW_CASK_OPTS`.
+#[derive(clap::Args, Clone, Default)]
+pub struct CaskOptions {
+    #[arg(
+        long = "appdir",
+        value_name = "DIR",
+        help = "Install the Applications folder into DIR"
+    )]
+    pub appdir: Option<String>,
+    #[arg(
+        long = "appimagedir",
+        value_name = "DIR",
+        help = "Install AppImages into DIR"
+    )]
+    pub appimagedir: Option<String>,
+    #[arg(
+        long = "keyboard-layoutdir",
+        value_name = "DIR",
+        help = "Install keyboard layouts into DIR"
+    )]
+    pub keyboard_layoutdir: Option<String>,
+    #[arg(
+        long = "colorpickerdir",
+        value_name = "DIR",
+        help = "Install color pickers into DIR"
+    )]
+    pub colorpickerdir: Option<String>,
+    #[arg(
+        long = "prefpanedir",
+        value_name = "DIR",
+        help = "Install preference panes into DIR"
+    )]
+    pub prefpanedir: Option<String>,
+    #[arg(
+        long = "qlplugindir",
+        value_name = "DIR",
+        help = "Install QuickLook plugins into DIR"
+    )]
+    pub qlplugindir: Option<String>,
+    #[arg(
+        long = "mdimporterdir",
+        value_name = "DIR",
+        help = "Install Spotlight importers into DIR"
+    )]
+    pub mdimporterdir: Option<String>,
+    #[arg(
+        long = "dictionarydir",
+        value_name = "DIR",
+        help = "Install dictionaries into DIR"
+    )]
+    pub dictionarydir: Option<String>,
+    #[arg(long = "fontdir", value_name = "DIR", help = "Install fonts into DIR")]
+    pub fontdir: Option<String>,
+    #[arg(
+        long = "servicedir",
+        value_name = "DIR",
+        help = "Install services into DIR"
+    )]
+    pub servicedir: Option<String>,
+    #[arg(
+        long = "input-methoddir",
+        value_name = "DIR",
+        help = "Install input methods into DIR"
+    )]
+    pub input_methoddir: Option<String>,
+    #[arg(
+        long = "internet-plugindir",
+        value_name = "DIR",
+        help = "Install internet plugins into DIR"
+    )]
+    pub internet_plugindir: Option<String>,
+    #[arg(
+        long = "audio-unit-plugindir",
+        value_name = "DIR",
+        help = "Install audio unit plugins into DIR"
+    )]
+    pub audio_unit_plugindir: Option<String>,
+    #[arg(
+        long = "vst-plugindir",
+        value_name = "DIR",
+        help = "Install VST plugins into DIR"
+    )]
+    pub vst_plugindir: Option<String>,
+    #[arg(
+        long = "vst3-plugindir",
+        value_name = "DIR",
+        help = "Install VST3 plugins into DIR"
+    )]
+    pub vst3_plugindir: Option<String>,
+    #[arg(
+        long = "screen-saverdir",
+        value_name = "DIR",
+        help = "Install screen savers into DIR"
+    )]
+    pub screen_saverdir: Option<String>,
+    #[arg(
+        long,
+        value_name = "LANGUAGE",
+        help = "Not supported: casks install in their default language"
+    )]
+    pub language: Option<String>,
+    #[arg(long, help = "Refuse a cask without a checksum")]
+    pub require_sha: bool,
+    #[arg(long, help = "Leave out the casks' binaries")]
+    pub no_binaries: bool,
+}
+
+impl CaskOptions {
+    /// The options as `--key=value` and switches, the way
+    /// `$HOMEBREW_CASK_OPTS` gives them.
+    pub fn options(&self) -> Vec<String> {
+        let mut options: Vec<String> = [
+            ("appdir", &self.appdir),
+            ("appimagedir", &self.appimagedir),
+            ("keyboard_layoutdir", &self.keyboard_layoutdir),
+            ("colorpickerdir", &self.colorpickerdir),
+            ("prefpanedir", &self.prefpanedir),
+            ("qlplugindir", &self.qlplugindir),
+            ("mdimporterdir", &self.mdimporterdir),
+            ("dictionarydir", &self.dictionarydir),
+            ("fontdir", &self.fontdir),
+            ("servicedir", &self.servicedir),
+            ("input_methoddir", &self.input_methoddir),
+            ("internet_plugindir", &self.internet_plugindir),
+            ("audio_unit_plugindir", &self.audio_unit_plugindir),
+            ("vst_plugindir", &self.vst_plugindir),
+            ("vst3_plugindir", &self.vst3_plugindir),
+            ("screen_saverdir", &self.screen_saverdir),
+        ]
+        .into_iter()
+        .filter_map(|(key, value)| value.as_ref().map(|value| format!("--{key}={value}")))
+        .collect();
+        if let Some(language) = &self.language {
+            options.push(format!("--language={language}"));
+        }
+        for (on, flag) in [
+            (self.require_sha, "--require-sha"),
+            (self.no_binaries, "--no-binaries"),
+        ] {
+            if on {
+                options.push(flag.to_string());
+            }
+        }
+        options
+    }
 }
 
 /// `nb bundle [install]`'s options; `install` is the default subcommand.

@@ -13,6 +13,7 @@ pub mod storage;
 pub use build::{BuildExecutor, DepInfo};
 pub use cellar::{Cellar, LinkedFile, Linker, MaterializedKeg};
 pub use extraction::extract_tarball;
+pub use installer::cask_config::CaskConfig;
 pub use installer::{
     DiagnosticReport, ExecuteResult, HomebrewMigrationPackages, HomebrewPackage, InstallPlan,
     Installer, LinkOutcome, OutdatedPackage, PlanFailure, PostInstallNotice, RepairSummary,

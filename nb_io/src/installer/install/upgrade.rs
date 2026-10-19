@@ -59,8 +59,17 @@ impl Installer {
             self.downloader
                 .download_single(super::bottle::cask_download(&cask, &json), None)
                 .await?;
+            // The new version is installed with the options the old one was,
+            // under those given now.
+            let saved = crate::installer::cask_config::CaskConfig::load(
+                &self.cellar.keg_path(&cask.install_name, &old.version),
+            );
+            let given = std::mem::take(&mut self.cask_config);
+            self.cask_config = saved.overlay(&given);
             self.uninstall_by_version(name, &old.version)?;
-            self.install_single_cask(token, link).await?;
+            let installed = self.install_single_cask(token, link).await;
+            self.cask_config = given;
+            installed?;
             self.keep_on_request(&old)?;
             return Ok(ExecuteResult {
                 installed: 1,

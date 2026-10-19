@@ -48,7 +48,24 @@ async fn run(cli: Cli) -> Result<(), nb_core::Error> {
             formulas,
             no_link,
             build_from_source,
+            formula,
+            cask,
+            cask_options,
         } => {
+            installer.set_cask_config(cask_config(&cask_options)?);
+            // `--cask` names casks; `--formula` keeps bare names as formulae.
+            let formulas: Vec<String> = formulas
+                .into_iter()
+                .map(|name| {
+                    if cask && !name.starts_with("cask:") {
+                        format!("cask:{name}")
+                    } else if formula && !name.starts_with("cask:") && !name.contains('/') {
+                        format!("formula:{name}")
+                    } else {
+                        name
+                    }
+                })
+                .collect();
             commands::install::execute(
                 &mut installer,
                 formulas,
@@ -88,7 +105,9 @@ async fn run(cli: Cli) -> Result<(), nb_core::Error> {
             formulas,
             build_from_source,
             no_link,
+            cask_options,
         } => {
+            installer.set_cask_config(cask_config(&cask_options)?);
             commands::upgrade::execute(
                 &mut installer,
                 formulas,
@@ -140,4 +159,13 @@ async fn run(cli: Cli) -> Result<(), nb_core::Error> {
             commands::run::execute(&mut installer, formula, args).await
         }
     }
+}
+
+/// `$HOMEBREW_CASK_OPTS` with the options given on the command line on top.
+fn cask_config(options: &nb_cli::cli::CaskOptions) -> Result<nb_io::CaskConfig, nb_core::Error> {
+    let mut explicit = nb_io::CaskConfig::default();
+    for option in options.options() {
+        explicit.apply_option(&option, true)?;
+    }
+    Ok(nb_io::CaskConfig::from_env()?.overlay(&explicit))
 }
