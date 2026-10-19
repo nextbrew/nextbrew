@@ -625,6 +625,42 @@ pub enum BundleCommands {
         #[arg(long, help = "List winget entries")]
         winget: bool,
     },
+    /// Add entries to a Brewfile (formulae unless told otherwise)
+    Add {
+        #[arg(required = true, num_args = 1..)]
+        names: Vec<String>,
+        #[arg(
+            long,
+            value_name = "FILE",
+            help = "Change this Brewfile instead of ./Brewfile or $HOMEBREW_BUNDLE_FILE"
+        )]
+        file: Option<PathBuf>,
+        #[arg(long, help = "Change ~/.Brewfile (or $HOMEBREW_BUNDLE_FILE_GLOBAL)")]
+        global: bool,
+        #[arg(long, help = "Run `install` before adding entries")]
+        install: bool,
+        #[command(flatten)]
+        types: EntryTypes,
+        #[arg(long, help = "Do not add description comments above each line")]
+        no_describe: bool,
+    },
+    /// Remove entries matching the names from a Brewfile
+    Remove {
+        #[arg(required = true, num_args = 1..)]
+        names: Vec<String>,
+        #[arg(
+            long,
+            value_name = "FILE",
+            help = "Change this Brewfile instead of ./Brewfile or $HOMEBREW_BUNDLE_FILE"
+        )]
+        file: Option<PathBuf>,
+        #[arg(long, help = "Change ~/.Brewfile (or $HOMEBREW_BUNDLE_FILE_GLOBAL)")]
+        global: bool,
+        #[arg(long, help = "Run `install` before removing entries")]
+        install: bool,
+        #[command(flatten)]
+        types: EntryTypes,
+    },
     /// Uninstall what a Brewfile does not list
     Cleanup {
         #[arg(
@@ -687,6 +723,60 @@ pub enum BundleCommands {
         #[command(flatten)]
         extensions: ExtensionFlags,
     },
+}
+
+/// The entry type `nb bundle add` and `remove` work on: one of these, or
+/// none.
+#[derive(clap::Args, Debug, Clone, Default)]
+pub struct EntryTypes {
+    #[arg(long, visible_aliases = ["formulae", "brews"], help = "Formula entries")]
+    pub formula: bool,
+    #[arg(long, visible_alias = "casks", help = "Cask entries")]
+    pub cask: bool,
+    #[arg(long, visible_alias = "taps", help = "Tap entries")]
+    pub tap: bool,
+    #[arg(long, help = "Mac App Store entries")]
+    pub mas: bool,
+    #[arg(long, help = "VS Code extension entries")]
+    pub vscode: bool,
+    #[arg(long, help = "Go package entries")]
+    pub go: bool,
+    #[arg(long, help = "Cargo package entries")]
+    pub cargo: bool,
+    #[arg(long, help = "uv tool entries")]
+    pub uv: bool,
+    #[arg(long, help = "Flatpak entries")]
+    pub flatpak: bool,
+    #[arg(long, help = "Winget entries")]
+    pub winget: bool,
+    #[arg(long, help = "Krew plugin entries")]
+    pub krew: bool,
+    #[arg(long, help = "npm package entries")]
+    pub npm: bool,
+}
+
+impl EntryTypes {
+    /// `selected_types`: the directives asked for, in Homebrew's order.
+    pub fn selected(&self) -> Vec<&'static str> {
+        [
+            ("brew", self.formula),
+            ("cask", self.cask),
+            ("tap", self.tap),
+            ("mas", self.mas),
+            ("vscode", self.vscode),
+            ("go", self.go),
+            ("cargo", self.cargo),
+            ("uv", self.uv),
+            ("flatpak", self.flatpak),
+            ("winget", self.winget),
+            ("krew", self.krew),
+            ("npm", self.npm),
+        ]
+        .into_iter()
+        .filter(|(_, on)| *on)
+        .map(|(name, _)| name)
+        .collect()
+    }
 }
 
 /// `--mas`, `--no-mas` and the like for the package managers `brew bundle`

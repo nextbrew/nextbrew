@@ -1,7 +1,7 @@
 //! `nb bundle`: `brew bundle` over a Brewfile read without Ruby (see
 //! [`crate::brewfile`]). Entries nextbrew cannot install (other taps,
-//! `mas`, `vscode`, cask `args`, build `args`) count as failures and say
-//! why, as a failed install does in Homebrew; none are skipped silently.
+//! `flatpak`, `winget`, build `args`) count as failures and say why, as a
+//! failed install does in Homebrew; none are skipped silently.
 
 use std::path::{Path, PathBuf};
 
@@ -43,6 +43,52 @@ pub async fn execute(
                 quiet: args.quiet,
             };
             install_from_file(installer, &path, &options, ui).await
+        }
+        BundleCommands::Add {
+            names,
+            file,
+            global,
+            install,
+            types,
+            no_describe,
+        } => {
+            let directive = match types.selected().as_slice() {
+                [] => "brew",
+                ["mas"] => {
+                    return Err(usage(
+                        "The `add` subcommand does not accept the `--mas` switch.",
+                    ));
+                }
+                [one] => one,
+                _ => return Err(usage("`add` supports only one type of entry at a time.")),
+            };
+            let path = brewfile_path(file.as_deref(), global)?;
+            if install {
+                install_first(installer, &path, verbose, ui).await?;
+            }
+            let describe =
+                !no_describe && std::env::var_os("HOMEBREW_BUNDLE_NO_DESCRIBE").is_none();
+            add(installer, &path, &names, directive, describe).await
+        }
+        BundleCommands::Remove {
+            names,
+            file,
+            global,
+            install,
+            types,
+        } => {
+            let directive = match types.selected().as_slice() {
+                [] => None,
+                [one] => Some(*one),
+                _ => {
+                    return Err(usage("`remove` supports only one type of entry at a time."));
+                }
+            };
+            let path = brewfile_path(file.as_deref(), global)?;
+            if install {
+                install_first(installer, &path, verbose, ui).await?;
+            }
+            remove(installer, &path, &names, directive).await
         }
         BundleCommands::Check {
             file,
@@ -207,6 +253,184 @@ fn read_brewfile(path: &Path) -> Result<Vec<Entry>, nb_core::Error> {
     })?;
     brewfile::parse(&source).map_err(|e| nb_core::Error::ExecutionError {
         message: e.to_string(),
+    })
+}
+
+fn usage(message: &str) -> nb_core::Error {
+    nb_core::Error::InvalidArgument {
+        message: message.to_string(),
+    }
+}
+
+/// `--install`: `brew bundle install` first, quietly.
+async fn install_first(
+    installer: &mut nb_io::Installer,
+    path: &Path,
+    verbose: bool,
+    ui: &mut StdUi,
+) -> Result<(), nb_core::Error> {
+    let options = InstallOptions {
+        no_upgrade: std::env::var_os("HOMEBREW_BUNDLE_NO_UPGRADE").is_some(),
+        upgrade_formulae: Vec::new(),
+        verbose,
+        quiet: true,
+    };
+    install_from_file(installer, path, &options, ui).await
+}
+
+/// `Adder.add`: `<type> "<name>"` lines at the end of the Brewfile (made
+/// if missing), formulae and casks each under their description.
+async fn add(
+    installer: &nb_io::Installer,
+    path: &Path,
+    names: &[String],
+    directive: &str,
+    describe: bool,
+) -> Result<(), nb_core::Error> {
+    if !path.exists() {
+        write_brewfile(path, "")?;
+    }
+    let mut content = std::fs::read_to_string(path).map_err(|_| nb_core::Error::FileError {
+        message: "No Brewfile found".to_string(),
+    })?;
+    brewfile::parse(&content).map_err(|e| nb_core::Error::ExecutionError {
+        message: e.to_string(),
+    })?;
+    let mut lines = Vec::new();
+    for name in names {
+        let desc = match directive {
+            "brew" => installer.formula(name).await?.desc,
+            "cask" => installer.cask(name).await?["desc"]
+                .as_str()
+                .map(str::to_string),
+            _ => None,
+        };
+        let entry = format!("{directive} \"{name}\"");
+        lines.push(match desc.filter(|_| describe) {
+            Some(desc) => describe_lines(Some(&desc)) + &entry,
+            None => entry,
+        });
+    }
+    content.push_str(&lines.join("\n"));
+    content.push('\n');
+    write_brewfile(path, &content)
+}
+
+/// `Remover.remove`: drop the lines naming any of `names` (as `<type>
+/// "name"`, any type when none is given), and the description comment
+/// above each. For formulae, their aliases and old names match too.
+async fn remove(
+    installer: &nb_io::Installer,
+    path: &Path,
+    names: &[String],
+    directive: Option<&str>,
+) -> Result<(), nb_core::Error> {
+    let content = std::fs::read_to_string(path).map_err(|_| nb_core::Error::FileError {
+        message: "No Brewfile found".to_string(),
+    })?;
+    brewfile::parse(&content).map_err(|e| nb_core::Error::ExecutionError {
+        message: e.to_string(),
+    })?;
+    let mut patterns: Vec<String> = Vec::new();
+    for name in names {
+        let candidates = match directive {
+            Some("brew") => possible_names(installer, name, true).await?,
+            _ => vec![name.clone()],
+        };
+        for candidate in candidates {
+            let pattern = regex::escape(&candidate);
+            if !patterns.contains(&pattern) {
+                patterns.push(pattern);
+            }
+        }
+    }
+    let entry = regex::Regex::new(&format!(
+        r#"{}(?:\s+|\(\s*)"({})""#,
+        directive.unwrap_or_default(),
+        patterns.join("|")
+    ))
+    .map_err(|e| usage(&e.to_string()))?;
+    let comment = regex::Regex::new(r"(?m)^\s*#\s+(?<desc>.+)$").unwrap();
+
+    // Ruby's `split("\n")`: no empty lines at the end.
+    let mut lines: Vec<&str> = content.split('\n').collect();
+    while lines.last() == Some(&"") {
+        lines.pop();
+    }
+    let mut kept: Vec<&str> = Vec::new();
+    for line in lines {
+        let Some(found) = entry.captures(line) else {
+            kept.push(line);
+            continue;
+        };
+        // `remove_package_description_comment`.
+        let above = kept
+            .last()
+            .and_then(|last| comment.captures(last))
+            .map(|c| c["desc"].to_string());
+        if let Some(above) = above
+            && description(installer, &found[1]).await.as_deref() == Some(above.as_str())
+        {
+            kept.pop();
+        }
+    }
+    let new_content = format!("{}\n", kept.join("\n"));
+    let chomp = |text: &str| text.strip_suffix('\n').unwrap_or(text).to_string();
+    if directive.is_none() && chomp(&content) == chomp(&new_content) {
+        for name in names {
+            let names = possible_names(installer, name, false)
+                .await
+                .unwrap_or_default();
+            if names.len() > 1 {
+                eprintln!(
+                    "{} No matching entries found in Brewfile. Try again with `--formula` to match formula aliases and old formula names.",
+                    style("Warning:").yellow().bold()
+                );
+                return Ok(());
+            }
+        }
+    }
+    write_brewfile(path, &new_content)
+}
+
+/// `Remover.possible_names`: what a formula may be written as: the name
+/// given, its name, aliases and old names. Nothing for a cask, or for an
+/// unknown name unless `strict`.
+async fn possible_names(
+    installer: &nb_io::Installer,
+    name: &str,
+    strict: bool,
+) -> Result<Vec<String>, nb_core::Error> {
+    let formula = match installer.formula(name).await {
+        Ok(formula) => formula,
+        Err(e) if strict => return Err(e),
+        Err(_) => return Ok(Vec::new()),
+    };
+    let mut names = vec![name.to_string(), formula.name.clone()];
+    names.extend(formula.aliases);
+    names.extend(formula.oldnames);
+    let mut unique: Vec<String> = Vec::new();
+    for name in names {
+        if !unique.contains(&name) {
+            unique.push(name);
+        }
+    }
+    Ok(unique)
+}
+
+/// The description of a formula, or else of a cask, by this name.
+async fn description(installer: &nb_io::Installer, name: &str) -> Option<String> {
+    match installer.formula(name).await {
+        Ok(formula) => formula.desc,
+        Err(_) => installer.cask(name).await.ok()?["desc"]
+            .as_str()
+            .map(str::to_string),
+    }
+}
+
+fn write_brewfile(path: &Path, content: &str) -> Result<(), nb_core::Error> {
+    std::fs::write(path, content).map_err(|e| nb_core::Error::FileError {
+        message: format!("failed to write {}: {e}", path.display()),
     })
 }
 
