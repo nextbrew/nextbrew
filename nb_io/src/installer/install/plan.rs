@@ -36,6 +36,7 @@ impl Installer {
             items.push(self.plan_item(install_name, formula, build_from_source)?);
         }
 
+        rank_like_homebrew(&mut items, names, &formulas);
         Ok(InstallPlan {
             items,
             roots: roots.into_iter().collect(),
@@ -116,6 +117,7 @@ impl Installer {
             }
         }
 
+        rank_like_homebrew(&mut items, names, &formulas);
         (
             InstallPlan {
                 items,
@@ -179,6 +181,9 @@ impl Installer {
             formula,
             method,
             link_keg_only: false,
+            link_overwrite: Vec::new(),
+            link_rank: 0,
+            link_later: Vec::new(),
         })
     }
 
@@ -403,6 +408,43 @@ fn root_dependency_failure(
     }
 
     None
+}
+
+/// Rank items in the order `brew install` would install them: each name
+/// asked for, in order, after its dependencies (depth first, as declared).
+fn rank_like_homebrew(
+    items: &mut [PlannedInstall],
+    names: &[String],
+    formulas: &BTreeMap<String, Formula>,
+) {
+    fn visit(
+        name: &str,
+        formulas: &BTreeMap<String, Formula>,
+        seen: &mut HashSet<String>,
+        order: &mut Vec<String>,
+    ) {
+        let Some(formula) = formulas.get(name) else {
+            return;
+        };
+        if !seen.insert(formula.name.clone()) {
+            return;
+        }
+        for dep in formula.runtime_dependencies() {
+            visit(&dep, formulas, seen, order);
+        }
+        order.push(formula.name.clone());
+    }
+    let mut seen = HashSet::new();
+    let mut order = Vec::new();
+    for name in names {
+        visit(name, formulas, &mut seen, &mut order);
+    }
+    for item in items {
+        item.link_rank = order
+            .iter()
+            .position(|name| *name == item.formula.name)
+            .unwrap_or(usize::MAX);
+    }
 }
 
 /// `Homebrew::DEFAULT_PREFIX`, the only prefix `pour_bottle? only_if:

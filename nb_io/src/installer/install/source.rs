@@ -105,7 +105,7 @@ impl Installer {
 
         let should_link = link && (!item.formula.is_keg_only() || item.link_keg_only);
 
-        if should_link {
+        if should_link && self.make_room_to_link(item, report)? {
             report(InstallProgress::LinkStarted {
                 name: formula_name.clone(),
             });
@@ -147,9 +147,13 @@ impl Installer {
             }
         } else if link {
             let reason = match &item.formula.keg_only {
-                nb_core::KegOnly::Reason(s) => s.clone(),
-                _ if item.formula.name.contains('@') => "versioned formula".to_string(),
-                _ => "keg-only formula".to_string(),
+                // Kept unlinked for a related formula linked after it.
+                _ if !item.formula.is_keg_only() || item.link_keg_only => {
+                    "another version is linked".to_string()
+                }
+                nb_core::KegOnly::Reason(s) => format!("keg-only ({s})"),
+                _ if item.formula.name.contains('@') => "keg-only (versioned formula)".to_string(),
+                _ => "keg-only".to_string(),
             };
             report(InstallProgress::LinkSkipped {
                 name: formula_name.clone(),

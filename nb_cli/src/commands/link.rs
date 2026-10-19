@@ -14,7 +14,15 @@ pub async fn link(
         let (keg, _) = installer.formula_keg(&name)?;
         let keg = keg.display();
         match installer.link(&name, force).await? {
-            LinkOutcome::Linked(n) => println!("Linking {keg}... {n} symlinks created."),
+            LinkOutcome::Linked { count, unlinked } => {
+                for (other, removed) in unlinked {
+                    println!(
+                        "Unlinking {}... {removed} symlinks removed.",
+                        other.display()
+                    );
+                }
+                println!("Linking {keg}... {count} symlinks created.");
+            }
             LinkOutcome::AlreadyLinked => {
                 warn(format!("Already linked: {keg}"));
                 println!("To relink, run:\n  nb unlink {name} && nb link {name}");

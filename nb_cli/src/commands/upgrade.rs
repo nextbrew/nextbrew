@@ -6,7 +6,7 @@ use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
 use crate::ui::StdUi;
-use crate::utils::normalize_formula_name;
+use crate::utils::{normalize_formula_name, resolve_installed_name};
 
 pub async fn execute(
     installer: &mut nb_io::Installer,
@@ -37,7 +37,10 @@ pub async fn execute(
     } else {
         let mut normalized = Vec::with_capacity(formulas.len());
         for formula in &formulas {
-            normalized.push(normalize_formula_name(formula)?);
+            normalized.push(resolve_installed_name(
+                installer,
+                normalize_formula_name(formula)?,
+            ));
         }
         let mut outdated = Vec::new();
         for name in &normalized {
@@ -183,9 +186,13 @@ pub async fn execute(
                     pb.set_message("linked");
                 }
             }
+            InstallProgress::Unlinked { keg, count } => {
+                let _ =
+                    multi_clone.println(format!("Unlinking {keg}... {count} symlinks removed."));
+            }
             InstallProgress::LinkSkipped { name, reason } => {
                 if let Some(pb) = bars.get(&name) {
-                    pb.set_message(format!("keg-only ({})", reason));
+                    pb.set_message(reason);
                 }
             }
             InstallProgress::InstallCompleted { name } => {

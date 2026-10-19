@@ -34,6 +34,31 @@ pub fn normalize_formula_name(name: &str) -> Result<String, nb_core::Error> {
     Ok(trimmed.to_string())
 }
 
+/// Homebrew's reading of a bare name to install: the formula if the API
+/// has one, otherwise the cask with that token. Qualified names are kept.
+pub async fn resolve_install_name(installer: &Installer, name: String) -> String {
+    if name.starts_with("cask:") || name.contains('/') {
+        return name;
+    }
+    match installer.formula(&name).await {
+        Err(nb_core::Error::MissingFormula { .. }) if installer.cask(&name).await.is_ok() => {
+            format!("cask:{name}")
+        }
+        _ => name,
+    }
+}
+
+/// The same for something already installed: the formula, or else the cask.
+pub fn resolve_installed_name(installer: &Installer, name: String) -> String {
+    let cask = format!("cask:{name}");
+    if name.starts_with("cask:") || installer.is_installed(&name) || !installer.is_installed(&cask)
+    {
+        name
+    } else {
+        cask
+    }
+}
+
 pub fn format_formula_suggestions(requested: &str, suggestions: &[String]) -> Option<String> {
     if suggestions.is_empty() {
         return None;

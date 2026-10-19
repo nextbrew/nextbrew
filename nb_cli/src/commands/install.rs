@@ -6,7 +6,9 @@ use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
 use crate::ui::StdUi;
-use crate::utils::{normalize_formula_name, suggest_homebrew, suggest_missing_formula_matches};
+use crate::utils::{
+    normalize_formula_name, resolve_install_name, suggest_homebrew, suggest_missing_formula_matches,
+};
 
 pub async fn execute(
     installer: &mut nb_io::Installer,
@@ -27,6 +29,7 @@ pub async fn execute(
     for formula in &formulas {
         match normalize_formula_name(formula) {
             Ok(name) => {
+                let name = resolve_install_name(installer, name).await;
                 if name.starts_with("cask:") {
                     cask_names.push(name);
                 } else {
@@ -235,9 +238,13 @@ pub async fn execute_formula_plan(
                     pb.set_message("linked");
                 }
             }
+            InstallProgress::Unlinked { keg, count } => {
+                let _ =
+                    multi_clone.println(format!("Unlinking {keg}... {count} symlinks removed."));
+            }
             InstallProgress::LinkSkipped { name, reason } => {
                 if let Some(pb) = bars.get(&name) {
-                    pb.set_message(format!("keg-only ({})", reason));
+                    pb.set_message(reason);
                 }
             }
             InstallProgress::InstallCompleted { name } => {

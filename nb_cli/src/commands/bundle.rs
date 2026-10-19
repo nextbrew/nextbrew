@@ -43,7 +43,39 @@ pub async fn execute(
             };
             install_from_file(installer, &path, &options, ui).await
         }
-        BundleCommands::Dump { file, force } => dump_to_file(installer, &file, force),
+        BundleCommands::Dump {
+            file,
+            global,
+            force,
+            formula,
+            no_formula,
+            cask,
+            no_cask,
+            tap,
+            no_tap,
+            no_describe,
+            no_restart,
+        } => {
+            // `type_selected?`: the types asked for, or all of them, minus
+            // those turned off by flag or environment.
+            let no_type_args = !(formula || cask || tap);
+            let selected = |asked: bool, off: bool, env: &str| {
+                !off && std::env::var_os(env).is_none() && (asked || no_type_args)
+            };
+            let options = DumpOptions {
+                formulae: selected(formula, no_formula, "HOMEBREW_BUNDLE_DUMP_NO_BREW"),
+                casks: selected(cask, no_cask, "HOMEBREW_BUNDLE_DUMP_NO_CASK"),
+                describe: !no_describe && std::env::var_os("HOMEBREW_BUNDLE_NO_DESCRIBE").is_none(),
+                no_restart,
+            };
+            // nextbrew has no taps to dump.
+            let _ = selected(tap, no_tap, "HOMEBREW_BUNDLE_DUMP_NO_TAP");
+            let path = match file.as_deref() {
+                Some(file) if file == Path::new("-") => PathBuf::from("/dev/stdout"),
+                file => brewfile_path(file, global)?,
+            };
+            dump_to_file(installer, &path, force, &options).await
+        }
     }
 }
 
@@ -566,38 +598,162 @@ fn run_postinstall(name: &str, command: Option<&Value>) -> bool {
         .is_ok_and(|status| status.success())
 }
 
-fn dump_to_file(
+struct DumpOptions {
+    formulae: bool,
+    casks: bool,
+    describe: bool,
+    no_restart: bool,
+}
+
+/// `Dumper.dump_brewfile`.
+async fn dump_to_file(
     installer: &mut nb_io::Installer,
-    file_path: &Path,
+    path: &Path,
     force: bool,
+    options: &DumpOptions,
 ) -> Result<(), nb_core::Error> {
-    if file_path.exists() && !force {
+    let absolute = std::path::absolute(path).unwrap_or_else(|_| path.to_path_buf());
+    if absolute.exists() && !force && absolute != Path::new("/dev/stdout") {
         return Err(nb_core::Error::FileError {
-            message: format!(
-                "file {} already exists (use --force to overwrite)",
-                file_path.display()
-            ),
+            message: format!("{} already exists", absolute.display()),
         });
     }
+    let content = build_brewfile(installer, options).await?;
+    std::fs::write(&absolute, content).map_err(|e| nb_core::Error::FileError {
+        message: format!("failed to write {}: {e}", absolute.display()),
+    })
+}
 
-    let installed = installer.list_installed()?;
-    let mut content = String::new();
-    for keg in &installed {
-        content.push_str(&format!("brew \"{}\"\n", keg.name));
+/// `Dumper.build_brewfile`: formulae asked for, then casks, each section
+/// separated by a newline.
+async fn build_brewfile(
+    installer: &nb_io::Installer,
+    options: &DumpOptions,
+) -> Result<String, nb_core::Error> {
+    let mut sections = Vec::new();
+    if options.formulae {
+        sections.push(dump_formulae(installer, options).await?);
+    }
+    if options.casks {
+        sections.push(dump_casks(installer, options.describe).await?);
+    }
+    let sections: Vec<String> = sections.into_iter().filter(|s| !s.is_empty()).collect();
+    Ok(format!("{}\n", sections.join("\n")))
+}
+
+fn describe_lines(desc: Option<&str>) -> String {
+    desc.filter(|desc| !desc.is_empty())
+        .map(|desc| desc.lines().map(|line| format!("# {line}\n")).collect())
+        .unwrap_or_default()
+}
+
+/// `Bundle::Brew.dump`: formulae installed on request, each after the
+/// formulae it depends on (Homebrew's topological sort).
+async fn dump_formulae(
+    installer: &nb_io::Installer,
+    options: &DumpOptions,
+) -> Result<String, nb_core::Error> {
+    let mut kegs: Vec<_> = installer
+        .list_installed()?
+        .into_iter()
+        .filter(|keg| !keg.name.starts_with("cask:"))
+        .collect();
+    // Core formulae first, then tap ones, each by name.
+    kegs.sort_by(|a, b| (a.name.contains('/'), &a.name).cmp(&(b.name.contains('/'), &b.name)));
+    let installed: Vec<String> = kegs.iter().map(|keg| keg.name.clone()).collect();
+    let mut graph = std::collections::HashMap::new();
+    for name in &installed {
+        let mut deps: Vec<String> = installer
+            .dependencies(name, false)
+            .await
+            .map(|deps| {
+                deps.into_iter()
+                    .filter(|dep| installed.contains(dep))
+                    .collect()
+            })
+            .unwrap_or_default();
+        deps.sort();
+        graph.insert(name.clone(), deps);
+    }
+    let mut order = Vec::new();
+    let mut seen = std::collections::HashSet::new();
+    fn visit(
+        name: &str,
+        graph: &std::collections::HashMap<String, Vec<String>>,
+        seen: &mut std::collections::HashSet<String>,
+        order: &mut Vec<String>,
+    ) {
+        if !seen.insert(name.to_string()) {
+            return;
+        }
+        for dep in graph.get(name).into_iter().flatten() {
+            visit(dep, graph, seen, order);
+        }
+        order.push(name.to_string());
+    }
+    for name in &installed {
+        visit(name, &graph, &mut seen, &mut order);
     }
 
-    std::fs::write(file_path, content).map_err(|e| nb_core::Error::FileError {
-        message: format!("failed to write {}: {}", file_path.display(), e),
-    })?;
-
-    println!(
-        "{} Dumped {} packages to {}",
-        style("==>").cyan().bold(),
-        style(installed.len()).green().bold(),
-        file_path.display()
+    let launchd = nb_io::services::Launchd::current(
+        std::env::var_os("HOME")
+            .map(PathBuf::from)
+            .unwrap_or_default(),
     );
+    let mut lines = Vec::new();
+    for name in order {
+        let Some(keg) = installer.get_installed(&name) else {
+            continue;
+        };
+        if !keg.on_request {
+            continue;
+        }
+        let formula = installer.formula(&name).await.ok();
+        let mut line = if options.describe {
+            describe_lines(formula.as_ref().and_then(|f| f.desc.as_deref()))
+        } else {
+            String::new()
+        };
+        line += &format!("brew \"{name}\"");
+        if !options.no_restart
+            && cfg!(target_os = "macos")
+            && launchd.find(&nb_io::services::label(&name)).running()
+        {
+            line += ", restart_service: :changed";
+        }
+        let keg_only = formula.as_ref().is_some_and(|f| f.is_keg_only());
+        match installer.is_linked(&name) {
+            Ok(true) if keg_only => line += ", link: true",
+            Ok(false) if !keg_only => line += ", link: false",
+            _ => {}
+        }
+        lines.push(line);
+    }
+    Ok(lines.join("\n"))
+}
 
-    Ok(())
+/// `Bundle::Cask.dump`: every installed cask, by token.
+async fn dump_casks(
+    installer: &nb_io::Installer,
+    describe: bool,
+) -> Result<String, nb_core::Error> {
+    let mut tokens: Vec<String> = installer
+        .list_installed()?
+        .into_iter()
+        .filter_map(|keg| keg.name.strip_prefix("cask:").map(str::to_string))
+        .collect();
+    tokens.sort();
+    let mut lines = Vec::new();
+    for token in tokens {
+        let mut line = String::new();
+        if describe {
+            let json = installer.cask(&token).await.ok();
+            line += &describe_lines(json.as_ref().and_then(|j| j["desc"].as_str()));
+        }
+        line += &format!("cask \"{token}\"");
+        lines.push(line);
+    }
+    Ok(lines.join("\n"))
 }
 
 #[cfg(test)]

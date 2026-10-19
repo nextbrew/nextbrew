@@ -82,6 +82,15 @@ pub struct PlannedInstall {
     /// (see [`Installer::links_versioned_keg_only`]), or one that was linked
     /// before an upgrade.
     pub link_keg_only: bool,
+    /// Related formulae to unlink before this one links, and whether each
+    /// is keg-only (see [`Installer::unlink_overwritten`]).
+    pub link_overwrite: Vec<(String, bool)>,
+    /// Where Homebrew would install this: the names asked for in order,
+    /// each after its dependencies. Decides which of two related formulae
+    /// ends up linked, whatever order the bottles arrive in.
+    pub link_rank: usize,
+    /// Related formulae in the same plan that Homebrew installs later.
+    pub link_later: Vec<String>,
 }
 
 #[derive(Debug)]
@@ -203,6 +212,33 @@ impl Installer {
                 cb(event);
             }
         };
+        let mut plan = plan;
+        if link {
+            for item in &mut plan.items {
+                // Best effort: without the formula list, nothing is unlinked.
+                item.link_overwrite = self
+                    .overwrite_candidates(&item.formula)
+                    .await
+                    .unwrap_or_default();
+            }
+            let ranks: Vec<(String, usize)> = plan
+                .items
+                .iter()
+                .map(|item| (item.formula.name.clone(), item.link_rank))
+                .collect();
+            for item in &mut plan.items {
+                item.link_later = item
+                    .link_overwrite
+                    .iter()
+                    .filter(|(other, _)| {
+                        ranks
+                            .iter()
+                            .any(|(name, rank)| name == other && *rank > item.link_rank)
+                    })
+                    .map(|(other, _)| other.clone())
+                    .collect();
+            }
+        }
 
         // Post-install runs once everything is installed, in plan order, so
         // a step can rely on a dependency that is still downloading here.
@@ -462,6 +498,16 @@ impl Installer {
 
     pub fn list_installed(&self) -> Result<Vec<crate::storage::db::InstalledKeg>, Error> {
         self.db.list_installed()
+    }
+
+    /// A formula as the API describes it.
+    pub async fn formula(&self, name: &str) -> Result<Formula, Error> {
+        self.api_client.get_formula(name).await
+    }
+
+    /// A cask's JSON as the API gives it.
+    pub async fn cask(&self, token: &str) -> Result<serde_json::Value, Error> {
+        self.api_client.get_cask(token).await
     }
 
     pub fn keg_path(&self, name: &str, version: &str) -> PathBuf {
@@ -750,7 +796,7 @@ mod tests {
         assert!(prefix.join("opt/testpkg").exists());
         assert!(matches!(
             installer.link("testpkg", false).await.unwrap(),
-            super::LinkOutcome::Linked(n) if n > 0
+            super::LinkOutcome::Linked { count, .. } if count > 0
         ));
         assert!(prefix.join("bin/testpkg").exists());
         assert_eq!(
@@ -980,6 +1026,17 @@ mod tests {
             !prefix.join("bin/foo@1").exists(),
             "keg-only: foo@2 is installed"
         );
+
+        // Linking it by hand unlinks foo@2 first, as `brew link` does.
+        match installer.link("foo@1", false).await.unwrap() {
+            super::LinkOutcome::Linked { unlinked, .. } => {
+                assert_eq!(unlinked.len(), 1, "{unlinked:?}");
+                assert!(unlinked[0].0.ends_with("foo@2/1.0.0"));
+            }
+            other => panic!("{other:?}"),
+        }
+        assert!(prefix.join("bin/foo@1").exists());
+        assert!(!prefix.join("bin/foo@2").exists());
     }
 
     #[tokio::test]

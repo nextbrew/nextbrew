@@ -24,6 +24,8 @@ pub enum InstallProgress {
     LinkCompleted { name: String },
     /// Linking skipped (keg-only or conflict)
     LinkSkipped { name: String, reason: String },
+    /// A related keg was unlinked so this one could link.
+    Unlinked { keg: String, count: usize },
     /// Installation completed for a package (final state)
     InstallCompleted { name: String },
     /// Running the package's post-install steps, after every package in

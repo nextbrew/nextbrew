@@ -6,7 +6,11 @@ use super::Installer;
 
 #[derive(Debug, PartialEq, Eq)]
 pub enum LinkOutcome {
-    Linked(usize),
+    /// Linked this many files, after unlinking these related kegs.
+    Linked {
+        count: usize,
+        unlinked: Vec<(PathBuf, usize)>,
+    },
     AlreadyLinked,
     /// Keg-only and not forced; `brew link` warns and skips it.
     KegOnly,
@@ -30,9 +34,18 @@ impl Installer {
                 return Ok(LinkOutcome::KegOnly);
             }
         }
+        let formula = self.api_client.get_formula(name).await?;
+        let candidates = self
+            .overwrite_candidates(&formula)
+            .await
+            .unwrap_or_default();
+        let unlinked = self.unlink_overwritten(formula.is_keg_only(), &candidates)?;
         let linked = self.linker.link_keg(&keg)?;
         self.record_linked_files(name, &version, &linked);
-        Ok(LinkOutcome::Linked(linked.len()))
+        Ok(LinkOutcome::Linked {
+            count: linked.len(),
+            unlinked,
+        })
     }
 
     /// Homebrew's `auto_link_versioned_keg_only?` for a formula asked for
@@ -48,6 +61,18 @@ impl Installer {
         if !formula.is_keg_only() || !versioned {
             return Ok(false);
         }
+        let related = self.link_overwrite_formulae(formula).await?;
+        let unversioned = unversioned_name(&formula.name);
+        Ok(!related.iter().any(|other| {
+            self.is_installed(&other.name)
+                || (unversioned.as_ref() == Some(&other.name) && other.is_keg_only())
+        }))
+    }
+
+    /// `Formula#link_overwrite_formulae`: other versions of the formula,
+    /// its `-full` twin, the unversioned one, and theirs in turn, aliases
+    /// resolved.
+    async fn link_overwrite_formulae(&self, formula: &Formula) -> Result<Vec<Formula>, Error> {
         let names = self.api_client.formula_names().await?;
         let related_names = |name: &str| {
             let prefix = unversioned_name(name).unwrap_or_else(|| name.to_string());
@@ -83,11 +108,81 @@ impl Installer {
                 related.push(other);
             }
         }
-        let unversioned = unversioned_name(&formula.name);
-        Ok(!related.iter().any(|other| {
-            self.is_installed(&other.name)
-                || (unversioned.as_ref() == Some(&other.name) && other.is_keg_only())
-        }))
+        Ok(related)
+    }
+
+    /// The related formulae linking `formula` may have to unlink first, and
+    /// whether each is keg-only.
+    pub(super) async fn overwrite_candidates(
+        &self,
+        formula: &Formula,
+    ) -> Result<Vec<(String, bool)>, Error> {
+        Ok(self
+            .link_overwrite_formulae(formula)
+            .await?
+            .into_iter()
+            .map(|other| {
+                let keg_only = other.is_keg_only();
+                (other.name, keg_only)
+            })
+            .collect())
+    }
+
+    /// `Unlink.unlink_link_overwrite_formulae`: before `formula` links, the
+    /// linked related formulae are unlinked (only the keg-only ones when it
+    /// is not keg-only itself). Returns each keg unlinked and its count.
+    pub(super) fn unlink_overwritten(
+        &mut self,
+        keg_only: bool,
+        candidates: &[(String, bool)],
+    ) -> Result<Vec<(PathBuf, usize)>, Error> {
+        let mut unlinked = Vec::new();
+        for (other, other_keg_only) in candidates {
+            if !keg_only && !other_keg_only {
+                continue;
+            }
+            if !self.is_installed(other) || !self.is_linked(other)? {
+                continue;
+            }
+            let (keg, _) = self.formula_keg(other)?;
+            let count = self.unlink(other)?;
+            unlinked.push((keg, count));
+        }
+        Ok(unlinked)
+    }
+
+    /// Unlink what Homebrew would have unlinked before `item` links, given
+    /// that it installs in [`PlannedInstall::link_rank`] order. `false` when
+    /// a related formula ranked later is already linked and would have
+    /// unlinked this one: then it stays unlinked.
+    pub(super) fn make_room_to_link(
+        &mut self,
+        item: &super::PlannedInstall,
+        report: &impl Fn(crate::progress::InstallProgress),
+    ) -> Result<bool, Error> {
+        let keg_only = item.formula.is_keg_only();
+        let superseded = item.link_overwrite.iter().any(|(other, other_keg_only)| {
+            item.link_later.contains(other)
+                && (*other_keg_only || keg_only)
+                && self.is_installed(other)
+                && self.is_linked(other).unwrap_or(false)
+        });
+        if superseded {
+            return Ok(false);
+        }
+        let earlier: Vec<(String, bool)> = item
+            .link_overwrite
+            .iter()
+            .filter(|(other, _)| !item.link_later.contains(other))
+            .cloned()
+            .collect();
+        for (keg, count) in self.unlink_overwritten(keg_only, &earlier)? {
+            report(crate::progress::InstallProgress::Unlinked {
+                keg: keg.display().to_string(),
+                count,
+            });
+        }
+        Ok(true)
     }
 
     /// Whether an installed formula's keg is linked into the prefix.

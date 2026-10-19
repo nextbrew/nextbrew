@@ -397,17 +397,33 @@ pub enum BundleCommands {
     /// Install and upgrade everything in a Brewfile
     #[command(visible_alias = "upgrade")]
     Install(BundleInstallArgs),
-    /// Dump installed packages to a Brewfile
+    /// Write what is installed into a Brewfile
     Dump {
         #[arg(
             long,
-            short = 'f',
             value_name = "FILE",
-            default_value = "Brewfile",
-            help = "Output file path"
+            help = "Write to this file (`-` for standard output) instead of ./Brewfile or $HOMEBREW_BUNDLE_FILE"
         )]
-        file: PathBuf,
-        #[arg(long, help = "Overwrite existing file")]
+        file: Option<PathBuf>,
+        #[arg(long, help = "Write ~/.Brewfile (or $HOMEBREW_BUNDLE_FILE_GLOBAL)")]
+        global: bool,
+        #[arg(long, short = 'f', help = "Overwrite an existing Brewfile")]
         force: bool,
+        #[arg(long, visible_aliases = ["formulae", "brews"], help = "Dump formulae")]
+        formula: bool,
+        #[arg(long, visible_aliases = ["no-formulae", "no-brews"], help = "Dump without formulae")]
+        no_formula: bool,
+        #[arg(long, visible_alias = "casks", help = "Dump casks")]
+        cask: bool,
+        #[arg(long, visible_alias = "no-casks", help = "Dump without casks")]
+        no_cask: bool,
+        #[arg(long, visible_alias = "taps", help = "Dump taps")]
+        tap: bool,
+        #[arg(long, visible_alias = "no-taps", help = "Dump without taps")]
+        no_tap: bool,
+        #[arg(long, help = "Do not add description comments above each line")]
+        no_describe: bool,
+        #[arg(long, help = "Do not add restart_service to formula lines")]
+        no_restart: bool,
     },
 }

@@ -362,6 +362,7 @@ mod tests {
             post_install_steps: Vec::new(),
             pour_bottle_only_if: None,
             service: None,
+            desc: None,
             lifecycle: Default::default(),
         };
 
@@ -408,6 +409,7 @@ mod tests {
             post_install_steps: Vec::new(),
             pour_bottle_only_if: None,
             service: None,
+            desc: None,
             lifecycle: Default::default(),
         };
 
@@ -545,6 +547,7 @@ mod tests {
             post_install_steps: Vec::new(),
             pour_bottle_only_if: None,
             service: None,
+            desc: None,
             lifecycle: Default::default(),
         };
 
@@ -602,6 +605,7 @@ mod tests {
             post_install_steps: Vec::new(),
             pour_bottle_only_if: None,
             service: None,
+            desc: None,
             lifecycle: Default::default(),
         };
 
