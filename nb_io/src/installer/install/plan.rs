@@ -1,4 +1,5 @@
 use std::collections::{BTreeMap, HashMap, HashSet};
+use std::path::Path;
 
 use nb_core::{
     BuildPlan, Error, Formula, InstallMethod, SelectedBottle, formula_token, select_bottle,
@@ -146,6 +147,7 @@ impl Installer {
         build_from_source: bool,
     ) -> Result<PlannedInstall, Error> {
         crate::installer::cask::check_formula_deprecate_disable(&formula)?;
+        check_clt_for_bottle(&formula)?;
         let method = if build_from_source {
             match BuildPlan::from_formula(&formula, &self.prefix) {
                 Some(plan) => InstallMethod::Source(plan),
@@ -188,6 +190,17 @@ impl Installer {
     /// instead, as Homebrew does for a non-default prefix.
     fn select_pourable_bottle(&self, formula: &Formula) -> Result<SelectedBottle, Error> {
         let bottle = select_bottle(formula)?;
+        if formula.pour_bottle_only_if.as_deref() == Some("default_prefix")
+            && self.prefix != Path::new(DEFAULT_PREFIX)
+        {
+            warn!(
+                formula = %formula.name,
+                "the bottle (and many others) needs to be installed into {DEFAULT_PREFIX}"
+            );
+            return Err(Error::UnsupportedBottle {
+                name: formula.name.clone(),
+            });
+        }
         if cfg!(target_os = "macos") && !bottle.is_pourable_into(&self.prefix) {
             warn!(
                 formula = %formula.name,
@@ -392,8 +405,61 @@ fn root_dependency_failure(
     None
 }
 
+/// `Homebrew::DEFAULT_PREFIX`, the only prefix `pour_bottle? only_if:
+/// :default_prefix` bottles work in.
+const DEFAULT_PREFIX: &str = if cfg!(target_os = "linux") {
+    "/home/linuxbrew/.linuxbrew"
+} else if cfg!(target_arch = "aarch64") {
+    "/opt/homebrew"
+} else {
+    "/usr/local"
+};
+
+/// `pour_bottle? only_if: :clt_installed` on macOS: Homebrew pours such a
+/// bottle only with the Command Line Tools installed, and a build from
+/// source needs them too, so their absence ends the install.
+fn check_clt_for_bottle(formula: &Formula) -> Result<(), Error> {
+    let clt = Path::new("/Library/Developer/CommandLineTools/usr/bin/clang").exists();
+    check_clt(formula, !cfg!(target_os = "macos") || clt)
+}
+
+fn check_clt(formula: &Formula, clt_installed: bool) -> Result<(), Error> {
+    if clt_installed || formula.pour_bottle_only_if.as_deref() != Some("clt_installed") {
+        return Ok(());
+    }
+    Err(Error::InvalidArgument {
+        message: format!(
+            "{name}: the bottle needs the Xcode Command Line Tools to be installed at /Library/Developer/CommandLineTools.
+Development tools provided by Xcode.app are not sufficient.
+
+You can install the Xcode Command Line Tools, if desired, with:
+    xcode-select --install
+
+If no compatible bottle is available, you can try to install from source with:
+  brew install --build-from-source {name}",
+            name = formula.name
+        ),
+    })
+}
+
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn a_bottle_for_the_clt_needs_the_clt() {
+        let mut formula: nb_core::Formula = serde_json::from_str(include_str!(
+            "../../../../nb_core/fixtures/formula_foo.json"
+        ))
+        .unwrap();
+        assert!(super::check_clt(&formula, false).is_ok());
+        formula.pour_bottle_only_if = Some("clt_installed".to_string());
+        assert!(super::check_clt(&formula, true).is_ok());
+        let err = super::check_clt(&formula, false).unwrap_err().to_string();
+        assert!(
+            err.contains("the bottle needs the Xcode Command Line Tools"),
+            "{err}"
+        );
+    }
+
     use std::fs;
 
     use tempfile::TempDir;

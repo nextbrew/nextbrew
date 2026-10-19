@@ -360,6 +360,7 @@ mod tests {
             aliases: Vec::new(),
             oldnames: Vec::new(),
             post_install_steps: Vec::new(),
+            pour_bottle_only_if: None,
             lifecycle: Default::default(),
         };
 
@@ -404,6 +405,7 @@ mod tests {
             aliases: Vec::new(),
             oldnames: Vec::new(),
             post_install_steps: Vec::new(),
+            pour_bottle_only_if: None,
             lifecycle: Default::default(),
         };
 
@@ -539,6 +541,7 @@ mod tests {
             aliases: Vec::new(),
             oldnames: Vec::new(),
             post_install_steps: Vec::new(),
+            pour_bottle_only_if: None,
             lifecycle: Default::default(),
         };
 
@@ -594,6 +597,7 @@ mod tests {
             aliases: Vec::new(),
             oldnames: Vec::new(),
             post_install_steps: Vec::new(),
+            pour_bottle_only_if: None,
             lifecycle: Default::default(),
         };
 

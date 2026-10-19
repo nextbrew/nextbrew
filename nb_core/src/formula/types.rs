@@ -146,6 +146,10 @@ pub struct Formula {
     /// Homebrew's declarative post-install steps, run after linking.
     #[serde(default)]
     pub post_install_steps: Vec<PostInstallStep>,
+    /// `pour_bottle? only_if:`: `clt_installed` or `default_prefix`, the
+    /// condition under which Homebrew pours the bottle.
+    #[serde(default)]
+    pub pour_bottle_only_if: Option<String>,
     #[serde(flatten)]
     pub lifecycle: Lifecycle,
 }
