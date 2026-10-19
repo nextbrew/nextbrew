@@ -862,6 +862,50 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn opt_links_aliases_but_not_old_names() {
+        let mock_server = MockServer::start().await;
+        let tmp = TempDir::new().unwrap();
+        let tag = get_test_bottle_tag();
+        let bottle = create_bottle_tarball("glib");
+        let json = format!(
+            r#"{{"name":"glib","aliases":["glib2"],"oldnames":["glib-utils"],"versions":{{"stable":"1.0.0"}},"dependencies":[],"bottle":{{"stable":{{"files":{{"{tag}":{{"url":"{uri}/bottles/glib.tar.gz","sha256":"{sha}"}}}}}}}}}}"#,
+            uri = mock_server.uri(),
+            sha = sha256_hex(&bottle),
+        );
+        Mock::given(method("GET"))
+            .and(path("/formula/glib.json"))
+            .respond_with(ResponseTemplate::new(200).set_body_string(&json))
+            .mount(&mock_server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/bottles/glib.tar.gz"))
+            .respond_with(ResponseTemplate::new(200).set_body_bytes(bottle))
+            .mount(&mock_server)
+            .await;
+
+        let root = tmp.path().join("nextbrew");
+        let prefix = tmp.path().join("homebrew");
+        fs::create_dir_all(root.join("db")).unwrap();
+        let mut installer = Installer::new(
+            ApiClient::with_base_url(format!("{}/formula", mock_server.uri())).unwrap(),
+            BlobCache::new(&root.join("cache")).unwrap(),
+            Store::new(&root).unwrap(),
+            Cellar::new(&root).unwrap(),
+            Linker::new(&prefix).unwrap(),
+            Database::open(&root.join("db/nb.sqlite3")).unwrap(),
+            prefix.clone(),
+            root.join("locks"),
+        );
+        installer
+            .install(&["glib".to_string()], true)
+            .await
+            .unwrap();
+
+        assert!(prefix.join("opt/glib2").exists());
+        assert!(prefix.join("opt/glib-utils").symlink_metadata().is_err());
+    }
+
+    #[tokio::test]
     async fn a_versioned_keg_only_formula_links_unless_a_sibling_is_installed() {
         let mock_server = MockServer::start().await;
         let tmp = TempDir::new().unwrap();

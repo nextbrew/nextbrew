@@ -140,7 +140,7 @@ pub struct Formula {
     /// Homebrew links each one under `opt/` too.
     #[serde(default)]
     pub aliases: Vec<String>,
-    /// Names the formula used to have, also linked under `opt/`.
+    /// Names the formula used to have.
     #[serde(default)]
     pub oldnames: Vec<String>,
     /// Homebrew's declarative post-install steps, run after linking.

@@ -97,14 +97,9 @@ impl Installer {
             return Err(e);
         }
 
-        let opt_names: Vec<String> = item
-            .formula
-            .aliases
-            .iter()
-            .chain(&item.formula.oldnames)
-            .cloned()
-            .collect();
-        if let Err(e) = self.linker.link_opt(&keg_path, &opt_names) {
+        // Aliases only: Homebrew refreshes an old name's opt link that a
+        // rename left behind, but never makes a new one.
+        if let Err(e) = self.linker.link_opt(&keg_path, &item.formula.aliases) {
             warn!(formula = %install_name, error = %e, "failed to create opt link");
         }
 

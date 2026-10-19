@@ -736,7 +736,7 @@ impl Linker {
     }
 
     /// Link the keg under `opt/<name>` and, as Homebrew does, under each of
-    /// its aliases and old names, so `opt/pkg-config` reaches `pkgconf`.
+    /// its aliases, so `opt/pkg-config` reaches `pkgconf`.
     pub fn link_opt(&self, keg_path: &Path, aliases: &[String]) -> Result<(), Error> {
         let name = keg_path
             .parent()
