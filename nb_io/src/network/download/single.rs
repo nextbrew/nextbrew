@@ -522,25 +522,62 @@ async fn fetch_part(
     Ok(file)
 }
 
-/// Fetch `url` from byte `start` to the end in one request and push it,
-/// for when the parts could not be had: a range if the server gives one,
-/// otherwise the whole body with its first `start` bytes skipped.
-async fn push_remainder<W: Write>(
+/// How often a dropped connection is picked up again where it stopped
+/// before the download fails as a whole.
+const MAX_RESUMES: u32 = 3;
+
+/// Fetch bytes `start..end` of `url` (`end` `None`: to the end) and push
+/// them, picking up where the transfer stopped when a connection drops, as
+/// often as [`MAX_RESUMES`] allows: the parts already fetched are kept. A
+/// server that answers a range with the whole body has its first `start`
+/// bytes skipped.
+async fn push_range<W: Write>(
     client: &reqwest::Client,
     url: reqwest::Url,
-    start: u64,
+    mut start: u64,
+    end: Option<u64>,
     sink: &mut Sink<W>,
     progress: &Progress,
 ) -> Result<(), DownloadError> {
+    let mut resumes = 0;
+    loop {
+        match push_range_once(client, url.clone(), &mut start, end, sink, progress).await {
+            Ok(()) => return Ok(()),
+            Err(e) if e.transient && resumes < MAX_RESUMES => {
+                resumes += 1;
+                debug!(start, error = %e.error, "transfer dropped; resuming");
+                tokio::time::sleep(Duration::from_millis(250 << (resumes - 1))).await;
+            }
+            Err(e) => return Err(e),
+        }
+    }
+}
+
+/// One request of [`push_range`], moving `start` past what it pushed.
+async fn push_range_once<W: Write>(
+    client: &reqwest::Client,
+    url: reqwest::Url,
+    start: &mut u64,
+    end: Option<u64>,
+    sink: &mut Sink<W>,
+    progress: &Progress,
+) -> Result<(), DownloadError> {
+    if end.is_some_and(|end| *start >= end) {
+        return Ok(());
+    }
+    let range = match end {
+        Some(end) => format!("bytes={start}-{}", end - 1),
+        None => format!("bytes={start}-"),
+    };
     let response = client
         .get(url)
-        .header(RANGE, format!("bytes={start}-"))
+        .header(RANGE, range)
         .send()
         .await
         .map_err(|e| DownloadError::transient(Error::network("failed to request the rest")(e)))?;
     let mut skip = match response.status() {
         reqwest::StatusCode::PARTIAL_CONTENT => 0,
-        reqwest::StatusCode::OK => start,
+        reqwest::StatusCode::OK => *start,
         status => {
             return Err(DownloadError::transient(Error::NetworkFailure {
                 message: format!("HTTP {status} for the rest of the body"),
@@ -556,10 +593,32 @@ async fn push_remainder<W: Write>(
             chunk = chunk.slice(dropped as usize..);
             skip -= dropped;
         }
+        if let Some(end) = end {
+            chunk = chunk.slice(..(end - *start).min(chunk.len() as u64) as usize);
+        }
+        *start += chunk.len() as u64;
         progress.add(chunk.len() as u64);
         sink.push(&chunk).await?;
+        if end.is_some_and(|end| *start >= end) {
+            return Ok(());
+        }
     }
-    Ok(())
+    match end {
+        Some(end) if *start < end => Err(DownloadError::transient(Error::NetworkFailure {
+            message: format!("the body ended at byte {start} of {end}"),
+        })),
+        _ => Ok(()),
+    }
+}
+
+/// Whether the server takes byte ranges for this response's body, so a
+/// dropped transfer can be resumed.
+fn accepts_ranges(response: &reqwest::Response) -> bool {
+    let headers = response.headers();
+    headers
+        .get(ACCEPT_RANGES)
+        .is_some_and(|v| v.as_bytes() == b"bytes")
+        && !headers.contains_key(CONTENT_ENCODING)
 }
 
 /// Stream a response into the blob cache, verifying its checksum, and
@@ -604,6 +663,7 @@ async fn download_response_internal(
 
     // The other chunks start at once; this response carries the first.
     let url = response.url().clone();
+    let resumable = accepts_ranges(&response);
     let chunks = split_plan(&response, total_bytes).unwrap_or_default();
     let part_dir = blob_cache
         .blob_path(expected_sha256)
@@ -675,6 +735,7 @@ async fn download_response_internal(
     };
 
     let mut received = 0u64;
+    let mut dropped = None;
     let mut stream = response.bytes_stream();
     while received < first_end {
         tokio::select! {
@@ -682,10 +743,13 @@ async fn download_response_internal(
                 let Some(chunk) = chunk else {
                     break;
                 };
-                // A connection dropped mid-body; the next attempt starts over.
-                let mut chunk = chunk.map_err(|e| {
-                    DownloadError::transient(Error::network("failed to read chunk")(e))
-                })?;
+                let mut chunk = match chunk {
+                    Ok(chunk) => chunk,
+                    Err(e) => {
+                        dropped = Some(Error::network("failed to read chunk")(e));
+                        break;
+                    }
+                };
                 if received + chunk.len() as u64 > first_end {
                     chunk = chunk.slice(..(first_end - received) as usize);
                 }
@@ -701,6 +765,35 @@ async fn download_response_internal(
         }
     }
     drop(stream);
+
+    // The connection dropped, or the body ended short of its length: pick
+    // up where it stopped rather than starting over, so the parts already
+    // fetched are kept.
+    let end = if chunks.is_empty() {
+        total_bytes
+    } else {
+        Some(first_end)
+    };
+    let short = end.is_some_and(|end| received < end);
+    if dropped.is_some() || short {
+        if !resumable {
+            return Err(DownloadError::transient(dropped.unwrap_or_else(|| {
+                Error::NetworkFailure {
+                    message: format!("the body ended at byte {received}"),
+                }
+            })));
+        }
+        debug!(received, "transfer dropped; resuming");
+        push_range(
+            range_client,
+            url.clone(),
+            received,
+            end,
+            &mut sink,
+            &counter,
+        )
+        .await?;
+    }
 
     while next < chunks.len() && !give_up {
         if let Some(mut file) = ready.remove(&next) {
@@ -733,10 +826,11 @@ async fn download_response_internal(
     if give_up && next < chunks.len() {
         running.abort_all();
         debug!("fetching the body in chunks failed; fetching the rest at once");
-        push_remainder(
+        push_range(
             range_client,
             url.clone(),
             chunks[next].start,
+            None,
             &mut sink,
             &counter,
         )
@@ -1063,6 +1157,127 @@ mod tests {
             .mount(server)
             .await;
         (body, sha, ranged)
+    }
+
+    /// A server that drops the connection after `cut` bytes of every plain
+    /// GET, as a flaky network does, and serves ranges whole unless
+    /// `ranges` is off. Returns its URL and a count of the requests.
+    async fn dropping_server(
+        body: Vec<u8>,
+        cut: usize,
+        ranges: bool,
+    ) -> (String, Arc<AtomicUsize>) {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = format!("http://{}/blob", listener.local_addr().unwrap());
+        let requests = Arc::new(AtomicUsize::new(0));
+        let counter = requests.clone();
+        let body = Arc::new(body);
+        tokio::spawn(async move {
+            loop {
+                let Ok((mut socket, _)) = listener.accept().await else {
+                    return;
+                };
+                let (body, counter) = (body.clone(), counter.clone());
+                tokio::spawn(async move {
+                    let mut head = Vec::new();
+                    let mut byte = [0u8; 1];
+                    while !head.ends_with(b"\r\n\r\n") {
+                        if socket.read(&mut byte).await.unwrap_or(0) == 0 {
+                            return;
+                        }
+                        head.push(byte[0]);
+                    }
+                    counter.fetch_add(1, Ordering::SeqCst);
+                    let head = String::from_utf8_lossy(&head).to_lowercase();
+                    let total = body.len();
+                    let accept = if ranges {
+                        "accept-ranges: bytes\r\n"
+                    } else {
+                        ""
+                    };
+                    let range = head
+                        .lines()
+                        .find_map(|line| line.strip_prefix("range: bytes="))
+                        .filter(|_| ranges)
+                        .map(|spec| {
+                            let (a, b) = spec.trim().split_once('-').unwrap();
+                            let a: usize = a.parse().unwrap();
+                            let b = b.parse::<usize>().map_or(total - 1, |b| b.min(total - 1));
+                            (a, b)
+                        });
+                    let (status, extra, part, close_after) = match range {
+                        Some((a, b)) => (
+                            "206 Partial Content",
+                            format!("content-range: bytes {a}-{b}/{total}\r\n"),
+                            &body[a..=b],
+                            usize::MAX,
+                        ),
+                        None => ("200 OK", String::new(), &body[..], cut),
+                    };
+                    let head = format!(
+                        "HTTP/1.1 {status}\r\ncontent-length: {}\r\n{accept}{extra}connection: close\r\n\r\n",
+                        part.len()
+                    );
+                    let _ = socket.write_all(head.as_bytes()).await;
+                    let _ = socket.write_all(&part[..close_after.min(part.len())]).await;
+                    let _ = socket.shutdown().await;
+                });
+            }
+        });
+        (url, requests)
+    }
+
+    fn patterned(size: usize) -> (Vec<u8>, String) {
+        let body: Vec<u8> = (0..size)
+            .map(|i| (i % 251) as u8 ^ (i >> 16) as u8)
+            .collect();
+        let sha = crate::checksum::sha256_hex(Sha256::new_with_prefix(&body));
+        (body, sha)
+    }
+
+    #[tokio::test]
+    async fn a_dropped_transfer_resumes_where_it_stopped() {
+        let (body, sha) = patterned(300 * 1024);
+        let (url, requests) = dropping_server(body.clone(), 100 * 1024, true).await;
+
+        let tmp = TempDir::new().unwrap();
+        let blob = downloader(&tmp).download(&url, &sha).await.unwrap();
+
+        assert!(std::fs::read(blob).unwrap() == body);
+        assert_eq!(
+            requests.load(Ordering::SeqCst),
+            2,
+            "one plain GET, one range"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_split_body_keeps_its_parts_when_the_first_drops() {
+        let (body, sha) = patterned(9 * 1024 * 1024 + 123);
+        let (url, requests) = dropping_server(body.clone(), 300 * 1024, true).await;
+
+        let tmp = TempDir::new().unwrap();
+        let blob = downloader(&tmp).download(&url, &sha).await.unwrap();
+
+        assert!(std::fs::read(blob).unwrap() == body);
+        // The first GET, one range per other chunk, one to finish the first:
+        // nothing fetched twice.
+        let chunks = (body.len() as u64).div_ceil(
+            (body.len() as u64)
+                .div_ceil(8)
+                .clamp(CHUNK_MIN_BYTES, CHUNK_MAX_BYTES),
+        ) as usize;
+        assert_eq!(requests.load(Ordering::SeqCst), chunks + 1);
+    }
+
+    #[tokio::test]
+    async fn a_dropped_transfer_without_ranges_fails() {
+        let (body, sha) = patterned(300 * 1024);
+        let (url, _) = dropping_server(body, 100 * 1024, false).await;
+
+        let tmp = TempDir::new().unwrap();
+        assert!(downloader(&tmp).download(&url, &sha).await.is_err());
     }
 
     #[tokio::test]
