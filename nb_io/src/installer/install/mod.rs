@@ -9,6 +9,7 @@ mod cask_artifacts;
 mod cask_deps;
 mod cask_uninstall;
 mod deps;
+pub mod diagnostic;
 pub mod doctor;
 mod outdated;
 mod plan;

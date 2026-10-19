@@ -2,20 +2,53 @@ use console::style;
 
 use crate::ui::StdUi;
 
-pub fn execute(
+/// `nb doctor`: `brew doctor`'s checks that apply to nextbrew, then the
+/// consistency of nextbrew's own records, which `--repair` can fix. Exits 1
+/// when anything is left to report, as `brew doctor` does.
+pub async fn execute(
     installer: &mut nb_io::Installer,
     repair: bool,
     ui: &mut StdUi,
 ) -> Result<(), nb_core::Error> {
-    ui.heading("Running diagnostics...").map_err(ui_error)?;
-
+    let findings = installer
+        .diagnose_system(&nb_io::SystemEnv::current())
+        .await?;
     let report = installer.doctor()?;
 
-    if report.is_healthy() {
-        ui.println(format!("    {} No issues found", style("✓").green()))
+    if !findings.is_empty() || !report.is_healthy() {
+        ui.eprintln(
+            style(
+                "Please note that these warnings are just used to help with debugging if you\n\
+                 file an issue. If everything you use nextbrew for is working fine: please don't\n\
+                 worry or file an issue; just ignore this. Thanks!",
+            )
+            .bold(),
+        )
+        .map_err(ui_error)?;
+    }
+    for finding in &findings {
+        ui.eprintln("").map_err(ui_error)?;
+        ui.warn(&finding.message).map_err(ui_error)?;
+    }
+
+    let healthy = report.is_healthy() || check_records(installer, report, repair, ui)?;
+    if findings.is_empty() && healthy {
+        ui.println("Your system is ready to brew.")
             .map_err(ui_error)?;
         return Ok(());
     }
+    std::process::exit(1);
+}
+
+/// Report what is wrong with nextbrew's records and, with `repair`, fix
+/// it. Returns whether nothing is left.
+fn check_records(
+    installer: &mut nb_io::Installer,
+    report: nb_io::DiagnosticReport,
+    repair: bool,
+    ui: &mut StdUi,
+) -> Result<bool, nb_core::Error> {
+    ui.eprintln("").map_err(ui_error)?;
 
     for orphan in &report.orphaned_cellar_kegs {
         ui.warn(format!(
@@ -122,7 +155,7 @@ pub fn execute(
     }
 
     if !report.has_repairable_issues() {
-        return Ok(());
+        return Ok(false);
     }
 
     if !repair {
@@ -136,7 +169,7 @@ pub fn execute(
             }
         ))
         .map_err(ui_error)?;
-        return Ok(());
+        return Ok(false);
     }
 
     ui.blank_line().map_err(ui_error)?;
@@ -215,7 +248,7 @@ pub fn execute(
             .map_err(ui_error)?;
     }
 
-    Ok(())
+    Ok(remaining.is_healthy())
 }
 
 fn pluralize(word: &str, count: usize) -> &str {

@@ -8,6 +8,7 @@ pub(crate) mod sudo;
 pub use homebrew::{
     HomebrewMigrationPackages, HomebrewPackage, categorize_packages, get_homebrew_packages,
 };
+pub use install::diagnostic::{Finding, SystemEnv};
 pub use install::doctor::{DiagnosticReport, RepairSummary};
 pub use install::{
     ExecuteResult, InstallPlan, Installer, LinkOutcome, OutdatedPackage, PlanFailure,

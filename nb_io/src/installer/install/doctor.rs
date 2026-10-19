@@ -241,6 +241,22 @@ impl Installer {
             }
         }
 
+        // And any other, as `check_for_broken_symlinks` walks the prefix.
+        for dir in super::diagnostic::MUST_EXIST_SUBDIRECTORIES {
+            for entry in walkdir::WalkDir::new(self.prefix.join(dir))
+                .into_iter()
+                .flatten()
+            {
+                let link = entry.path();
+                if entry.path_is_symlink()
+                    && !link.exists()
+                    && !report.broken_symlinks.iter().any(|known| known == link)
+                {
+                    report.broken_symlinks.push(link.to_path_buf());
+                }
+            }
+        }
+
         report.stale_keg_file_records = self.db.count_stale_keg_file_records()?;
 
         Ok(report)
@@ -438,6 +454,23 @@ mod tests {
         assert_eq!(report.misnamed_records[0].actual_name, "python@3.14");
         assert!(report.missing_cellar_kegs.is_empty());
         assert!(report.orphaned_cellar_kegs.is_empty());
+    }
+
+    #[test]
+    fn broken_symlinks_no_keg_owns_are_found_and_repaired() {
+        let tmp = TempDir::new().unwrap();
+        let mut installer = installer_with_python_recorded_as(&tmp, &["python@3.14"]);
+        let share = installer.prefix.join("share/man");
+        fs::create_dir_all(&share).unwrap();
+        std::os::unix::fs::symlink("gone", share.join("broken")).unwrap();
+        std::os::unix::fs::symlink(".", share.join("fine")).unwrap();
+
+        let report = installer.doctor().unwrap();
+        assert_eq!(report.broken_symlinks, vec![share.join("broken")]);
+
+        installer.repair_until_healthy(report).unwrap();
+        assert!(!share.join("broken").is_symlink());
+        assert!(share.join("fine").is_symlink());
     }
 
     #[test]

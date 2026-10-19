@@ -49,6 +49,23 @@ function run(argv) {
     Ok(())
 }
 
+/// Whether quarantining works here, as `brew doctor`'s
+/// `check_cask_quarantine_support` asks: quarantine a scratch file in `dir`
+/// and read the attribute back. The error says what failed.
+#[cfg(target_os = "macos")]
+pub(super) fn check_support(dir: &Path) -> Result<(), String> {
+    let file = tempfile::Builder::new()
+        .prefix("doctor")
+        .tempfile_in(dir)
+        .map_err(|e| e.to_string())?;
+    let url = "https://formulae.brew.sh/";
+    quarantine_download(file.path(), url, url).map_err(|e| e.to_string())?;
+    match read(file.path()).map_err(|e| e.to_string())? {
+        Some(_) => Ok(()),
+        None => Err("the quarantine attribute was not set".to_string()),
+    }
+}
+
 /// Give everything under `to` (or `to` itself, if a file) the quarantine of
 /// `from`, symlinks excepted, making each file writable for the owner first
 /// as Homebrew's `propagate` does.
@@ -160,6 +177,15 @@ fn failed(path: &Path, detail: &str) -> Error {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    #[cfg(target_os = "macos")]
+    fn quarantine_support_is_checked_on_a_scratch_file() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        check_support(tmp.path()).unwrap();
+        assert_eq!(std::fs::read_dir(tmp.path()).unwrap().count(), 0);
+        assert!(check_support(&tmp.path().join("missing")).is_err());
+    }
 
     #[test]
     fn no_translocation_sets_the_flag_and_keeps_the_rest() {

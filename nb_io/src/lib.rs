@@ -15,9 +15,10 @@ pub use cellar::{Cellar, LinkedFile, Linker, MaterializedKeg};
 pub use extraction::extract_tarball;
 pub use installer::cask_config::CaskConfig;
 pub use installer::{
-    DiagnosticReport, ExecuteResult, HomebrewMigrationPackages, HomebrewPackage, InstallPlan,
-    Installer, LinkOutcome, OutdatedPackage, PlanFailure, PostInstallNotice, RepairSummary,
-    ServiceFormula, Uses, UsesScope, create_installer, get_homebrew_packages,
+    DiagnosticReport, ExecuteResult, Finding, HomebrewMigrationPackages, HomebrewPackage,
+    InstallPlan, Installer, LinkOutcome, OutdatedPackage, PlanFailure, PostInstallNotice,
+    RepairSummary, ServiceFormula, SystemEnv, Uses, UsesScope, create_installer,
+    get_homebrew_packages,
 };
 pub use network::{
     ApiCache, ApiClient, DownloadProgressCallback, DownloadRequest, Downloader, ParallelDownloader,
