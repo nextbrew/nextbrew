@@ -121,6 +121,7 @@ mod tests {
             oldnames: Vec::new(),
             post_install_steps: Vec::new(),
             pour_bottle_only_if: None,
+            service: None,
             lifecycle: Default::default(),
         }
     }

@@ -6,6 +6,7 @@ pub mod installer;
 pub mod network;
 pub mod path;
 pub mod progress;
+pub mod services;
 pub mod ssl;
 pub mod storage;
 
@@ -14,8 +15,8 @@ pub use cellar::{Cellar, LinkedFile, Linker, MaterializedKeg};
 pub use extraction::extract_tarball;
 pub use installer::{
     DiagnosticReport, ExecuteResult, HomebrewMigrationPackages, HomebrewPackage, InstallPlan,
-    Installer, LinkOutcome, OutdatedPackage, PlanFailure, PostInstallNotice, RepairSummary, Uses,
-    UsesScope, create_installer, get_homebrew_packages,
+    Installer, LinkOutcome, OutdatedPackage, PlanFailure, PostInstallNotice, RepairSummary,
+    ServiceFormula, Uses, UsesScope, create_installer, get_homebrew_packages,
 };
 pub use network::{
     ApiCache, ApiClient, DownloadProgressCallback, DownloadRequest, Downloader, ParallelDownloader,

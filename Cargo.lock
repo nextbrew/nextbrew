@@ -1343,6 +1343,7 @@ dependencies = [
  "nb_core",
  "nb_io",
  "object 0.39.1",
+ "serde",
  "serde_json",
  "sha2",
  "tar",

@@ -276,6 +276,88 @@ pub enum Commands {
         #[arg(required = true, num_args = 1..)]
         formulas: Vec<String>,
     },
+    /// Manage background services with launchd
+    Services {
+        #[command(subcommand)]
+        command: Option<ServicesCommands>,
+    },
+}
+
+/// `brew services`' subcommands, with its aliases.
+#[derive(Subcommand)]
+pub enum ServicesCommands {
+    /// List all managed services for the current user (or root)
+    #[command(visible_alias = "ls")]
+    List {
+        #[arg(long, help = "Output as JSON")]
+        json: bool,
+    },
+    /// Show a service's status
+    #[command(visible_alias = "i")]
+    Info {
+        formulas: Vec<String>,
+        #[arg(long, help = "List all managed services")]
+        all: bool,
+        #[arg(long, help = "Output as JSON")]
+        json: bool,
+    },
+    /// Run a service without registering it to launch at login (or boot)
+    Run {
+        formulas: Vec<String>,
+        #[arg(long, help = "Run all services")]
+        all: bool,
+        #[arg(long, help = "Use the service file from this location")]
+        file: Option<PathBuf>,
+    },
+    /// Start a service now and register it to launch at login (or boot)
+    #[command(visible_aliases = ["launch", "load", "s", "l"])]
+    Start {
+        formulas: Vec<String>,
+        #[arg(long, help = "Start all services")]
+        all: bool,
+        #[arg(long, help = "Use the service file from this location")]
+        file: Option<PathBuf>,
+    },
+    /// Stop a service and unregister it from launching at login (or boot)
+    #[command(visible_aliases = ["unload", "terminate", "term", "t", "u"])]
+    Stop {
+        formulas: Vec<String>,
+        #[arg(long, help = "Stop all services")]
+        all: bool,
+        #[arg(long, help = "Keep the service registered")]
+        keep: bool,
+        #[arg(
+            long,
+            conflicts_with = "max_wait",
+            help = "Don't wait for the service to stop"
+        )]
+        no_wait: bool,
+        #[arg(
+            long,
+            value_name = "SECONDS",
+            help = "Wait at most this long for the service to stop (default 60, 0 waits indefinitely)"
+        )]
+        max_wait: Option<f64>,
+    },
+    /// Stop a service now but keep it registered
+    #[command(visible_alias = "k")]
+    Kill {
+        formulas: Vec<String>,
+        #[arg(long, help = "Kill all services")]
+        all: bool,
+    },
+    /// Stop (if necessary) and start a service again
+    #[command(visible_aliases = ["relaunch", "reload", "r"])]
+    Restart {
+        formulas: Vec<String>,
+        #[arg(long, help = "Restart all services")]
+        all: bool,
+        #[arg(long, help = "Use the service file from this location")]
+        file: Option<PathBuf>,
+    },
+    /// Remove all unused services
+    #[command(visible_aliases = ["clean", "cl", "rm"])]
+    Cleanup,
 }
 
 #[derive(Subcommand)]

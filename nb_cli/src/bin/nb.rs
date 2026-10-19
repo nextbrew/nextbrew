@@ -128,6 +128,9 @@ async fn run(cli: Cli) -> Result<(), nb_core::Error> {
         Commands::Unlink { formulas } => commands::link::unlink(&mut installer, formulas),
         Commands::Pin { formulas } => commands::pin::execute(&installer, formulas, true),
         Commands::Unpin { formulas } => commands::pin::execute(&installer, formulas, false),
+        Commands::Services { command } => {
+            commands::services::execute(&installer, command, cli.verbose > 0).await
+        }
         Commands::Postinstall { formulas } => {
             commands::postinstall::execute(&mut installer, formulas, &mut ui).await
         }

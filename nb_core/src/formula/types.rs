@@ -150,6 +150,9 @@ pub struct Formula {
     /// condition under which Homebrew pours the bottle.
     #[serde(default)]
     pub pour_bottle_only_if: Option<String>,
+    /// The formula's `service` block, as the API serialises it.
+    #[serde(default)]
+    pub service: Option<serde_json::Value>,
     #[serde(flatten)]
     pub lifecycle: Lifecycle,
 }
