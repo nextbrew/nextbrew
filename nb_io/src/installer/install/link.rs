@@ -90,6 +90,17 @@ impl Installer {
         }))
     }
 
+    /// Whether an installed formula's keg is linked into the prefix.
+    pub fn is_linked(&self, name: &str) -> Result<bool, Error> {
+        let (keg, _) = self.formula_keg(name)?;
+        Ok(!self.linker.collect_linked_files(&keg)?.is_empty())
+    }
+
+    /// Whether a formula is keg-only here.
+    pub async fn is_keg_only(&self, name: &str) -> Result<bool, Error> {
+        Ok(self.api_client.get_formula(name).await?.is_keg_only())
+    }
+
     /// `brew unlink`: remove an installed formula's symlinks from the
     /// prefix. Returns how many were removed.
     pub fn unlink(&mut self, name: &str) -> Result<usize, Error> {

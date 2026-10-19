@@ -1,3 +1,4 @@
+pub mod brewfile;
 pub mod cli;
 pub mod commands;
 pub mod init;

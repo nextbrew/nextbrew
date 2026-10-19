@@ -120,7 +120,10 @@ pub enum Commands {
         build_from_source: bool,
     },
     /// Install or dump from a Brewfile
+    #[command(args_conflicts_with_subcommands = true)]
     Bundle {
+        #[command(flatten)]
+        install: BundleInstallArgs,
         #[command(subcommand)]
         command: Option<BundleCommands>,
     },
@@ -283,6 +286,35 @@ pub enum Commands {
     },
 }
 
+/// `nb bundle [install]`'s options; `install` is the default subcommand.
+#[derive(clap::Args, Clone, Default)]
+pub struct BundleInstallArgs {
+    #[arg(
+        long,
+        value_name = "FILE",
+        help = "Read this Brewfile (`-` for standard input) instead of ./Brewfile or $HOMEBREW_BUNDLE_FILE"
+    )]
+    pub file: Option<PathBuf>,
+    #[arg(long, help = "Read ~/.Brewfile (or $HOMEBREW_BUNDLE_FILE_GLOBAL)")]
+    pub global: bool,
+    #[arg(long, help = "Do not upgrade outdated dependencies")]
+    pub no_upgrade: bool,
+    #[arg(
+        long,
+        help = "Upgrade outdated dependencies even if $HOMEBREW_BUNDLE_NO_UPGRADE is set"
+    )]
+    pub upgrade: bool,
+    #[arg(
+        long,
+        visible_alias = "upgrade-formula",
+        value_name = "FORMULAE",
+        help = "Upgrade these comma-separated formulae even with --no-upgrade"
+    )]
+    pub upgrade_formulae: Option<String>,
+    #[arg(long, help = "Print only failures and the summary")]
+    pub quiet: bool,
+}
+
 /// `brew services`' subcommands, with its aliases.
 #[derive(Subcommand)]
 pub enum ServicesCommands {
@@ -362,19 +394,9 @@ pub enum ServicesCommands {
 
 #[derive(Subcommand)]
 pub enum BundleCommands {
-    /// Install packages from a Brewfile
-    Install {
-        #[arg(
-            long,
-            short = 'f',
-            value_name = "FILE",
-            default_value = "Brewfile",
-            help = "Path to the Brewfile"
-        )]
-        file: PathBuf,
-        #[arg(long, help = "Do not create symlinks after installation")]
-        no_link: bool,
-    },
+    /// Install and upgrade everything in a Brewfile
+    #[command(visible_alias = "upgrade")]
+    Install(BundleInstallArgs),
     /// Dump installed packages to a Brewfile
     Dump {
         #[arg(

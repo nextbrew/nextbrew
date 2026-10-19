@@ -58,8 +58,9 @@ async fn run(cli: Cli) -> Result<(), nb_core::Error> {
             )
             .await
         }
-        Commands::Bundle { command } => {
-            commands::bundle::execute(&mut installer, command, &mut ui).await
+        Commands::Bundle { install, command } => {
+            let command = command.unwrap_or(nb_cli::cli::BundleCommands::Install(install));
+            commands::bundle::execute(&mut installer, command, cli.verbose > 0, &mut ui).await
         }
         Commands::Uninstall { formulas, all, zap } => {
             let result = commands::uninstall::execute(&mut installer, formulas, all, zap, &mut ui);

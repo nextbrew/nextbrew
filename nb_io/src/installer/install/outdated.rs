@@ -36,6 +36,21 @@ impl Installer {
         }))
     }
 
+    /// Whether `name` is outdated as `brew bundle` asks: a cask that updates
+    /// itself counts only with `greedy`.
+    pub async fn is_outdated_greedy(
+        &self,
+        name: &str,
+        greedy: bool,
+    ) -> Result<Option<OutdatedPackage>, Error> {
+        match self.db.get_installed(name) {
+            Some(installed) if name.starts_with("cask:") => {
+                self.cask_outdated(&installed, greedy).await
+            }
+            _ => self.is_outdated(name).await,
+        }
+    }
+
     pub async fn is_outdated(&self, name: &str) -> Result<Option<OutdatedPackage>, Error> {
         let installed = self.db.get_installed(name).ok_or(Error::NotInstalled {
             name: name.to_string(),
