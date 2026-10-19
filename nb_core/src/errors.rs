@@ -90,9 +90,10 @@ impl fmt::Display for Error {
             Error::NetworkFailure { message } => write!(f, "network failure: {message}"),
             Error::MissingFormula { name } => write!(f, "missing formula '{name}'"),
             Error::UnsupportedTap { name } => {
+                let tap = name.rsplit_once('/').map_or(name.as_str(), |(tap, _)| tap);
                 write!(
                     f,
-                    "tap formula '{name}' is not supported (only homebrew/core)"
+                    "formula '{name}' is from the '{tap}' tap; nextbrew installs homebrew/core formulae only (try `brew install {name}`)"
                 )
             }
             Error::UnsupportedFormula { name, reason } => {

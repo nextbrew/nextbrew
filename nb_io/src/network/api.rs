@@ -5,8 +5,6 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use crate::checksum::verify_sha256_bytes;
 use crate::network::cache::{ApiCache, CacheEntry, IndexEntry, IndexMeta};
 use crate::network::suggest::{did_you_mean, rank_formula_suggestions};
-use crate::network::tap_formula::{parse_tap_formula_ref, parse_tap_formula_ruby};
-use futures_util::stream::{self, StreamExt};
 use nb_core::{Error, Formula};
 use serde_json::value::RawValue;
 use tokio::sync::OnceCell;
@@ -79,17 +77,10 @@ const HOMEBREW_CORE_RAW_BASE: &str =
 enum RubySourceLocator<'a> {
     CoreRelativePath(&'a str),
     AbsoluteUrl(&'a str),
-    TapEncodedUrl(&'a str),
 }
 
 impl<'a> RubySourceLocator<'a> {
-    const TAP_URL_PREFIX: &'static str = "tap-rb-url:";
-
     fn parse(input: &'a str) -> Self {
-        if let Some(encoded_url) = input.strip_prefix(Self::TAP_URL_PREFIX) {
-            return Self::TapEncodedUrl(encoded_url);
-        }
-
         if input.starts_with("https://") || input.starts_with("http://") {
             return Self::AbsoluteUrl(input);
         }
@@ -101,19 +92,14 @@ impl<'a> RubySourceLocator<'a> {
         match self {
             Self::CoreRelativePath(_) => original,
             Self::AbsoluteUrl(url) => url,
-            Self::TapEncodedUrl(url) => url,
         }
     }
 
     fn to_url(self) -> String {
         match self {
             Self::CoreRelativePath(path) => format!("{HOMEBREW_CORE_RAW_BASE}/{path}"),
-            Self::AbsoluteUrl(url) | Self::TapEncodedUrl(url) => url.to_string(),
+            Self::AbsoluteUrl(url) => url.to_string(),
         }
-    }
-
-    fn encode_tap_url(url: &str) -> String {
-        format!("{}{}", Self::TAP_URL_PREFIX, url)
     }
 }
 
@@ -151,7 +137,6 @@ enum CachedGetResult {
 pub struct ApiClient {
     base_url: String,
     cask_base_url: String,
-    tap_raw_base_url: String,
     client: reqwest::Client,
     cache: Option<ApiCache>,
     /// Whether the index in `cache` is usable this run, decided by the first
@@ -200,7 +185,6 @@ impl ApiClient {
         Self {
             base_url,
             cask_base_url: "https://formulae.brew.sh/api/cask".to_string(),
-            tap_raw_base_url: "https://raw.githubusercontent.com".to_string(),
             client,
             cache: None,
             index_usable: OnceCell::new(),
@@ -209,11 +193,6 @@ impl ApiClient {
     }
 
     #[cfg(test)]
-    pub fn with_tap_raw_base_url(mut self, tap_raw_base_url: String) -> Self {
-        self.tap_raw_base_url = tap_raw_base_url;
-        self
-    }
-
     #[cfg(test)]
     pub fn with_cask_base_url(mut self, cask_base_url: String) -> Self {
         self.cask_base_url = cask_base_url;
@@ -366,8 +345,12 @@ impl ApiClient {
     /// name the index does not have may be newer than the index, so it is
     /// still asked for; a 404 there is final.
     pub async fn get_formula(&self, name: &str) -> Result<Formula, Error> {
-        if let Some(spec) = parse_tap_formula_ref(name) {
-            return self.get_tap_formula(&spec).await;
+        // Formulae of other taps are Ruby only; nextbrew reads the API.
+        let name = name.strip_prefix("homebrew/core/").unwrap_or(name);
+        if name.split('/').count() == 3 {
+            return Err(Error::UnsupportedTap {
+                name: name.to_string(),
+            });
         }
 
         let parse_body = |body: String| {
@@ -670,7 +653,7 @@ impl ApiClient {
             return Ok(Vec::new());
         }
 
-        if parse_tap_formula_ref(query).is_some() || query.starts_with("cask:") {
+        if query.split('/').count() == 3 || query.starts_with("cask:") {
             return Ok(Vec::new());
         }
 
@@ -750,105 +733,6 @@ impl ApiClient {
             .await
             .map_err(Error::network("failed to parse cask JSON"))
     }
-
-    async fn get_tap_formula(
-        &self,
-        spec: &crate::network::tap_formula::TapFormulaRef,
-    ) -> Result<Formula, Error> {
-        let candidate_repos = if spec.repo.starts_with("homebrew-") {
-            vec![
-                spec.repo.clone(),
-                spec.repo.trim_start_matches("homebrew-").to_string(),
-            ]
-        } else {
-            vec![format!("homebrew-{}", spec.repo), spec.repo.clone()]
-        };
-        let first_char = spec.formula.chars().next().unwrap_or('x');
-        let candidate_paths = [
-            format!("Formula/{}.rb", spec.formula),
-            format!("Formula/{first_char}/{}.rb", spec.formula),
-            format!("HomebrewFormula/{}.rb", spec.formula),
-            format!("HomebrewFormula/{first_char}/{}.rb", spec.formula),
-            format!("{}.rb", spec.formula),
-        ];
-        let branches = ["main", "master"];
-
-        let mut last_status: Option<reqwest::StatusCode> = None;
-        let mut last_network_error: Option<Error> = None;
-        let mut saw_non_404_status = false;
-
-        for repo in candidate_repos {
-            for branch in branches {
-                let base_prefix = format!(
-                    "{}/{}/{}/{}/",
-                    self.tap_raw_base_url.trim_end_matches('/'),
-                    spec.owner,
-                    repo,
-                    branch,
-                );
-                let client = self.client.clone();
-                let mut responses = stream::iter(candidate_paths.iter().map(|candidate_path| {
-                    let client = client.clone();
-                    let url = format!("{base_prefix}{candidate_path}");
-                    async move { (url.clone(), client.get(&url).send().await) }
-                }))
-                .buffered(2);
-
-                while let Some((url, response)) = responses.next().await {
-                    match response {
-                        Ok(response) => {
-                            let status = response.status();
-                            if status.is_success() {
-                                let body = response
-                                    .text()
-                                    .await
-                                    .map_err(Error::network("failed to read tap formula body"))?;
-                                let mut formula = parse_tap_formula_ruby(spec, &body)?;
-                                formula.ruby_source_path =
-                                    Some(RubySourceLocator::encode_tap_url(&url));
-                                return Ok(formula);
-                            }
-
-                            if status != reqwest::StatusCode::NOT_FOUND {
-                                saw_non_404_status = true;
-                            }
-                            last_status = Some(status);
-                        }
-                        Err(e) => {
-                            last_network_error = Some(Error::NetworkFailure {
-                                message: e.to_string(),
-                            });
-                        }
-                    }
-                }
-            }
-        }
-
-        if !saw_non_404_status
-            && last_network_error.is_none()
-            && last_status == Some(reqwest::StatusCode::NOT_FOUND)
-        {
-            return Err(Error::MissingFormula {
-                name: format!("{}/{}/{}", spec.owner, spec.repo, spec.formula),
-            });
-        }
-
-        if let Some(err) = last_network_error {
-            return Err(err);
-        }
-
-        Err(Error::NetworkFailure {
-            message: format!(
-                "failed to fetch tap formula '{}/{}/{}' (last status: {})",
-                spec.owner,
-                spec.repo,
-                spec.formula,
-                last_status
-                    .map(|s| s.to_string())
-                    .unwrap_or_else(|| "unknown".to_string())
-            ),
-        })
-    }
 }
 
 impl Default for ApiClient {
@@ -902,15 +786,6 @@ mod tests {
             RubySourceLocator::parse("https://example.com/foo.rb"),
             RubySourceLocator::AbsoluteUrl("https://example.com/foo.rb")
         );
-        let encoded = format!(
-            "{}{}",
-            RubySourceLocator::TAP_URL_PREFIX,
-            "https://example.com/tap/foo.rb"
-        );
-        assert_eq!(
-            RubySourceLocator::parse(&encoded),
-            RubySourceLocator::TapEncodedUrl("https://example.com/tap/foo.rb")
-        );
     }
 
     #[test]
@@ -922,13 +797,6 @@ mod tests {
         assert_eq!(
             RubySourceLocator::AbsoluteUrl("https://example.com/foo.rb").to_url(),
             "https://example.com/foo.rb"
-        );
-        assert_eq!(
-            RubySourceLocator::TapEncodedUrl(
-                "https://raw.githubusercontent.com/org/tap/main/foo.rb"
-            )
-            .to_url(),
-            "https://raw.githubusercontent.com/org/tap/main/foo.rb"
         );
     }
 
@@ -971,272 +839,26 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn fetches_formula_from_tap_ruby_source() {
+    async fn formulae_of_other_taps_are_refused_by_name() {
         let mock_server = MockServer::start().await;
-        let rb = r#"
-class Terraform < Formula
-  version "1.10.0"
-  depends_on "go"
-  bottle do
-    root_url "https://ghcr.io/v2/hashicorp/tap"
-    sha256 arm64_sonoma: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
-  end
-end
-"#;
-
+        let fixture = include_str!("../../../nb_core/fixtures/formula_foo.json");
         Mock::given(method("GET"))
-            .and(path("/hashicorp/homebrew-tap/main/Formula/terraform.rb"))
-            .respond_with(ResponseTemplate::new(200).set_body_string(rb))
+            .and(path("/foo.json"))
+            .respond_with(ResponseTemplate::new(200).set_body_string(fixture))
             .mount(&mock_server)
             .await;
+        let client = ApiClient::with_base_url(mock_server.uri()).unwrap();
 
-        let client = ApiClient::with_base_url(mock_server.uri())
-            .unwrap()
-            .with_tap_raw_base_url(mock_server.uri());
-        let formula = client.get_formula("hashicorp/tap/terraform").await.unwrap();
-
-        assert_eq!(formula.name, "terraform");
-        assert_eq!(formula.versions.stable, "1.10.0");
-        assert!(formula.dependencies.contains(&"go".to_string()));
-        assert!(formula.bottle.stable.files.contains_key("arm64_sonoma"));
-        let expected_path = format!(
-            "{}{}/hashicorp/homebrew-tap/main/Formula/terraform.rb",
-            RubySourceLocator::TAP_URL_PREFIX,
-            mock_server.uri()
-        );
-        assert_eq!(
-            formula.ruby_source_path.as_deref(),
-            Some(expected_path.as_str())
-        );
-    }
-
-    #[tokio::test]
-    async fn supports_source_only_tap_formula_without_bottle_block() {
-        let mock_server = MockServer::start().await;
-        let rb = r#"
-class OhMyPosh < Formula
-  version "29.3.0"
-  url "https://github.com/JanDeDobbeleer/oh-my-posh/archive/v29.3.0.tar.gz"
-  sha256 "ff39f6ef2b4ca2d7d766f2802520b023986a5d6dbcd59fba685a9e5bacf41993"
-  depends_on "go@1.26" => :build
-end
-"#;
-
-        Mock::given(method("GET"))
-            .and(path(
-                "/jandedobbeleer/homebrew-oh-my-posh/main/oh-my-posh.rb",
-            ))
-            .respond_with(ResponseTemplate::new(200).set_body_string(rb))
-            .mount(&mock_server)
-            .await;
-
-        let client = ApiClient::with_base_url(mock_server.uri())
-            .unwrap()
-            .with_tap_raw_base_url(mock_server.uri());
-        let formula = client
-            .get_formula("jandedobbeleer/oh-my-posh/oh-my-posh")
+        let err = client
+            .get_formula("hashicorp/tap/terraform")
             .await
-            .unwrap();
-
-        assert_eq!(formula.name, "oh-my-posh");
-        assert!(formula.bottle.stable.files.is_empty());
-        assert_eq!(formula.build_dependencies, vec!["go@1.26".to_string()]);
-        assert!(formula.has_source_url());
+            .unwrap_err();
         assert!(
-            formula
-                .ruby_source_path
-                .as_deref()
-                .is_some_and(|path| path.starts_with(RubySourceLocator::TAP_URL_PREFIX))
+            matches!(err, Error::UnsupportedTap { ref name } if name == "hashicorp/tap/terraform")
         );
-    }
-
-    #[tokio::test]
-    async fn falls_back_to_master_when_main_missing_for_tap_formula() {
-        let mock_server = MockServer::start().await;
-        let rb = r#"
-class Terraform < Formula
-  version "1.10.0"
-  bottle do
-    root_url "https://ghcr.io/v2/hashicorp/tap"
-    sha256 arm64_sonoma: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
-  end
-end
-"#;
-
-        Mock::given(method("GET"))
-            .and(path("/hashicorp/homebrew-tap/main/Formula/terraform.rb"))
-            .respond_with(ResponseTemplate::new(404))
-            .mount(&mock_server)
-            .await;
-
-        Mock::given(method("GET"))
-            .and(path("/hashicorp/homebrew-tap/master/Formula/terraform.rb"))
-            .respond_with(ResponseTemplate::new(200).set_body_string(rb))
-            .mount(&mock_server)
-            .await;
-
-        let client = ApiClient::with_base_url(mock_server.uri())
-            .unwrap()
-            .with_tap_raw_base_url(mock_server.uri());
-        let formula = client.get_formula("hashicorp/tap/terraform").await.unwrap();
-
-        assert_eq!(formula.name, "terraform");
-        assert_eq!(formula.versions.stable, "1.10.0");
-    }
-
-    #[tokio::test]
-    async fn resolves_tap_formula_from_letter_subdirectory_path() {
-        let mock_server = MockServer::start().await;
-        let rb = r#"
-class Terraform < Formula
-  version "1.10.0"
-  bottle do
-    root_url "https://ghcr.io/v2/hashicorp/tap"
-    sha256 arm64_sonoma: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
-  end
-end
-"#;
-
-        Mock::given(method("GET"))
-            .and(path("/hashicorp/homebrew-tap/main/Formula/t/terraform.rb"))
-            .respond_with(ResponseTemplate::new(200).set_body_string(rb))
-            .mount(&mock_server)
-            .await;
-
-        let client = ApiClient::with_base_url(mock_server.uri())
-            .unwrap()
-            .with_tap_raw_base_url(mock_server.uri());
-        let formula = client.get_formula("hashicorp/tap/terraform").await.unwrap();
-
-        assert_eq!(formula.name, "terraform");
-        assert_eq!(formula.versions.stable, "1.10.0");
-    }
-
-    #[tokio::test]
-    async fn resolves_tap_formula_from_homebrewformula_directory() {
-        let mock_server = MockServer::start().await;
-        let rb = r#"
-class Terraform < Formula
-  version "1.10.0"
-  bottle do
-    root_url "https://ghcr.io/v2/hashicorp/tap"
-    sha256 arm64_sonoma: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
-  end
-end
-"#;
-
-        Mock::given(method("GET"))
-            .and(path(
-                "/hashicorp/homebrew-tap/main/HomebrewFormula/terraform.rb",
-            ))
-            .respond_with(ResponseTemplate::new(200).set_body_string(rb))
-            .mount(&mock_server)
-            .await;
-
-        let client = ApiClient::with_base_url(mock_server.uri())
-            .unwrap()
-            .with_tap_raw_base_url(mock_server.uri());
-        let formula = client.get_formula("hashicorp/tap/terraform").await.unwrap();
-
-        assert_eq!(formula.name, "terraform");
-        assert_eq!(formula.versions.stable, "1.10.0");
-    }
-
-    #[tokio::test]
-    async fn resolves_tap_formula_from_homebrewformula_letter_subdirectory_path() {
-        let mock_server = MockServer::start().await;
-        let rb = r#"
-class Terraform < Formula
-  version "1.10.0"
-  bottle do
-    root_url "https://ghcr.io/v2/hashicorp/tap"
-    sha256 arm64_sonoma: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
-  end
-end
-"#;
-
-        Mock::given(method("GET"))
-            .and(path(
-                "/hashicorp/homebrew-tap/main/HomebrewFormula/t/terraform.rb",
-            ))
-            .respond_with(ResponseTemplate::new(200).set_body_string(rb))
-            .mount(&mock_server)
-            .await;
-
-        let client = ApiClient::with_base_url(mock_server.uri())
-            .unwrap()
-            .with_tap_raw_base_url(mock_server.uri());
-        let formula = client.get_formula("hashicorp/tap/terraform").await.unwrap();
-
-        assert_eq!(formula.name, "terraform");
-        assert_eq!(formula.versions.stable, "1.10.0");
-    }
-
-    #[tokio::test]
-    async fn resolves_tap_formula_from_repository_root() {
-        let mock_server = MockServer::start().await;
-        let rb = r#"
-class Terraform < Formula
-  version "1.10.0"
-  bottle do
-    root_url "https://ghcr.io/v2/hashicorp/tap"
-    sha256 arm64_sonoma: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
-  end
-end
-"#;
-
-        Mock::given(method("GET"))
-            .and(path("/hashicorp/homebrew-tap/main/terraform.rb"))
-            .respond_with(ResponseTemplate::new(200).set_body_string(rb))
-            .mount(&mock_server)
-            .await;
-
-        let client = ApiClient::with_base_url(mock_server.uri())
-            .unwrap()
-            .with_tap_raw_base_url(mock_server.uri());
-        let formula = client.get_formula("hashicorp/tap/terraform").await.unwrap();
-
-        assert_eq!(formula.name, "terraform");
-        assert_eq!(formula.versions.stable, "1.10.0");
-    }
-
-    #[tokio::test]
-    async fn returns_missing_formula_when_all_tap_candidates_are_404() {
-        let mock_server = MockServer::start().await;
-
-        let client = ApiClient::with_base_url(mock_server.uri())
-            .unwrap()
-            .with_tap_raw_base_url(mock_server.uri());
-        let err = client
-            .get_formula("hashicorp/tap/terraform")
-            .await
-            .unwrap_err();
-
-        assert!(matches!(
-            err,
-            Error::MissingFormula { name } if name == "hashicorp/tap/terraform"
-        ));
-    }
-
-    #[tokio::test]
-    async fn does_not_return_missing_formula_when_a_non_404_tap_status_is_seen() {
-        let mock_server = MockServer::start().await;
-
-        Mock::given(method("GET"))
-            .and(path("/hashicorp/homebrew-tap/main/Formula/terraform.rb"))
-            .respond_with(ResponseTemplate::new(500))
-            .mount(&mock_server)
-            .await;
-
-        let client = ApiClient::with_base_url(mock_server.uri())
-            .unwrap()
-            .with_tap_raw_base_url(mock_server.uri());
-        let err = client
-            .get_formula("hashicorp/tap/terraform")
-            .await
-            .unwrap_err();
-
-        assert!(matches!(err, Error::NetworkFailure { .. }));
+        assert!(err.to_string().contains("'hashicorp/tap' tap"), "{err}");
+        let core = client.get_formula("homebrew/core/foo").await.unwrap();
+        assert_eq!(core.name, "foo");
     }
 
     #[tokio::test]
