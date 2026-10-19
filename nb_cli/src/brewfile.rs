@@ -494,11 +494,14 @@ pub fn parse(source: &str) -> Result<Vec<Entry>, ParseError> {
                     });
                 }
             }
-            Kind::Extension("vscode") if !options.is_empty() => {
-                let keys: Vec<String> = options.iter().map(|(k, _)| format!(":{k}")).collect();
+            Kind::Extension(ext @ ("cargo" | "uv")) => {
+                options = extension_options(ext, options)
+                    .map_err(|message| ParseError { line, message })?;
+            }
+            Kind::Extension(ext @ ("vscode" | "go" | "krew" | "npm")) if !options.is_empty() => {
                 return Err(ParseError {
                     line,
-                    message: format!("unknown options([{}]) for vscode", keys.join(", ")),
+                    message: unknown_options(ext, &options, &[]),
                 });
             }
             _ => {}
@@ -533,6 +536,138 @@ pub fn parse(source: &str) -> Result<Vec<Entry>, ParseError> {
         });
     }
     Ok(entries)
+}
+
+/// `unknown options([:a, :b]) for <ext>` for the options not in `known`.
+fn unknown_options(ext: &str, options: &[(String, Value)], known: &[&str]) -> String {
+    let keys: Vec<String> = options
+        .iter()
+        .filter(|(k, _)| !known.contains(&k.as_str()))
+        .map(|(k, _)| format!(":{k}"))
+        .collect();
+    format!("unknown options([{}]) for {ext}", keys.join(", "))
+}
+
+/// `Cargo.entry` and `Uv.entry`: their options checked and normalised as
+/// Homebrew keeps them (`source:`, and `with:` for `uv`).
+fn extension_options(
+    ext: &str,
+    options: Vec<(String, Value)>,
+) -> Result<Vec<(String, Value)>, String> {
+    let known: &[&str] = if ext == "uv" {
+        &["with", "source"]
+    } else {
+        &["source"]
+    };
+    if options.iter().any(|(k, _)| !known.contains(&k.as_str())) {
+        return Err(unknown_options(ext, &options, known));
+    }
+    let get = |key: &str| {
+        options
+            .iter()
+            .find(|(k, _)| k == key)
+            .map(|(_, v)| v)
+            .filter(|v| **v != Value::Nil)
+    };
+    let mut normalized = Vec::new();
+    if ext == "uv"
+        && let Some(with) = get("with")
+    {
+        let requirements = match with {
+            Value::Array(items) if items.iter().all(|v| matches!(v, Value::Str(_))) => {
+                items.iter().filter_map(Value::as_str)
+            }
+            _ => {
+                return Err(format!(
+                    "options[:with]({with}) should be an Array of String objects"
+                ));
+            }
+        };
+        let with = uv_with(requirements);
+        if !with.is_empty() {
+            normalized.push((
+                "with".to_string(),
+                Value::Array(with.into_iter().map(Value::Str).collect()),
+            ));
+        }
+    }
+    let Some(source) = get("source") else {
+        return Ok(normalized);
+    };
+    let Value::Str(text) = source else {
+        return Err(format!(
+            "options[:source]({source}) should be a String object"
+        ));
+    };
+    let normalized_source = if ext == "uv" {
+        let source = uv_source(text);
+        if source.as_deref().is_some_and(is_local_source) {
+            return Err(format!(
+                "options[:source]({source:?}) is local to this machine so cannot be used in a Brewfile",
+                source = text
+            ));
+        }
+        source
+    } else if text.trim().is_empty() {
+        None
+    } else {
+        let source = cargo_source(text)
+            .ok_or_else(|| format!("options[:source]({text:?}) should be a git URL"))?;
+        let selector = source.split_once('?').map_or("", |(_, query)| query);
+        let key = selector.split_once('=').map_or(selector, |(key, _)| key);
+        if !selector.is_empty() && !CARGO_GIT_REFERENCES.contains(&key) {
+            return Err(format!(
+                "options[:source]({text:?}) should select a branch, tag or rev"
+            ));
+        }
+        Some(source)
+    };
+    if let Some(source) = normalized_source {
+        normalized.push(("source".to_string(), Value::Str(source)));
+    }
+    Ok(normalized)
+}
+
+/// `Cargo::GIT_REFERENCE_KEYS`.
+pub const CARGO_GIT_REFERENCES: &[&str] = &["branch", "tag", "rev"];
+
+/// `Cargo.normalize_source`: a git address without its `#commit`.
+pub fn cargo_source(source: &str) -> Option<String> {
+    let source = source.trim();
+    let source = match source.rfind('#') {
+        Some(at) => &source[..at],
+        None => source,
+    };
+    let remote = ["ssh://", "git://", "http://", "https://"]
+        .iter()
+        .any(|scheme| source.starts_with(scheme));
+    (!source.trim().is_empty() && remote).then(|| source.to_string())
+}
+
+/// `Uv.normalize_source`.
+pub fn uv_source(source: &str) -> Option<String> {
+    let source = source.trim();
+    (!source.is_empty()).then(|| source.to_string())
+}
+
+/// `Uv::LOCAL_SOURCE_REGEX`: a file path or `file://` address.
+fn is_local_source(source: &str) -> bool {
+    let source = source.strip_prefix("git+").unwrap_or(source);
+    ["file://", "/", "./", "../"]
+        .iter()
+        .any(|start| source.starts_with(start))
+}
+
+/// `Uv.normalize_with`: trimmed, sorted, without blanks or duplicates.
+pub fn uv_with<'a>(requirements: impl Iterator<Item = &'a str>) -> Vec<String> {
+    let mut with: Vec<String> = requirements
+        .map(str::trim)
+        .filter(|r| !r.is_empty())
+        .map(str::to_string)
+        .collect();
+    with.sort();
+    with.dedup();
+    with
 }
 
 /// `Dsl.sanitize_brew_name`.
@@ -658,6 +793,58 @@ brew "wget",
                 .message
                 .contains("unknown options")
         );
+        assert_eq!(
+            parse("go \"x\", with: [\"y\"]\n").unwrap_err().message,
+            "unknown options([:with]) for go"
+        );
+
+        let entries = parse(concat!(
+            "cargo \"foo\", source: \" https://github.com/x/foo?tag=v1#abc \"\n",
+            "cargo \"bar\", source: \"\"\n",
+            "uv \"black\", with: [\" requests\", \"attrs\", \"attrs\", \"\"], source: nil\n",
+        ))
+        .unwrap();
+        assert_eq!(
+            entries[0].options,
+            [(
+                "source".to_string(),
+                Value::Str("https://github.com/x/foo?tag=v1".into())
+            )]
+        );
+        assert!(entries[1].options.is_empty());
+        assert_eq!(
+            entries[2].options,
+            [(
+                "with".to_string(),
+                Value::Array(vec![
+                    Value::Str("attrs".into()),
+                    Value::Str("requests".into())
+                ])
+            )]
+        );
+        for (source, error) in [
+            ("cargo \"x\", source: \"/tmp/x\"", "should be a git URL"),
+            (
+                "cargo \"x\", source: \"https://h/x?x=1\"",
+                "should select a branch, tag or rev",
+            ),
+            ("cargo \"x\", source: :git", "should be a String object"),
+            (
+                "cargo \"x\", path: \"y\"",
+                "unknown options([:path]) for cargo",
+            ),
+            (
+                "uv \"x\", with: \"y\"",
+                "should be an Array of String objects",
+            ),
+            (
+                "uv \"x\", source: \"git+file:///x\"",
+                "is local to this machine",
+            ),
+        ] {
+            let message = parse(source).unwrap_err().message;
+            assert!(message.contains(error), "{source}: {message}");
+        }
     }
 
     #[test]

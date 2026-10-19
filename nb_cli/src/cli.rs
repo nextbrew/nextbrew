@@ -637,14 +637,8 @@ pub enum BundleCommands {
         no_tap: bool,
         #[arg(long, help = "Remove casks with zap instead of uninstall")]
         zap: bool,
-        #[arg(long, help = "Include Mac App Store apps")]
-        mas: bool,
-        #[arg(long, help = "Leave out Mac App Store apps")]
-        no_mas: bool,
-        #[arg(long, help = "Include VS Code extensions")]
-        vscode: bool,
-        #[arg(long, help = "Leave out VS Code extensions")]
-        no_vscode: bool,
+        #[command(flatten)]
+        extensions: ExtensionFlags,
     },
     /// Write what is installed into a Brewfile
     Dump {
@@ -674,13 +668,62 @@ pub enum BundleCommands {
         no_describe: bool,
         #[arg(long, help = "Do not add restart_service to formula lines")]
         no_restart: bool,
-        #[arg(long, help = "Include Mac App Store apps")]
-        mas: bool,
-        #[arg(long, help = "Leave out Mac App Store apps")]
-        no_mas: bool,
-        #[arg(long, help = "Include VS Code extensions")]
-        vscode: bool,
-        #[arg(long, help = "Leave out VS Code extensions")]
-        no_vscode: bool,
+        #[command(flatten)]
+        extensions: ExtensionFlags,
     },
+}
+
+/// `--mas`, `--no-mas` and the like for the package managers `brew bundle`
+/// cleans up and dumps besides Homebrew.
+#[derive(clap::Args, Debug, Clone, Default)]
+pub struct ExtensionFlags {
+    #[arg(long, help = "Include Mac App Store apps")]
+    pub mas: bool,
+    #[arg(long, help = "Leave out Mac App Store apps")]
+    pub no_mas: bool,
+    #[arg(long, help = "Include VS Code extensions")]
+    pub vscode: bool,
+    #[arg(long, help = "Leave out VS Code extensions")]
+    pub no_vscode: bool,
+    #[arg(long, help = "Include Go packages")]
+    pub go: bool,
+    #[arg(long, help = "Leave out Go packages")]
+    pub no_go: bool,
+    #[arg(long, help = "Include Cargo packages")]
+    pub cargo: bool,
+    #[arg(long, help = "Leave out Cargo packages")]
+    pub no_cargo: bool,
+    #[arg(long, help = "Include uv tools")]
+    pub uv: bool,
+    #[arg(long, help = "Leave out uv tools")]
+    pub no_uv: bool,
+    #[arg(long, help = "Include Krew plugins")]
+    pub krew: bool,
+    #[arg(long, help = "Leave out Krew plugins")]
+    pub no_krew: bool,
+    #[arg(long, help = "Include npm packages")]
+    pub npm: bool,
+    #[arg(long, help = "Leave out npm packages")]
+    pub no_npm: bool,
+}
+
+impl ExtensionFlags {
+    /// `(asked for, left out)` for the extension with this directive.
+    pub fn get(&self, name: &str) -> (bool, bool) {
+        match name {
+            "mas" => (self.mas, self.no_mas),
+            "vscode" => (self.vscode, self.no_vscode),
+            "go" => (self.go, self.no_go),
+            "cargo" => (self.cargo, self.no_cargo),
+            "uv" => (self.uv, self.no_uv),
+            "krew" => (self.krew, self.no_krew),
+            "npm" => (self.npm, self.no_npm),
+            _ => (false, false),
+        }
+    }
+
+    /// Whether any extension was asked for by name.
+    pub fn any(&self) -> bool {
+        self.mas || self.vscode || self.go || self.cargo || self.uv || self.krew || self.npm
+    }
 }
