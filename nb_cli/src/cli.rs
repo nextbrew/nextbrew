@@ -449,6 +449,35 @@ pub enum BundleCommands {
         #[arg(long, help = "List winget entries")]
         winget: bool,
     },
+    /// Uninstall what a Brewfile does not list
+    Cleanup {
+        #[arg(
+            long,
+            value_name = "FILE",
+            help = "Read this Brewfile (`-` for standard input)"
+        )]
+        file: Option<PathBuf>,
+        #[arg(long, help = "Read ~/.Brewfile (or $HOMEBREW_BUNDLE_FILE_GLOBAL)")]
+        global: bool,
+        #[arg(long, short = 'f', help = "Actually uninstall")]
+        force: bool,
+        #[arg(long, help = "Clean up every type")]
+        all: bool,
+        #[arg(long, visible_aliases = ["formulae", "brews"], help = "Clean up formulae")]
+        formula: bool,
+        #[arg(long, visible_aliases = ["no-formulae", "no-brews"], help = "Clean up without formulae")]
+        no_formula: bool,
+        #[arg(long, visible_alias = "casks", help = "Clean up casks")]
+        cask: bool,
+        #[arg(long, visible_alias = "no-casks", help = "Clean up without casks")]
+        no_cask: bool,
+        #[arg(long, visible_alias = "taps", help = "Clean up taps")]
+        tap: bool,
+        #[arg(long, visible_alias = "no-taps", help = "Clean up without taps")]
+        no_tap: bool,
+        #[arg(long, help = "Remove casks with zap instead of uninstall")]
+        zap: bool,
+    },
     /// Write what is installed into a Brewfile
     Dump {
         #[arg(

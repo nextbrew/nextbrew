@@ -101,6 +101,30 @@ pub async fn execute(
             }
             Ok(())
         }
+        BundleCommands::Cleanup {
+            file,
+            global,
+            force,
+            all,
+            formula,
+            no_formula,
+            cask,
+            no_cask,
+            tap,
+            no_tap,
+            zap,
+        } => {
+            let no_type_args = !(formula || cask || tap);
+            let selected = |asked: bool, off: bool, env: &str| {
+                !off && std::env::var_os(env).is_none() && (asked || all || no_type_args)
+            };
+            let formulae = selected(formula, no_formula, "HOMEBREW_BUNDLE_CLEANUP_NO_BREW");
+            let casks = selected(cask, no_cask, "HOMEBREW_BUNDLE_CLEANUP_NO_CASK");
+            // nextbrew has no taps to untap.
+            let _ = selected(tap, no_tap, "HOMEBREW_BUNDLE_CLEANUP_NO_TAP");
+            let path = brewfile_path(file.as_deref(), global)?;
+            cleanup(installer, &path, force, zap, formulae, casks, ui).await
+        }
         BundleCommands::Dump {
             file,
             global,
@@ -776,6 +800,189 @@ async fn check(
     std::process::exit(1);
 }
 
+/// `brew bundle cleanup`: what is installed but neither listed nor needed
+/// by what is listed. Without `--force` it is only shown, after asking on a
+/// terminal whether to go ahead.
+async fn cleanup(
+    installer: &mut nb_io::Installer,
+    path: &Path,
+    force: bool,
+    zap: bool,
+    formulae: bool,
+    casks: bool,
+    ui: &mut StdUi,
+) -> Result<(), nb_core::Error> {
+    let entries = read_brewfile(path)?;
+    let kept_casks: Vec<String> = entries
+        .iter()
+        .filter(|entry| entry.kind == Kind::Cask)
+        .map(|entry| entry.name.clone())
+        .collect();
+    let installed = installer.list_installed()?;
+    let casks_to_remove: Vec<String> = if casks {
+        let mut tokens: Vec<String> = installed
+            .iter()
+            .filter_map(|keg| keg.name.strip_prefix("cask:"))
+            .filter(|token| !kept_casks.iter().any(|kept| kept == token))
+            .map(str::to_string)
+            .collect();
+        tokens.sort();
+        tokens
+    } else {
+        Vec::new()
+    };
+
+    let mut formulae_to_remove = Vec::new();
+    if formulae {
+        // Listed formulae (aliases and old names resolved), the formulae the
+        // listed casks depend on, and everything those need.
+        let mut kept: Vec<String> = Vec::new();
+        let mut roots: Vec<String> = entries
+            .iter()
+            .filter(|entry| entry.kind == Kind::Brew)
+            .map(|entry| entry.name.clone())
+            .collect();
+        for token in &kept_casks {
+            if let Ok(json) = installer.cask(token).await {
+                let deps = &json["depends_on"]["formula"];
+                match deps {
+                    serde_json::Value::String(one) => roots.push(one.clone()),
+                    serde_json::Value::Array(many) => {
+                        roots.extend(many.iter().filter_map(|v| v.as_str().map(str::to_string)))
+                    }
+                    _ => {}
+                }
+            }
+        }
+        for root in roots {
+            let name = installer
+                .formula(&root)
+                .await
+                .map(|f| f.name)
+                .unwrap_or(root);
+            if let Ok(deps) = installer.dependencies(&name, false).await {
+                kept.extend(deps);
+            }
+            kept.push(name);
+        }
+        for name in dump_order(installer).await? {
+            if !kept.contains(&name) {
+                formulae_to_remove.push(name);
+            }
+        }
+    }
+
+    if force {
+        let requested: Vec<String> = entries
+            .iter()
+            .filter(|entry| entry.kind == Kind::Brew && installer.is_installed(&entry.name))
+            .map(|entry| entry.name.clone())
+            .collect();
+        installer.mark_on_request(&requested)?;
+        if !casks_to_remove.is_empty() {
+            let names = casks_to_remove
+                .iter()
+                .map(|t| format!("cask:{t}"))
+                .collect();
+            let _ = super::uninstall::execute(installer, names, false, zap, ui);
+            let n = casks_to_remove.len();
+            println!("Uninstalled {n} cask{}", if n == 1 { "" } else { "s" });
+        }
+        if !formulae_to_remove.is_empty() {
+            let _ =
+                super::uninstall::execute(installer, formulae_to_remove.clone(), false, false, ui);
+            let n = formulae_to_remove.len();
+            println!("Uninstalled {n} formula{}", if n == 1 { "" } else { "e" });
+        }
+        return Ok(());
+    }
+
+    let mut would_uninstall = false;
+    for (heading, names) in [
+        ("Would uninstall casks:", &casks_to_remove),
+        ("Would uninstall formulae:", &formulae_to_remove),
+    ] {
+        if !names.is_empty() {
+            println!("{heading}");
+            for name in names {
+                println!("{name}");
+            }
+            would_uninstall = true;
+        }
+    }
+    if !would_uninstall {
+        return Ok(());
+    }
+    if confirm("cleanup") {
+        return Box::pin(cleanup(installer, path, true, zap, formulae, casks, ui)).await;
+    }
+    println!("Run `nb bundle cleanup --force` to make these changes.");
+    std::process::exit(1);
+}
+
+/// `Homebrew::Ask.confirm?`: on a terminal, `y` goes ahead; `n`, Escape,
+/// Ctrl-C or Ctrl-D end with status 1. Elsewhere, no.
+fn confirm(action: &str) -> bool {
+    use std::io::IsTerminal;
+    if !std::io::stdin().is_terminal() || !std::io::stdout().is_terminal() {
+        return false;
+    }
+    println!(
+        "{} {}",
+        style("==>").blue().bold(),
+        style(format!("Do you want to proceed with the {action}? [y/n]")).bold()
+    );
+    let term = console::Term::stdout();
+    loop {
+        match term.read_char() {
+            Ok('y' | 'Y') => return true,
+            Ok('n' | 'N' | '\u{1b}' | '\u{3}' | '\u{4}') | Err(_) => std::process::exit(1),
+            Ok(_) => println!("Invalid input. Please press 'y' to proceed, or 'n' to abort."),
+        }
+    }
+}
+
+/// Installed formulae, each after the formulae it depends on.
+async fn dump_order(installer: &nb_io::Installer) -> Result<Vec<String>, nb_core::Error> {
+    let mut names: Vec<String> = installer
+        .list_installed()?
+        .into_iter()
+        .filter(|keg| !keg.name.starts_with("cask:"))
+        .map(|keg| keg.name)
+        .collect();
+    names.sort_by(|a, b| (a.contains('/'), a).cmp(&(b.contains('/'), b)));
+    let mut graph = std::collections::HashMap::new();
+    for name in &names {
+        let mut deps: Vec<String> = installer
+            .dependencies(name, false)
+            .await
+            .map(|deps| deps.into_iter().filter(|dep| names.contains(dep)).collect())
+            .unwrap_or_default();
+        deps.sort();
+        graph.insert(name.clone(), deps);
+    }
+    fn visit(
+        name: &str,
+        graph: &std::collections::HashMap<String, Vec<String>>,
+        seen: &mut std::collections::HashSet<String>,
+        order: &mut Vec<String>,
+    ) {
+        if !seen.insert(name.to_string()) {
+            return;
+        }
+        for dep in graph.get(name).into_iter().flatten() {
+            visit(dep, graph, seen, order);
+        }
+        order.push(name.to_string());
+    }
+    let mut order = Vec::new();
+    let mut seen = std::collections::HashSet::new();
+    for name in &names {
+        visit(name, &graph, &mut seen, &mut order);
+    }
+    Ok(order)
+}
+
 fn capitalize(word: &str) -> String {
     let mut chars = word.chars();
     chars
@@ -839,47 +1046,7 @@ async fn dump_formulae(
     installer: &nb_io::Installer,
     options: &DumpOptions,
 ) -> Result<String, nb_core::Error> {
-    let mut kegs: Vec<_> = installer
-        .list_installed()?
-        .into_iter()
-        .filter(|keg| !keg.name.starts_with("cask:"))
-        .collect();
-    // Core formulae first, then tap ones, each by name.
-    kegs.sort_by(|a, b| (a.name.contains('/'), &a.name).cmp(&(b.name.contains('/'), &b.name)));
-    let installed: Vec<String> = kegs.iter().map(|keg| keg.name.clone()).collect();
-    let mut graph = std::collections::HashMap::new();
-    for name in &installed {
-        let mut deps: Vec<String> = installer
-            .dependencies(name, false)
-            .await
-            .map(|deps| {
-                deps.into_iter()
-                    .filter(|dep| installed.contains(dep))
-                    .collect()
-            })
-            .unwrap_or_default();
-        deps.sort();
-        graph.insert(name.clone(), deps);
-    }
-    let mut order = Vec::new();
-    let mut seen = std::collections::HashSet::new();
-    fn visit(
-        name: &str,
-        graph: &std::collections::HashMap<String, Vec<String>>,
-        seen: &mut std::collections::HashSet<String>,
-        order: &mut Vec<String>,
-    ) {
-        if !seen.insert(name.to_string()) {
-            return;
-        }
-        for dep in graph.get(name).into_iter().flatten() {
-            visit(dep, graph, seen, order);
-        }
-        order.push(name.to_string());
-    }
-    for name in &installed {
-        visit(name, &graph, &mut seen, &mut order);
-    }
+    let order = dump_order(installer).await?;
 
     let launchd = nb_io::services::Launchd::current(
         std::env::var_os("HOME")
