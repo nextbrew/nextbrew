@@ -47,7 +47,7 @@ impl Installer {
     /// A cask's `depends_on formula:`, from the JSON saved in its keg. Casks
     /// installed before nextbrew tracked requests have no unrequested
     /// dependencies, so a keg without it needs nothing here.
-    fn cask_formula_dependencies(&self, name: &str, version: &str) -> Vec<String> {
+    pub(super) fn cask_formula_dependencies(&self, name: &str, version: &str) -> Vec<String> {
         let keg = self.cellar.keg_path(formula_token(name), version);
         std::fs::read(keg.join(CASK_JSON))
             .ok()

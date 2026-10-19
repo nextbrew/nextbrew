@@ -11,6 +11,6 @@ pub use homebrew::{
 pub use install::doctor::{DiagnosticReport, RepairSummary};
 pub use install::{
     ExecuteResult, InstallPlan, Installer, LinkOutcome, OutdatedPackage, PlanFailure,
-    PostInstallNotice, create_installer,
+    PostInstallNotice, Uses, UsesScope, create_installer,
 };
 pub use post_install::{PostInstallContext, StepError, StepFailure, run_steps};

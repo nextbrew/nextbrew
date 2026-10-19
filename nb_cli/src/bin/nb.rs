@@ -76,7 +76,7 @@ async fn run(cli: Cli) -> Result<(), nb_core::Error> {
             commands::migrate::execute(&mut installer, yes, force, &mut ui).await
         }
         Commands::Doctor { repair } => commands::doctor::execute(&mut installer, repair, &mut ui),
-        Commands::List => commands::list::execute(&mut installer),
+        Commands::List { pinned } => commands::list::execute(&mut installer, pinned),
         Commands::Info { formula } => commands::info::execute(&mut installer, formula),
         Commands::Gc => commands::gc::execute(&mut installer),
         Commands::Update => commands::update::execute(&mut installer).await,
@@ -111,7 +111,17 @@ async fn run(cli: Cli) -> Result<(), nb_core::Error> {
             formulas,
             installed,
             recursive,
-        } => commands::deps::uses(&installer, formulas, installed, recursive).await,
+            formula,
+            cask,
+        } => {
+            let scope = nb_io::UsesScope {
+                installed,
+                recursive,
+                formulae: !cask,
+                casks: !formula,
+            };
+            commands::deps::uses(&installer, formulas, scope).await
+        }
         Commands::Link { formulas, force } => {
             commands::link::link(&mut installer, formulas, force).await
         }

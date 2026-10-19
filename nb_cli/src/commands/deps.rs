@@ -26,22 +26,28 @@ pub async fn deps(
     Ok(())
 }
 
-/// `nb uses --installed`: installed formulae that depend on all of
-/// `formulas`, directly or with `recursive` through other dependencies.
+/// `nb uses`: formulae and casks that depend on all of `formulas`, as
+/// `brew uses` lists them. A name the API does not know gets a warning.
 pub async fn uses(
     installer: &nb_io::Installer,
     formulas: Vec<String>,
-    installed: bool,
-    recursive: bool,
+    scope: nb_io::UsesScope,
 ) -> Result<(), nb_core::Error> {
-    if !installed {
-        return Err(nb_core::Error::InvalidArgument {
-            message: "nb uses only searches installed formulae; pass --installed".to_string(),
-        });
-    }
     let names = formula_names(&formulas, "uses")?;
-    for name in installer.installed_dependents(&names, recursive).await? {
+    let uses = installer.dependents(&names, scope).await?;
+    for name in &uses.missing {
+        eprintln!(
+            "{} No available formula with the name {name:?}.",
+            console::style("Warning:").yellow().bold()
+        );
+    }
+    for name in &uses.dependents {
         println!("{name}");
+    }
+    if !uses.missing.is_empty() && !uses.dependents.is_empty() {
+        return Err(nb_core::Error::InvalidArgument {
+            message: "Missing formulae should not have dependents!".to_string(),
+        });
     }
     Ok(())
 }

@@ -150,7 +150,10 @@ pub enum Commands {
         force: bool,
     },
     /// List installed packages
-    List,
+    List {
+        #[arg(long, help = "List only pinned formulae, by name")]
+        pinned: bool,
+    },
     /// Show information about an installed package
     Info {
         #[arg(help = "Name of the installed package")]
@@ -228,14 +231,23 @@ pub enum Commands {
         )]
         union: bool,
     },
-    /// Show the installed formulae that depend on formulae
+    /// Show the formulae and casks that depend on formulae
     Uses {
         #[arg(required = true, num_args = 1..)]
         formulas: Vec<String>,
-        #[arg(long, help = "Only search installed formulae")]
+        #[arg(long, help = "Only list installed formulae and casks")]
         installed: bool,
         #[arg(long, help = "Also count dependencies of dependencies")]
         recursive: bool,
+        #[arg(
+            long,
+            visible_alias = "formulae",
+            conflicts_with = "cask",
+            help = "Only list formulae"
+        )]
+        formula: bool,
+        #[arg(long, visible_alias = "casks", help = "Only list casks")]
+        cask: bool,
     },
     /// Symlink installed formulae into the prefix
     Link {

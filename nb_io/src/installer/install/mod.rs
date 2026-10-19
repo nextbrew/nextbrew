@@ -1,6 +1,7 @@
 mod autoremove;
 mod bottle;
 mod link;
+pub use deps::{Uses, UsesScope};
 pub use link::LinkOutcome;
 mod cask_app;
 mod cask_artifacts;
@@ -836,10 +837,14 @@ mod tests {
                 .unwrap()
                 .is_empty()
         );
-        let uses = installer
-            .installed_dependents(&["deplib".to_string()], false)
-            .await;
-        assert_eq!(uses.unwrap(), ["mainpkg"]);
+        let scope = super::UsesScope {
+            installed: true,
+            recursive: false,
+            formulae: true,
+            casks: true,
+        };
+        let uses = installer.dependents(&["deplib".to_string()], scope).await;
+        assert_eq!(uses.unwrap().dependents, ["mainpkg"]);
 
         assert!(installer.unneeded_formulae().await.unwrap().is_empty());
         installer.uninstall("mainpkg").unwrap();
