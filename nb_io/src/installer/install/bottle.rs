@@ -190,6 +190,31 @@ impl Installer {
             .await
     }
 
+    /// Check that nextbrew can install `token` and download it, without
+    /// installing: what a swap from Homebrew needs before it removes the
+    /// cask there. A download that is not verified (`sha256 :no_check`) is
+    /// not kept, so it is not fetched ahead.
+    pub async fn prepare_cask(&self, token: &str) -> Result<(), Error> {
+        if let Some((tap, _)) = token.rsplit_once('/') {
+            return Err(Error::InvalidArgument {
+                message: format!(
+                    "cask '{token}' is from the '{tap}' tap; nextbrew installs homebrew/cask casks only"
+                ),
+            });
+        }
+        let json = for_current_platform(&self.api_client.get_cask(token).await?);
+        check_deprecate_disable(&json)?;
+        check_requirements(&json)?;
+        self.check_conflicts(&json)?;
+        let cask = resolve_cask(token, &json)?;
+        if !cask.no_check {
+            self.downloader
+                .download_single(cask_download(&cask, &json), None)
+                .await?;
+        }
+        Ok(())
+    }
+
     /// [`Self::install_single_cask`] for a cask that `chain` depends on.
     pub(super) async fn install_cask_in_chain(
         &mut self,

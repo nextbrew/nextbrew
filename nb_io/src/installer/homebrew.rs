@@ -1,363 +1,171 @@
+//! What Homebrew has installed, read through its own commands, for
+//! `nb migrate`: `brew info --json=v2 --installed` and `brew services list
+//! --json`.
+
 use std::process::Command;
 
 use nb_core::Error;
+use serde_json::Value;
 
-/// Represents a Homebrew package that can be migrated
-#[derive(Debug, Clone)]
+/// A formula or cask Homebrew has installed.
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct HomebrewPackage {
     pub name: String,
     pub tap: String,
     pub is_cask: bool,
+    /// `brew pin`ned.
+    pub pinned: bool,
+    /// Installed by name rather than as a dependency.
+    pub on_request: bool,
 }
 
-/// Result of collecting Homebrew packages for migration
+/// What `nb migrate` can and cannot take over.
+#[derive(Debug, Default, PartialEq, Eq)]
 pub struct HomebrewMigrationPackages {
-    /// Formulas from homebrew/core that can be migrated
+    /// homebrew/core formulae installed by name; their dependencies follow.
     pub formulas: Vec<HomebrewPackage>,
-    /// Formulas from non-core taps that cannot be migrated
+    /// Formulae from other taps, installed by name.
     pub non_core_formulas: Vec<HomebrewPackage>,
-    /// Cask packages that cannot be migrated
+    /// homebrew/cask casks.
     pub casks: Vec<HomebrewPackage>,
+    /// Casks from other taps.
+    pub non_core_casks: Vec<HomebrewPackage>,
+    /// Formulae whose Homebrew service is started.
+    pub services: Vec<String>,
 }
 
-/// Parse Homebrew formulas from JSON output of `brew info --json=v1 --installed`
-pub fn parse_formulas_from_json(json: &serde_json::Value) -> Vec<HomebrewPackage> {
+/// The formulae and casks in `brew info --json=v2 --installed`.
+pub fn parse_installed(json: &Value) -> Vec<HomebrewPackage> {
     let mut packages = Vec::new();
-
-    if let Some(formulas) = json.as_array() {
-        for formula in formulas {
-            if let Some(name) = formula.get("name").and_then(|n| n.as_str()) {
-                let tap = formula
-                    .get("tap")
-                    .and_then(|t| t.as_str())
-                    .unwrap_or("homebrew/core")
-                    .to_string();
-
-                packages.push(HomebrewPackage {
-                    name: name.to_string(),
-                    tap,
-                    is_cask: false,
-                });
-            }
-        }
+    for formula in json["formulae"].as_array().into_iter().flatten() {
+        let Some(name) = formula["name"].as_str() else {
+            continue;
+        };
+        let on_request = formula["installed"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .any(|keg| keg["installed_on_request"].as_bool() == Some(true));
+        packages.push(HomebrewPackage {
+            name: name.to_string(),
+            tap: formula["tap"]
+                .as_str()
+                .unwrap_or("homebrew/core")
+                .to_string(),
+            is_cask: false,
+            pinned: formula["pinned"].as_bool() == Some(true),
+            on_request,
+        });
     }
-
+    for cask in json["casks"].as_array().into_iter().flatten() {
+        let Some(token) = cask["token"].as_str() else {
+            continue;
+        };
+        packages.push(HomebrewPackage {
+            name: token.to_string(),
+            tap: cask["tap"].as_str().unwrap_or("homebrew/cask").to_string(),
+            is_cask: true,
+            pinned: false,
+            on_request: true,
+        });
+    }
     packages
 }
 
-/// Parse Homebrew leaves from plain text output of `brew leaves`
-pub fn parse_leaves_from_plain_text(output: &str) -> Vec<String> {
-    output
-        .lines()
-        .map(str::trim)
-        .filter(|l| !l.is_empty())
-        .map(|s| s.to_string())
+/// The formulae `brew services list --json` shows as started.
+pub fn parse_started_services(json: &Value) -> Vec<String> {
+    json.as_array()
+        .into_iter()
+        .flatten()
+        .filter(|service| service["status"].as_str() == Some("started"))
+        .filter_map(|service| service["name"].as_str().map(str::to_string))
         .collect()
 }
 
-/// Parse Homebrew casks from plain text output of `brew list --cask`
-pub fn parse_casks_from_plain_text(output: &str) -> Vec<HomebrewPackage> {
-    output
-        .lines()
-        .filter(|line| !line.is_empty())
-        .map(|name| HomebrewPackage {
-            name: name.to_string(),
-            tap: "homebrew/cask".to_string(),
-            is_cask: true,
-        })
-        .collect()
-}
-
-/// Categorize Homebrew packages for migration
-///
-/// Returns a struct with separate lists for:
-/// - Formulas from homebrew/core (migratable)
-/// - Formulas from other taps (not migratable)
-/// - Cask packages (not migratable)
-pub fn categorize_packages(packages: Vec<HomebrewPackage>) -> HomebrewMigrationPackages {
-    let mut formulas = Vec::new();
-    let mut non_core_formulas = Vec::new();
-    let mut casks = Vec::new();
-
-    for pkg in packages {
-        if pkg.is_cask {
-            casks.push(pkg);
-        } else if pkg.tap == "homebrew/core" {
-            formulas.push(pkg);
-        } else {
-            non_core_formulas.push(pkg);
-        }
-    }
-
-    HomebrewMigrationPackages {
-        formulas,
-        non_core_formulas,
-        casks,
-    }
-}
-
-/// Get all installed Homebrew packages, categorized for migration
-///
-/// Only formulas from `homebrew/core` can be migrated to nextbrew.
-/// Formulas from other taps and all casks are collected separately.
-/// Only leaves are migrated, as there's no use to reinstalling dependencies.
-pub fn get_homebrew_packages() -> Result<HomebrewMigrationPackages, Error> {
-    let leaves_output = Command::new("brew")
-        .args(["leaves"])
-        .output()
-        .map_err(Error::exec("failed to run 'brew leaves'"))?;
-
-    if !leaves_output.status.success() {
-        return Err((Error::exec("brew leaves failed"))(
-            String::from_utf8_lossy(&leaves_output.stderr),
-        ));
-    }
-
-    let leaves = parse_leaves_from_plain_text(&String::from_utf8_lossy(&leaves_output.stdout));
-
-    let formulas = if leaves.is_empty() {
-        Vec::new()
-    } else {
-        let formulas_output = Command::new("brew")
-            .args(["info", "--json=v1"])
-            .args(&leaves)
-            .output()
-            .map_err(Error::exec("failed to run 'brew info'"))?;
-
-        if !formulas_output.status.success() {
-            return Err((Error::exec("brew info failed"))(String::from_utf8_lossy(
-                &formulas_output.stderr,
-            )));
-        }
-
-        let formulas_json: serde_json::Value = serde_json::from_slice(&formulas_output.stdout)
-            .map_err(Error::exec("failed to parse brew info JSON"))?;
-
-        parse_formulas_from_json(&formulas_json)
+/// Sort what Homebrew has into what nb can take over.
+pub fn categorize_packages(
+    packages: Vec<HomebrewPackage>,
+    services: Vec<String>,
+) -> HomebrewMigrationPackages {
+    let mut sorted = HomebrewMigrationPackages {
+        services,
+        ..Default::default()
     };
+    for pkg in packages {
+        match (pkg.is_cask, pkg.tap.as_str()) {
+            (true, "homebrew/cask") => sorted.casks.push(pkg),
+            (true, _) => sorted.non_core_casks.push(pkg),
+            (false, _) if !pkg.on_request => {}
+            (false, "homebrew/core") => sorted.formulas.push(pkg),
+            (false, _) => sorted.non_core_formulas.push(pkg),
+        }
+    }
+    sorted
+}
 
-    let casks_output = Command::new("brew")
-        .args(["list", "--cask"])
+fn brew_json(args: &[&str]) -> Result<Value, Error> {
+    let output = Command::new("brew")
+        .args(args)
         .output()
-        .map_err(Error::exec("failed to run 'brew list --cask'"))?;
-
-    if !casks_output.status.success() {
-        return Err((Error::exec("brew list --cask failed"))(
-            String::from_utf8_lossy(&casks_output.stderr),
+        .map_err(Error::exec(&format!(
+            "failed to run 'brew {}'",
+            args.join(" ")
+        )))?;
+    if !output.status.success() {
+        return Err((Error::exec(&format!("brew {} failed", args.join(" "))))(
+            String::from_utf8_lossy(&output.stderr),
         ));
     }
-
-    let casks = parse_casks_from_plain_text(&String::from_utf8_lossy(&casks_output.stdout));
-
-    let all_packages: Vec<HomebrewPackage> = formulas.into_iter().chain(casks).collect();
-    Ok(categorize_packages(all_packages))
+    serde_json::from_slice(&output.stdout).map_err(Error::exec("failed to parse brew's JSON"))
 }
+
+/// What Homebrew has installed and which of its services run, sorted for
+/// migration.
+pub fn get_homebrew_packages() -> Result<HomebrewMigrationPackages, Error> {
+    let installed = brew_json(&["info", "--json=v2", "--installed"])?;
+    // Without `brew services` (or with nothing to list) there are none.
+    let services = brew_json(&["services", "list", "--json"])
+        .map(|json| parse_started_services(&json))
+        .unwrap_or_default();
+    Ok(categorize_packages(parse_installed(&installed), services))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    #[test]
-    fn test_parse_formulas_from_json() {
-        let brew_output = r#"[
-            {
-                "name": "git",
-                "tap": "homebrew/core",
-                "versions": { "stable": "2.40.0" }
-            },
-            {
-                "name": "neovim",
-                "tap": "homebrew/core",
-                "versions": { "stable": "0.9.0" }
-            }
-        ]"#;
-
-        let formulas_json: serde_json::Value = serde_json::from_str(brew_output).unwrap();
-        let packages = parse_formulas_from_json(&formulas_json);
-
-        assert_eq!(packages.len(), 2);
-        assert_eq!(packages[0].name, "git");
-        assert_eq!(packages[0].tap, "homebrew/core");
-        assert!(!packages[0].is_cask);
-        assert_eq!(packages[1].name, "neovim");
-        assert!(!packages[1].is_cask);
-    }
+    // Shaped like `brew info --json=v2 --installed` on Homebrew HEAD.
+    const INSTALLED: &str = r#"{
+      "formulae": [
+        {"name": "jq", "tap": "homebrew/core", "pinned": true,
+         "installed": [{"version": "1.8.2", "installed_on_request": true}]},
+        {"name": "oniguruma", "tap": "homebrew/core", "pinned": false,
+         "installed": [{"version": "6.9.10", "installed_on_request": false}]},
+        {"name": "terraform", "tap": "hashicorp/tap", "pinned": false,
+         "installed": [{"version": "1.10.0", "installed_on_request": true}]}
+      ],
+      "casks": [
+        {"token": "font-0xproto", "tap": "homebrew/cask", "installed": "2.502"},
+        {"token": "microsoft-git", "tap": "microsoft/git", "installed": "2.50"}
+      ]
+    }"#;
 
     #[test]
-    fn test_parse_formulas_handles_missing_tap() {
-        let brew_output = r#"[
-            {"name": "no-tap-formula"}
-        ]"#;
-
-        let formulas_json: serde_json::Value = serde_json::from_str(brew_output).unwrap();
-        let packages = parse_formulas_from_json(&formulas_json);
-
-        assert_eq!(packages.len(), 1);
-        assert_eq!(packages[0].name, "no-tap-formula");
-        assert_eq!(packages[0].tap, "homebrew/core");
-    }
-
-    #[test]
-    fn test_parse_casks_from_plain_text() {
-        // Simulate brew list --cask output
-        let brew_output = "visual-studio-code\nfirefox\n";
-
-        let packages = parse_casks_from_plain_text(brew_output);
-
-        assert_eq!(packages.len(), 2);
-        assert_eq!(packages[0].name, "visual-studio-code");
-        assert_eq!(packages[0].tap, "homebrew/cask");
-        assert!(packages[0].is_cask);
-        assert_eq!(packages[1].name, "firefox");
-        assert!(packages[1].is_cask);
-    }
-
-    #[test]
-    fn test_parse_leaves_from_plain_text() {
-        let brew_output = "git\nneovim\nfirefox\n\n";
-
-        let leaves = parse_leaves_from_plain_text(brew_output);
-
-        assert_eq!(leaves, vec!["git", "neovim", "firefox"]);
-    }
-
-    #[test]
-    fn test_parse_casks_handles_empty_output() {
-        let brew_output = "";
-
-        let packages = parse_casks_from_plain_text(brew_output);
-
-        assert!(packages.is_empty());
-    }
-
-    #[test]
-    fn test_parse_casks_handles_multiple_lines() {
-        let brew_output = "visual-studio-code\nfirefox\ndocker\niterm2\n";
-
-        let packages = parse_casks_from_plain_text(brew_output);
-
-        assert_eq!(packages.len(), 4);
-        assert_eq!(
-            packages.iter().map(|p| &p.name).collect::<Vec<_>>(),
-            vec!["visual-studio-code", "firefox", "docker", "iterm2"]
-        );
-    }
-
-    #[test]
-    fn test_categorize_packages_filters_core_formulas() {
-        let packages = vec![
-            HomebrewPackage {
-                name: "git".to_string(),
-                tap: "homebrew/core".to_string(),
-                is_cask: false,
-            },
-            HomebrewPackage {
-                name: "curl".to_string(),
-                tap: "homebrew/core".to_string(),
-                is_cask: false,
-            },
-        ];
-
-        let result = categorize_packages(packages);
-
-        assert_eq!(result.formulas.len(), 2);
-        assert!(result.non_core_formulas.is_empty());
-        assert!(result.casks.is_empty());
-    }
-
-    #[test]
-    fn test_categorize_packages_filters_non_core_formulas() {
-        let packages = vec![
-            HomebrewPackage {
-                name: "php".to_string(),
-                tap: "shivammathur/php".to_string(),
-                is_cask: false,
-            },
-            HomebrewPackage {
-                name: "mysql".to_string(),
-                tap: "homebrew/mysql".to_string(),
-                is_cask: false,
-            },
-        ];
-
-        let result = categorize_packages(packages);
-
-        assert!(result.formulas.is_empty());
-        assert_eq!(result.non_core_formulas.len(), 2);
-        assert!(result.casks.is_empty());
-    }
-
-    #[test]
-    fn test_categorize_packages_filters_casks() {
-        let packages = vec![
-            HomebrewPackage {
-                name: "visual-studio-code".to_string(),
-                tap: "homebrew/cask".to_string(),
-                is_cask: true,
-            },
-            HomebrewPackage {
-                name: "firefox".to_string(),
-                tap: "homebrew/cask".to_string(),
-                is_cask: true,
-            },
-        ];
-
-        let result = categorize_packages(packages);
-
-        assert!(result.formulas.is_empty());
-        assert!(result.non_core_formulas.is_empty());
-        assert_eq!(result.casks.len(), 2);
-    }
-
-    #[test]
-    fn test_categorize_packages_mixed_packages() {
-        let packages = vec![
-            HomebrewPackage {
-                name: "git".to_string(),
-                tap: "homebrew/core".to_string(),
-                is_cask: false,
-            },
-            HomebrewPackage {
-                name: "php".to_string(),
-                tap: "homebrew/php".to_string(),
-                is_cask: false,
-            },
-            HomebrewPackage {
-                name: "visual-studio-code".to_string(),
-                tap: "homebrew/cask".to_string(),
-                is_cask: true,
-            },
-        ];
-
-        let result = categorize_packages(packages);
-
-        assert_eq!(result.formulas.len(), 1);
-        assert_eq!(result.formulas[0].name, "git");
-
-        assert_eq!(result.non_core_formulas.len(), 1);
-        assert_eq!(result.non_core_formulas[0].name, "php");
-
-        assert_eq!(result.casks.len(), 1);
-        assert_eq!(result.casks[0].name, "visual-studio-code");
-    }
-
-    #[test]
-    fn test_homebrew_package_struct() {
-        let pkg = HomebrewPackage {
-            name: "test-formula".to_string(),
-            tap: "homebrew/core".to_string(),
-            is_cask: false,
-        };
-
-        assert_eq!(pkg.name, "test-formula");
-        assert_eq!(pkg.tap, "homebrew/core");
-        assert!(!pkg.is_cask);
-
-        let cask = HomebrewPackage {
-            name: "test-cask".to_string(),
-            tap: "homebrew/cask".to_string(),
-            is_cask: true,
-        };
-
-        assert!(cask.is_cask);
+    fn sorts_what_homebrew_has() {
+        let json: Value = serde_json::from_str(INSTALLED).unwrap();
+        let services: Value = serde_json::from_str(
+            r#"[{"name": "redis", "status": "started"}, {"name": "x", "status": "none"}]"#,
+        )
+        .unwrap();
+        let sorted = categorize_packages(parse_installed(&json), parse_started_services(&services));
+        let names =
+            |list: &[HomebrewPackage]| list.iter().map(|p| p.name.clone()).collect::<Vec<_>>();
+        // A dependency comes along with what needs it; it is not taken by name.
+        assert_eq!(names(&sorted.formulas), ["jq"]);
+        assert!(sorted.formulas[0].pinned);
+        assert_eq!(names(&sorted.non_core_formulas), ["terraform"]);
+        assert_eq!(names(&sorted.casks), ["font-0xproto"]);
+        assert_eq!(names(&sorted.non_core_casks), ["microsoft-git"]);
+        assert_eq!(sorted.services, ["redis"]);
     }
 }
