@@ -333,9 +333,17 @@ impl Read for ChannelReader {
 /// behind some TLS-inspecting proxies a single transfer is held to about
 /// 0.5 MB/s, and the CDNs bottles and casks come from serve byte ranges.
 const SPLIT_MIN_BYTES: u64 = 4 * 1024 * 1024;
-/// The size a part aims for, and the most parts one body is split into.
-const SPLIT_PART_BYTES: u64 = 5 * 1024 * 1024 / 2;
-const SPLIT_MAX_PARTS: u64 = 8;
+/// The body is cut into chunks of an eighth of it, within these bounds, and
+/// each idle connection takes the next one, so a slow connection holds up
+/// only the chunk it has.
+const CHUNK_MIN_BYTES: u64 = 1024 * 1024;
+const CHUNK_MAX_BYTES: u64 = 4 * 1024 * 1024;
+/// Connections a split body starts with and the most it grows to. After
+/// each round (as many chunks done as connections) two more are added while
+/// the combined rate keeps rising by a tenth; a server that refuses ranges
+/// (403, 429, 503) halves them and stops the growth.
+const START_CONNECTIONS: usize = 4;
+const MAX_CONNECTIONS: usize = 16;
 
 /// Where the body goes, in order: the blob, its checksum and the consumer.
 struct Sink<W> {
@@ -378,8 +386,8 @@ impl Progress {
     }
 }
 
-/// The byte ranges to fetch `response`'s body in, the first being the part
-/// the response itself carries; `None` to read it in one piece.
+/// The chunks to fetch `response`'s body in, the first being the part the
+/// response itself carries; `None` to read it in one piece.
 fn split_plan(response: &reqwest::Response, total_bytes: Option<u64>) -> Option<Vec<Range<u64>>> {
     let total = total_bytes.filter(|len| *len >= SPLIT_MIN_BYTES)?;
     let headers = response.headers();
@@ -387,18 +395,87 @@ fn split_plan(response: &reqwest::Response, total_bytes: Option<u64>) -> Option<
     {
         return None;
     }
-    let parts = total.div_ceil(SPLIT_PART_BYTES).clamp(2, SPLIT_MAX_PARTS);
-    let size = total.div_ceil(parts);
+    let size = total.div_ceil(8).clamp(CHUNK_MIN_BYTES, CHUNK_MAX_BYTES);
     Some(
-        (0..parts)
+        (0..total.div_ceil(size))
             .map(|i| i * size..((i + 1) * size).min(total))
-            .filter(|range| !range.is_empty())
             .collect(),
     )
 }
 
-/// A part being fetched into its file.
-type PartTask = JoinHandle<Result<std::fs::File, Error>>;
+/// How many connections fetch a split body's chunks.
+#[derive(Debug)]
+struct Connections {
+    limit: usize,
+    growing: bool,
+    round_done: usize,
+    round_bytes: u64,
+    round_start: std::time::Instant,
+    last_rate: f64,
+}
+
+impl Connections {
+    fn new(chunks: usize) -> Self {
+        Self {
+            limit: START_CONNECTIONS.min(chunks.max(1)),
+            growing: true,
+            round_done: 0,
+            round_bytes: 0,
+            round_start: std::time::Instant::now(),
+            last_rate: 0.0,
+        }
+    }
+
+    /// A chunk of `bytes` arrived: at the end of a round, grow while the
+    /// rate keeps rising.
+    fn done(&mut self, bytes: u64) {
+        self.round_done += 1;
+        self.round_bytes += bytes;
+        if self.round_done < self.limit {
+            return;
+        }
+        let elapsed = self.round_start.elapsed().as_secs_f64().max(1e-3);
+        let rate = self.round_bytes as f64 / elapsed;
+        if self.growing && rate > self.last_rate * 1.1 {
+            self.limit = (self.limit + 2).min(MAX_CONNECTIONS);
+        } else {
+            self.growing = false;
+        }
+        self.last_rate = rate;
+        self.round_done = 0;
+        self.round_bytes = 0;
+        self.round_start = std::time::Instant::now();
+    }
+
+    /// The server turned a range request away for load.
+    fn throttled(&mut self) {
+        self.limit = (self.limit / 2).max(1);
+        self.growing = false;
+    }
+}
+
+/// Why a chunk could not be fetched.
+#[derive(Debug)]
+enum PartError {
+    /// The server answered the range request with this status.
+    Status(reqwest::StatusCode),
+    Other(Error),
+}
+
+impl std::fmt::Display for PartError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            PartError::Status(status) => write!(f, "range request answered with HTTP {status}"),
+            PartError::Other(e) => write!(f, "{e}"),
+        }
+    }
+}
+
+impl From<Error> for PartError {
+    fn from(e: Error) -> Self {
+        PartError::Other(e)
+    }
+}
 
 /// Fetch `range` of `url` into an anonymous file in `dir`, rewound.
 async fn fetch_part(
@@ -407,7 +484,7 @@ async fn fetch_part(
     range: Range<u64>,
     dir: PathBuf,
     progress: Progress,
-) -> Result<std::fs::File, Error> {
+) -> Result<std::fs::File, PartError> {
     let wanted = format!("bytes {}-{}/", range.start, range.end - 1);
     let response = client
         .get(url)
@@ -421,9 +498,7 @@ async fn fetch_part(
         .and_then(|v| v.to_str().ok())
         .is_some_and(|v| v.starts_with(&wanted));
     if response.status() != reqwest::StatusCode::PARTIAL_CONTENT || !served {
-        return Err(Error::NetworkFailure {
-            message: format!("range request answered with HTTP {}", response.status()),
-        });
+        return Err(PartError::Status(response.status()));
     }
     let mut file =
         tempfile::tempfile_in(&dir).map_err(Error::network("failed to create part file"))?;
@@ -439,7 +514,8 @@ async fn fetch_part(
     if written != range.end - range.start {
         return Err(Error::NetworkFailure {
             message: format!("part {wanted} ended after {written} bytes"),
-        });
+        }
+        .into());
     }
     file.rewind()
         .map_err(Error::network("failed to rewind part"))?;
@@ -526,77 +602,145 @@ async fn download_response_internal(
         total_bytes,
     };
 
-    // The other parts start at once; this response carries the first.
+    // The other chunks start at once; this response carries the first.
     let url = response.url().clone();
-    let plan = split_plan(&response, total_bytes);
+    let chunks = split_plan(&response, total_bytes).unwrap_or_default();
     let part_dir = blob_cache
         .blob_path(expected_sha256)
         .parent()
         .map(Path::to_path_buf)
         .unwrap_or_else(std::env::temp_dir);
-    let mut parts: Vec<(Range<u64>, PartTask)> = plan
-        .iter()
-        .flatten()
-        .skip(1)
-        .map(|range| {
-            let task = tokio::spawn(fetch_part(
-                range_client.clone(),
-                url.clone(),
-                range.clone(),
-                part_dir.clone(),
-                counter.clone(),
-            ));
-            (range.clone(), task)
-        })
-        .collect();
-    let first_end = plan.as_ref().map_or(u64::MAX, |plan| plan[0].end);
+    let first_end = chunks.first().map_or(u64::MAX, |chunk| chunk.end);
+    let mut queue: std::collections::VecDeque<usize> = (1..chunks.len()).collect();
+    let mut connections = Connections::new(queue.len());
+    let mut running: tokio::task::JoinSet<(usize, Result<std::fs::File, PartError>)> =
+        tokio::task::JoinSet::new();
+    let spawn = |running: &mut tokio::task::JoinSet<_>, index: usize| {
+        let task = fetch_part(
+            range_client.clone(),
+            url.clone(),
+            chunks[index].clone(),
+            part_dir.clone(),
+            counter.clone(),
+        );
+        running.spawn(async move { (index, task.await) });
+    };
+    let fill = |running: &mut tokio::task::JoinSet<_>,
+                queue: &mut std::collections::VecDeque<usize>,
+                limit: usize| {
+        while running.len() < limit {
+            let Some(index) = queue.pop_front() else {
+                break;
+            };
+            spawn(running, index);
+        }
+    };
+    fill(&mut running, &mut queue, connections.limit);
+
+    // Chunks that arrived ahead of their turn, and how often each failed.
+    let mut ready: std::collections::BTreeMap<usize, std::fs::File> = Default::default();
+    let mut failures: HashMap<usize, u32> = HashMap::new();
+    let mut next = 1;
+    let mut give_up = false;
+    let mut on_part = |index: usize,
+                       outcome: Result<std::fs::File, PartError>,
+                       running: &mut tokio::task::JoinSet<_>,
+                       queue: &mut std::collections::VecDeque<usize>,
+                       ready: &mut std::collections::BTreeMap<usize, std::fs::File>,
+                       give_up: &mut bool| {
+        match outcome {
+            Ok(file) => {
+                connections.done(chunks[index].end - chunks[index].start);
+                ready.insert(index, file);
+            }
+            Err(e) => {
+                if let PartError::Status(status) = &e
+                    && matches!(status.as_u16(), 403 | 429 | 503)
+                {
+                    connections.throttled();
+                }
+                let tries = failures.entry(index).or_default();
+                *tries += 1;
+                debug!(chunk = index, error = %e, "fetching a chunk failed");
+                if *tries >= 2 {
+                    *give_up = true;
+                } else {
+                    queue.push_front(index);
+                }
+            }
+        }
+        if !*give_up {
+            fill(running, queue, connections.limit);
+        }
+    };
 
     let mut received = 0u64;
     let mut stream = response.bytes_stream();
     while received < first_end {
-        let Some(chunk) = stream.next().await else {
-            break;
-        };
-        // A connection dropped mid-body; the next attempt starts over.
-        let mut chunk = chunk
-            .map_err(|e| DownloadError::transient(Error::network("failed to read chunk")(e)))?;
-        if received + chunk.len() as u64 > first_end {
-            chunk = chunk.slice(..(first_end - received) as usize);
+        tokio::select! {
+            chunk = stream.next() => {
+                let Some(chunk) = chunk else {
+                    break;
+                };
+                // A connection dropped mid-body; the next attempt starts over.
+                let mut chunk = chunk.map_err(|e| {
+                    DownloadError::transient(Error::network("failed to read chunk")(e))
+                })?;
+                if received + chunk.len() as u64 > first_end {
+                    chunk = chunk.slice(..(first_end - received) as usize);
+                }
+                received += chunk.len() as u64;
+                counter.add(chunk.len() as u64);
+                sink.push(&chunk).await?;
+            }
+            Some(joined) = running.join_next(), if !running.is_empty() && !give_up => {
+                if let Ok((index, outcome)) = joined {
+                    on_part(index, outcome, &mut running, &mut queue, &mut ready, &mut give_up);
+                }
+            }
         }
-        received += chunk.len() as u64;
-        counter.add(chunk.len() as u64);
-        sink.push(&chunk).await?;
     }
     drop(stream);
 
-    let mut parts = parts.drain(..);
-    while let Some((range, task)) = parts.next() {
-        match task.await {
-            Ok(Ok(mut file)) => {
-                let mut buf = vec![0u8; 256 * 1024];
-                loop {
-                    let n = file.read(&mut buf).map_err(|e| {
-                        DownloadError::permanent(Error::network("failed to read part")(e))
-                    })?;
-                    if n == 0 {
-                        break;
-                    }
-                    sink.push(&Bytes::copy_from_slice(&buf[..n])).await?;
+    while next < chunks.len() && !give_up {
+        if let Some(mut file) = ready.remove(&next) {
+            let mut buf = vec![0u8; 256 * 1024];
+            loop {
+                let n = file.read(&mut buf).map_err(|e| {
+                    DownloadError::permanent(Error::network("failed to read part")(e))
+                })?;
+                if n == 0 {
+                    break;
                 }
+                sink.push(&Bytes::copy_from_slice(&buf[..n])).await?;
             }
-            outcome => {
-                let reason = match outcome {
-                    Ok(Err(e)) => e.to_string(),
-                    Err(e) => e.to_string(),
-                    Ok(Ok(_)) => unreachable!(),
-                };
-                debug!(%reason, "fetching the body in parts failed; fetching the rest at once");
-                for (_, task) in parts.by_ref() {
-                    task.abort();
-                }
-                push_remainder(range_client, url.clone(), range.start, &mut sink, &counter).await?;
-            }
+            next += 1;
+            continue;
         }
+        match running.join_next().await {
+            Some(Ok((index, outcome))) => on_part(
+                index,
+                outcome,
+                &mut running,
+                &mut queue,
+                &mut ready,
+                &mut give_up,
+            ),
+            // A chunk task panicked or nothing is left to wait for.
+            _ => give_up = true,
+        }
+    }
+    if give_up && next < chunks.len() {
+        running.abort_all();
+        debug!("fetching the body in chunks failed; fetching the rest at once");
+        push_remainder(
+            range_client,
+            url.clone(),
+            chunks[next].start,
+            &mut sink,
+            &counter,
+        )
+        .await?;
     }
 
     let Sink {
@@ -861,6 +1005,8 @@ mod tests {
         body: Arc<Vec<u8>>,
         honour: bool,
         ranged: Arc<AtomicUsize>,
+        /// Range requests still to turn away with 429.
+        throttle: Arc<AtomicUsize>,
     }
 
     impl wiremock::Respond for Ranged {
@@ -873,6 +1019,14 @@ mod tests {
                 .and_then(|v| v.split_once('-'))
                 .and_then(|(a, b)| Some((a.parse::<usize>().ok()?, b.parse::<usize>().ok()?)));
             match range {
+                Some(_)
+                    if self
+                        .throttle
+                        .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |n| n.checked_sub(1))
+                        .is_ok() =>
+                {
+                    ResponseTemplate::new(429)
+                }
                 Some((start, end)) if self.honour => {
                     self.ranged.fetch_add(1, Ordering::SeqCst);
                     let len = self.body.len();
@@ -904,6 +1058,7 @@ mod tests {
                 body: Arc::new(body.clone()),
                 honour,
                 ranged: ranged.clone(),
+                throttle: Arc::new(AtomicUsize::new(0)),
             })
             .mount(server)
             .await;
@@ -930,6 +1085,53 @@ mod tests {
             "the consumer sees the body in order"
         );
         assert_eq!(committed.load(Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
+    async fn chunks_turned_away_for_load_are_fetched_again() {
+        let server = MockServer::start().await;
+        let body: Vec<u8> = (0..9 * 1024 * 1024).map(|i| (i % 253) as u8).collect();
+        let sha = crate::checksum::sha256_hex(Sha256::new_with_prefix(&body));
+        let ranged = Arc::new(AtomicUsize::new(0));
+        Mock::given(method("GET"))
+            .and(path("/large.tar.gz"))
+            .respond_with(Ranged {
+                body: Arc::new(body.clone()),
+                honour: true,
+                ranged: ranged.clone(),
+                throttle: Arc::new(AtomicUsize::new(3)),
+            })
+            .mount(&server)
+            .await;
+
+        let tmp = TempDir::new().unwrap();
+        let url = format!("{}/large.tar.gz", server.uri());
+        let blob = downloader(&tmp).download(&url, &sha).await.unwrap();
+
+        assert!(std::fs::read(blob).unwrap() == body);
+        // Eight chunks: every one after the first by range, none given up on.
+        assert_eq!(ranged.load(Ordering::SeqCst), 7);
+    }
+
+    #[test]
+    fn connections_grow_while_the_rate_rises_and_halve_when_throttled() {
+        let mut connections = Connections::new(100);
+        assert_eq!(connections.limit, START_CONNECTIONS);
+        // A round that took almost no time is faster than none at all.
+        for _ in 0..START_CONNECTIONS {
+            connections.done(1024);
+        }
+        assert_eq!(connections.limit, START_CONNECTIONS + 2);
+        // A round no faster than the last stops the growth.
+        connections.last_rate = f64::MAX;
+        for _ in 0..connections.limit {
+            connections.done(1);
+        }
+        assert!(!connections.growing);
+        let limit = connections.limit;
+        connections.throttled();
+        assert_eq!(connections.limit, limit / 2);
+        assert_eq!(Connections::new(1).limit, 1);
     }
 
     #[tokio::test]
