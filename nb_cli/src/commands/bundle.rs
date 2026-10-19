@@ -43,6 +43,64 @@ pub async fn execute(
             };
             install_from_file(installer, &path, &options, ui).await
         }
+        BundleCommands::Check {
+            file,
+            global,
+            no_upgrade,
+            quiet,
+        } => {
+            let path = brewfile_path(file.as_deref(), global)?;
+            let no_upgrade = no_upgrade || std::env::var_os("HOMEBREW_BUNDLE_NO_UPGRADE").is_some();
+            check(installer, &path, no_upgrade, verbose, quiet).await
+        }
+        BundleCommands::List {
+            file,
+            global,
+            all,
+            formula,
+            cask,
+            tap,
+            mas,
+            vscode,
+            go,
+            cargo,
+            uv,
+            flatpak,
+            npm,
+            krew,
+            winget,
+        } => {
+            let path = brewfile_path(file.as_deref(), global)?;
+            let extensions = [
+                ("mas", mas),
+                ("vscode", vscode),
+                ("go", go),
+                ("cargo", cargo),
+                ("uv", uv),
+                ("flatpak", flatpak),
+                ("npm", npm),
+                ("krew", krew),
+                ("winget", winget),
+            ];
+            let types: Vec<&str> = extensions
+                .iter()
+                .filter(|(_, on)| *on)
+                .map(|(kind, _)| *kind)
+                .collect();
+            let no_type_args = !(formula || cask || tap) && types.is_empty();
+            for entry in read_brewfile(&path)? {
+                let show = match entry.kind {
+                    Kind::Brew => formula || all || no_type_args,
+                    Kind::Cask => cask || all,
+                    Kind::Tap => tap || all,
+                    Kind::Extension(kind) => all || types.contains(&kind),
+                };
+                if show {
+                    println!("{}", entry.name);
+                }
+            }
+            Ok(())
+        }
         BundleCommands::Dump {
             file,
             global,
@@ -596,6 +654,134 @@ fn run_postinstall(name: &str, command: Option<&Value>) -> bool {
         .args(["-c", command])
         .status()
         .is_ok_and(|status| status.success())
+}
+
+/// `brew bundle check`: taps, casks, other package managers' entries,
+/// formulae (with their link state) and services, in Homebrew's order.
+async fn check(
+    installer: &nb_io::Installer,
+    path: &Path,
+    no_upgrade: bool,
+    verbose: bool,
+    quiet: bool,
+) -> Result<(), nb_core::Error> {
+    let entries: Vec<Entry> = read_brewfile(path)?
+        .into_iter()
+        .filter(|entry| !skipped(entry))
+        .collect();
+    let needs = if no_upgrade {
+        "needs to be installed."
+    } else {
+        "needs to be installed or updated."
+    };
+    let options = InstallOptions {
+        no_upgrade,
+        upgrade_formulae: Vec::new(),
+        verbose,
+        quiet,
+    };
+    let of = |kind: Kind| entries.iter().filter(move |entry| entry.kind == kind);
+    let mut errors = Vec::new();
+
+    for tap in of(Kind::Tap) {
+        if !BUILT_IN_TAPS.contains(&tap.name.as_str()) {
+            errors.push(format!("Tap {} needs to be tapped.", tap.name));
+        }
+    }
+    for cask in of(Kind::Cask) {
+        let plan = plan_entry(installer, cask.clone(), &options).await?;
+        if !plan.installed || plan.upgradable {
+            errors.push(format!("Cask {} {needs}", cask.name));
+        }
+    }
+    for entry in entries
+        .iter()
+        .filter(|entry| matches!(entry.kind, Kind::Extension(_)))
+    {
+        if let Kind::Extension(kind) = entry.kind {
+            errors.push(format!(
+                "{} {} cannot be checked: nextbrew does not handle `{kind}` entries.",
+                capitalize(kind),
+                entry.name
+            ));
+        }
+    }
+    for formula in of(Kind::Brew) {
+        let plan = plan_entry(installer, formula.clone(), &options).await?;
+        if !plan.installed || plan.upgradable {
+            errors.push(format!("Formula {} {needs}", formula.name));
+            continue;
+        }
+        // brew does not look at link states with --no-upgrade.
+        if no_upgrade {
+            continue;
+        }
+        // `link_status_to_check`: what `link:` asks for, or else the usual
+        // state (keg-only formulae unlinked, the rest linked).
+        let keg_only = installer.is_keg_only(&formula.name).await.unwrap_or(false);
+        let linked = installer.is_linked(&formula.name).unwrap_or(false);
+        let wanted = match formula.option("link") {
+            Some(Value::Bool(true)) => Some(true),
+            Some(Value::Sym(s)) if s == "overwrite" => Some(true),
+            Some(Value::Bool(false)) => Some(false),
+            Some(_) => Some(!keg_only),
+            None if keg_only && linked => Some(false),
+            None if !keg_only && !linked => Some(true),
+            None => None,
+        };
+        match wanted {
+            Some(true) if !linked => {
+                errors.push(format!("Formula {} needs to be linked.", formula.name))
+            }
+            Some(false) if linked => {
+                errors.push(format!("Formula {} needs to be unlinked.", formula.name))
+            }
+            _ => {}
+        }
+    }
+    let launchd = nb_io::services::Launchd::current(
+        std::env::var_os("HOME")
+            .map(PathBuf::from)
+            .unwrap_or_default(),
+    );
+    for formula in of(Kind::Brew) {
+        let wants_start = formula
+            .option("start_service")
+            .or(formula.option("restart_service"))
+            .is_some_and(Value::truthy);
+        if wants_start
+            && !launchd
+                .find(&nb_io::services::label(&formula.name))
+                .running()
+        {
+            errors.push(format!("Service {} needs to be started.", formula.name));
+        }
+    }
+
+    if errors.is_empty() {
+        if !quiet {
+            println!("The Brewfile's dependencies are satisfied.");
+        }
+        return Ok(());
+    }
+    eprintln!("nb bundle can't satisfy your Brewfile's dependencies.");
+    if verbose {
+        for error in &errors {
+            eprintln!("→ {error}");
+        }
+    } else {
+        eprintln!("Run `nb bundle check --verbose` to list unmet dependencies.");
+    }
+    eprintln!("Satisfy missing dependencies with `nb bundle install`.");
+    std::process::exit(1);
+}
+
+fn capitalize(word: &str) -> String {
+    let mut chars = word.chars();
+    chars
+        .next()
+        .map(|first| first.to_uppercase().chain(chars).collect())
+        .unwrap_or_default()
 }
 
 struct DumpOptions {

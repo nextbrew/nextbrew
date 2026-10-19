@@ -66,16 +66,7 @@ pub enum Kind {
 /// The directives `brew bundle` knows besides `tap`, `brew`, `cask` and
 /// `cask_args`.
 const EXTENSIONS: &[&str] = &[
-    "mas",
-    "whalebrew",
-    "vscode",
-    "go",
-    "cargo",
-    "uv",
-    "flatpak",
-    "npm",
-    "krew",
-    "winget",
+    "mas", "vscode", "go", "cargo", "uv", "flatpak", "npm", "krew", "winget",
 ];
 
 #[derive(Debug, Clone, PartialEq)]

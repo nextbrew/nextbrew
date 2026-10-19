@@ -397,6 +397,58 @@ pub enum BundleCommands {
     /// Install and upgrade everything in a Brewfile
     #[command(visible_alias = "upgrade")]
     Install(BundleInstallArgs),
+    /// Check that everything in a Brewfile is installed and up to date
+    Check {
+        #[arg(
+            long,
+            value_name = "FILE",
+            help = "Read this Brewfile (`-` for standard input)"
+        )]
+        file: Option<PathBuf>,
+        #[arg(long, help = "Read ~/.Brewfile (or $HOMEBREW_BUNDLE_FILE_GLOBAL)")]
+        global: bool,
+        #[arg(long, help = "Do not count outdated dependencies")]
+        no_upgrade: bool,
+        #[arg(long, help = "Print nothing when the dependencies are satisfied")]
+        quiet: bool,
+    },
+    /// List the dependencies in a Brewfile (formulae unless told otherwise)
+    List {
+        #[arg(
+            long,
+            value_name = "FILE",
+            help = "Read this Brewfile (`-` for standard input)"
+        )]
+        file: Option<PathBuf>,
+        #[arg(long, help = "Read ~/.Brewfile (or $HOMEBREW_BUNDLE_FILE_GLOBAL)")]
+        global: bool,
+        #[arg(long, help = "List every dependency")]
+        all: bool,
+        #[arg(long, visible_aliases = ["formulae", "brews"], help = "List formulae")]
+        formula: bool,
+        #[arg(long, visible_alias = "casks", help = "List casks")]
+        cask: bool,
+        #[arg(long, visible_alias = "taps", help = "List taps")]
+        tap: bool,
+        #[arg(long, help = "List mas entries")]
+        mas: bool,
+        #[arg(long, help = "List vscode entries")]
+        vscode: bool,
+        #[arg(long, help = "List go entries")]
+        go: bool,
+        #[arg(long, help = "List cargo entries")]
+        cargo: bool,
+        #[arg(long, help = "List uv entries")]
+        uv: bool,
+        #[arg(long, help = "List flatpak entries")]
+        flatpak: bool,
+        #[arg(long, help = "List npm entries")]
+        npm: bool,
+        #[arg(long, help = "List krew entries")]
+        krew: bool,
+        #[arg(long, help = "List winget entries")]
+        winget: bool,
+    },
     /// Write what is installed into a Brewfile
     Dump {
         #[arg(
