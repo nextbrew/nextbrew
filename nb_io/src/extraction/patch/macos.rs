@@ -388,7 +388,57 @@ fn sign(paths: &[&Path]) {
     });
 }
 
+/// Sign `paths` as single files. One inside a bundle (a framework's or
+/// app's main executable) is signed as a copy beside the bundle and moved
+/// back: `codesign` would otherwise seal the whole bundle and write a
+/// `_CodeSignature` directory into the keg, which Homebrew's per-file
+/// signing does not.
 fn codesign(paths: &[&Path]) -> Result<(), String> {
+    let (bundled, plain): (Vec<&Path>, Vec<&Path>) = paths
+        .iter()
+        .copied()
+        .partition(|path| outside_bundle(path).is_some());
+    for path in bundled {
+        let dir = outside_bundle(path).unwrap_or_default();
+        let name = path.file_name().unwrap_or_default().to_string_lossy();
+        let copy = dir.join(format!(".nb-sign-{}-{name}", std::process::id()));
+        fs::copy(path, &copy).map_err(|e| e.to_string())?;
+        let signed = codesign_files(&[&copy])
+            .and_then(|()| fs::rename(&copy, path).map_err(|e| e.to_string()));
+        if signed.is_err() {
+            let _ = fs::remove_file(&copy);
+        }
+        signed?;
+    }
+    if plain.is_empty() {
+        return Ok(());
+    }
+    codesign_files(&plain)
+}
+
+/// The directory holding the outermost bundle `path` lies in, if any.
+fn outside_bundle(path: &Path) -> Option<PathBuf> {
+    const BUNDLES: &[&str] = &[
+        "app",
+        "framework",
+        "bundle",
+        "plugin",
+        "appex",
+        "xpc",
+        "kext",
+    ];
+    path.ancestors()
+        .skip(1)
+        .filter(|dir| {
+            dir.extension()
+                .is_some_and(|ext| BUNDLES.iter().any(|bundle| ext == *bundle))
+        })
+        .last()
+        .and_then(Path::parent)
+        .map(Path::to_path_buf)
+}
+
+fn codesign_files(paths: &[&Path]) -> Result<(), String> {
     let output = Command::new("codesign")
         .args([
             "--sign",
@@ -1130,6 +1180,60 @@ echo "Hello from $PREFIX"
             "a signature was added"
         );
         assert_eq!(run_app(&built.app), "42");
+    }
+
+    #[test]
+    fn signs_a_framework_binary_without_sealing_the_framework() {
+        let tmp = short_prefix();
+        let prefix = tmp.path();
+        let Some(built) = build_keg(prefix, "@rpath/libx.dylib", "@loader_path/../lib") else {
+            eprintln!("skipping: no working C compiler");
+            return;
+        };
+        let version = built.keg.join("Frameworks/X.framework/Versions/A");
+        fs::create_dir_all(version.join("Resources")).unwrap();
+        fs::write(
+            version.join("Resources/Info.plist"),
+            r#"<?xml version="1.0" encoding="UTF-8"?>
+<plist version="1.0"><dict><key>CFBundleExecutable</key><string>X</string>
+<key>CFBundleIdentifier</key><string>org.example.X</string>
+<key>CFBundlePackageType</key><string>FMWK</string></dict></plist>"#,
+        )
+        .unwrap();
+        let binary = version.join("X");
+        fs::copy(&built.dylib, &binary).unwrap();
+        assert!(
+            Command::new("codesign")
+                .arg("--remove-signature")
+                .arg(&binary)
+                .status()
+                .unwrap()
+                .success()
+        );
+
+        sign(&[binary.as_path()]);
+
+        assert!(!version.join("_CodeSignature").exists());
+        let outside = built.keg.join("X-copy");
+        fs::copy(&binary, &outside).unwrap();
+        assert!(signature_is_valid(&outside));
+        let leftovers: Vec<_> = fs::read_dir(built.keg.join("Frameworks"))
+            .unwrap()
+            .filter_map(Result::ok)
+            .filter(|entry| entry.file_name().to_string_lossy().starts_with(".nb-sign"))
+            .collect();
+        assert!(leftovers.is_empty());
+    }
+
+    #[test]
+    fn finds_the_directory_outside_the_outermost_bundle() {
+        assert_eq!(
+            outside_bundle(Path::new(
+                "/k/Frameworks/P.framework/Versions/3/Resources/P.app/Contents/MacOS/P"
+            )),
+            Some(PathBuf::from("/k/Frameworks"))
+        );
+        assert_eq!(outside_bundle(Path::new("/k/lib/libx.dylib")), None);
     }
 
     #[test]
