@@ -246,6 +246,22 @@ impl ApiCache {
             .flatten()
     }
 
+    /// Every formula's name, without aliases, in order.
+    pub fn index_formula_names(&self) -> Result<Vec<String>, rusqlite::Error> {
+        let mut stmt = self
+            .conn
+            .prepare("SELECT name FROM formulas ORDER BY name")?;
+        stmt.query_map([], |row| row.get(0))?.collect()
+    }
+
+    /// Every formula's JSON, by name.
+    pub fn index_formulas(&self) -> Result<Vec<String>, rusqlite::Error> {
+        let mut stmt = self
+            .conn
+            .prepare("SELECT body FROM formulas ORDER BY name")?;
+        stmt.query_map([], |row| row.get(0))?.collect()
+    }
+
     /// Every name the index knows: formulas first, then aliases.
     pub fn index_names(&self) -> Result<Vec<String>, rusqlite::Error> {
         let mut names = Vec::new();

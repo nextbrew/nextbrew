@@ -26,13 +26,14 @@ pub async fn execute(
             message: format!("No formulae or casks found for {query:?}."),
         });
     }
+    // brew prints the headings and checks only to a terminal.
+    let terminal = std::io::stdout().is_terminal();
     let print = |heading: &str, names: &[String], prefix: &str| {
-        // brew prints the headings only to a terminal.
-        if std::io::stdout().is_terminal() {
+        if terminal {
             println!("{} {}", style("==>").blue().bold(), style(heading).bold());
         }
         for name in names {
-            if installer.is_installed(&format!("{prefix}{name}")) {
+            if terminal && installer.is_installed(&format!("{prefix}{name}")) {
                 println!("{name} {}", style("✔").green());
             } else {
                 println!("{name}");

@@ -4,7 +4,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use crate::checksum::verify_sha256_bytes;
 use crate::network::cache::{ApiCache, CacheEntry, IndexEntry, IndexMeta};
-use crate::network::suggest::rank_formula_suggestions;
+use crate::network::suggest::{did_you_mean, rank_formula_suggestions};
 use crate::network::tap_formula::{parse_tap_formula_ref, parse_tap_formula_ruby};
 use futures_util::stream::{self, StreamExt};
 use nb_core::{Error, Formula};
@@ -120,6 +120,10 @@ impl<'a> RubySourceLocator<'a> {
 /// `brew search`'s matching: `/regex/`, or a substring of the name once
 /// both are lowercased and stripped to letters, digits, `@` and `+`.
 type Matcher = Box<dyn Fn(&str) -> bool>;
+
+fn is_regex_query(query: &str) -> bool {
+    query.len() > 1 && query.starts_with('/') && query.ends_with('/')
+}
 
 fn search_matcher(query: &str) -> Result<Matcher, Error> {
     if let Some(pattern) = query.strip_prefix('/').and_then(|q| q.strip_suffix('/')) {
@@ -438,11 +442,9 @@ impl ApiClient {
     }
 
     /// Formula names and aliases matching `query`, as `brew search` lists
-    /// them: an alias only when its formula's own name did not match, and
-    /// unversioned formulae before versioned ones.
-    ///
-    // ponytail: no fuzzy or did-you-mean results, which brew adds for a
-    // plain-string query; add them if near misses come up empty too often.
+    /// them: an alias only when its formula's own name did not match,
+    /// unversioned formulae before versioned ones, and for a plain query
+    /// then the names [`did_you_mean`] finds.
     pub async fn search_formulas(&self, query: &str) -> Result<Vec<String>, Error> {
         let matches = search_matcher(query)?;
         let candidates = self.formula_candidates().await?;
@@ -460,11 +462,7 @@ impl ApiClient {
         };
         let mut results: Vec<String> = found
             .iter()
-            .filter(|name| match alias_of(name) {
-                Some((_, true)) => false,
-                Some((formula, false)) => !found.contains(&&formula),
-                None => true,
-            })
+            .filter(|name| !matches!(alias_of(name), Some((_, true))))
             .map(|name| name.to_string())
             .collect();
         results.sort_by_cached_key(|name| {
@@ -473,29 +471,94 @@ impl ApiClient {
             (base.to_string(), parts)
         });
         results.dedup();
+        if !is_regex_query(query) {
+            for name in did_you_mean(query, &self.formula_names().await?) {
+                if !results.contains(&name) {
+                    results.push(name);
+                }
+            }
+        }
+        // Only now, so a formula found by its spelling also hides its aliases.
+        let shown = results.clone();
+        results.retain(|name| match alias_of(name) {
+            Some((formula, _)) => !shown.contains(&formula),
+            None => true,
+        });
         Ok(results)
     }
 
-    /// Cask tokens matching `query`, sorted, from the bulk cask API file.
+    /// Cask tokens matching `query`, with [`did_you_mean`]'s for a plain
+    /// query, sorted, from the bulk cask API file.
     pub async fn search_casks(&self, query: &str) -> Result<Vec<String>, Error> {
         let matches = search_matcher(query)?;
         #[derive(serde::Deserialize)]
         struct Cask {
             token: String,
         }
-        let url = format!("{}.json", self.cask_base_url);
-        let body = self.cached_body(&url).await?.ok_or(Error::NetworkFailure {
-            message: format!("{url} not found"),
-        })?;
-        let casks: Vec<Cask> =
-            serde_json::from_str(&body).map_err(Error::network("failed to parse cask list"))?;
-        let mut tokens: Vec<String> = casks
-            .into_iter()
-            .map(|cask| cask.token)
-            .filter(|token| matches(token))
-            .collect();
+        let casks: Vec<Cask> = serde_json::from_str(&self.cask_list_body().await?)
+            .map_err(Error::network("failed to parse cask list"))?;
+        let all: Vec<String> = casks.into_iter().map(|cask| cask.token).collect();
+        let mut tokens: Vec<String> = all.iter().filter(|token| matches(token)).cloned().collect();
+        if !is_regex_query(query) {
+            tokens.extend(did_you_mean(query, &all));
+        }
         tokens.sort();
+        tokens.dedup();
         Ok(tokens)
+    }
+
+    /// Every cask in the bulk cask API file, as the API gives it.
+    pub async fn all_casks(&self) -> Result<Vec<serde_json::Value>, Error> {
+        serde_json::from_str(&self.cask_list_body().await?)
+            .map_err(Error::network("failed to parse cask list"))
+    }
+
+    async fn cask_list_body(&self) -> Result<String, Error> {
+        let url = format!("{}.json", self.cask_base_url);
+        self.cached_body(&url).await?.ok_or(Error::NetworkFailure {
+            message: format!("{url} not found"),
+        })
+    }
+
+    /// Every formula in the API. One that does not parse (the `portable-*`
+    /// formulae, which have no bottles) is left out.
+    pub async fn all_formulas(&self) -> Result<Vec<Formula>, Error> {
+        let parse = |body: &str| match serde_json::from_str(body) {
+            Ok(formula) => Some(formula),
+            Err(e) => {
+                debug!(error = %e, "skipping a formula that does not parse");
+                None
+            }
+        };
+        if let Some(cache) = &self.cache
+            && self.ensure_index().await
+        {
+            let bodies = cache
+                .index_formulas()
+                .map_err(Error::store("failed to read the formula index"))?;
+            return Ok(bodies.iter().filter_map(|body| parse(body)).collect());
+        }
+        let body = self.bulk_formula_body().await?;
+        Ok(index_entries(&body)?
+            .iter()
+            .filter_map(|entry| parse(entry.body))
+            .collect())
+    }
+
+    /// Every formula's name, without its aliases and old names.
+    async fn formula_names(&self) -> Result<Vec<String>, Error> {
+        if let Some(cache) = &self.cache
+            && self.ensure_index().await
+        {
+            return cache
+                .index_formula_names()
+                .map_err(Error::store("failed to read the formula index"));
+        }
+        let body = self.bulk_formula_body().await?;
+        Ok(index_entries(&body)?
+            .into_iter()
+            .map(|entry| entry.name)
+            .collect())
     }
 
     fn index_url(&self) -> String {
@@ -615,6 +678,27 @@ impl ApiClient {
         Ok(rank_formula_suggestions(query, &candidates, limit))
     }
 
+    /// The bulk formula file, fetched afresh for want of an index.
+    async fn bulk_formula_body(&self) -> Result<String, Error> {
+        let response = self
+            .client
+            .get(self.index_url())
+            .send()
+            .await
+            .map_err(|e| Error::NetworkFailure {
+                message: e.to_string(),
+            })?;
+        if !response.status().is_success() {
+            return Err(Error::NetworkFailure {
+                message: format!("bulk formula fetch returned HTTP {}", response.status()),
+            });
+        }
+        response
+            .text()
+            .await
+            .map_err(Error::network("failed to read bulk formula response body"))
+    }
+
     /// Every formula name, alias and old name: from the index, or straight
     /// from the bulk API file when there is no cache to index into.
     async fn formula_candidates(&self) -> Result<Arc<[String]>, Error> {
@@ -626,29 +710,10 @@ impl ApiClient {
             Some(cache) if self.ensure_index().await => cache
                 .index_names()
                 .map_err(Error::store("failed to read the formula index"))?,
-            _ => {
-                let response = self
-                    .client
-                    .get(self.index_url())
-                    .send()
-                    .await
-                    .map_err(|e| Error::NetworkFailure {
-                        message: e.to_string(),
-                    })?;
-                if !response.status().is_success() {
-                    return Err(Error::NetworkFailure {
-                        message: format!("bulk formula fetch returned HTTP {}", response.status()),
-                    });
-                }
-                let body = response
-                    .text()
-                    .await
-                    .map_err(Error::network("failed to read bulk formula response body"))?;
-                index_entries(&body)?
-                    .into_iter()
-                    .flat_map(|entry| std::iter::once(entry.name).chain(entry.aliases))
-                    .collect()
-            }
+            _ => index_entries(&self.bulk_formula_body().await?)?
+                .into_iter()
+                .flat_map(|entry| std::iter::once(entry.name).chain(entry.aliases))
+                .collect(),
         };
         let candidates: Arc<[String]> = names.into();
         if let Ok(mut cached) = self.formula_candidates.write() {
@@ -1384,6 +1449,15 @@ end
             ["luajit-node", "node", "node@9", "node@22", "node-build"]
         );
         assert!(client.search_formulas("python").await.unwrap().is_empty());
+        // node only comes up by spelling, and still hides the aliases that matched.
+        assert_eq!(
+            client.search_formulas("nodejs").await.unwrap(),
+            ["node", "node@9", "node@22"]
+        );
+        assert_eq!(
+            client.search_formulas("/nodejs/").await.unwrap(),
+            ["nodejs"]
+        );
     }
 
     #[tokio::test]
