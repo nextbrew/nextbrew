@@ -5,6 +5,7 @@ pub mod install;
 pub mod post_install;
 pub(crate) mod sudo;
 
+pub use cask::resolve_cask;
 pub use homebrew::{
     HomebrewMigrationPackages, HomebrewPackage, categorize_packages, get_homebrew_packages,
 };
