@@ -574,7 +574,10 @@ fn check_executables_start(keg: &Path) {
 #[test]
 fn reads_the_load_commands_of_a_system_binary() {
     let commands = mach_o_load_commands(Path::new("/bin/ls"));
-    assert!(commands.contains("dylib /usr/lib/libSystem.B.dylib"), "{commands}");
+    assert!(
+        commands.contains("dylib /usr/lib/libSystem.B.dylib"),
+        "{commands}"
+    );
 }
 
 #[test]
