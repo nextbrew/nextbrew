@@ -7,7 +7,15 @@ use nb_core::{ConflictedLink, Error};
 /// Keg directories linked into the prefix. Like Homebrew, `libexec` is not
 /// linked: it holds files private to a keg, like the Python formulae's
 /// unversioned `python` and `pip`, which would collide across versions.
-const LINK_DIRS: &[&str] = &["bin", "sbin", "lib", "include", "share", "etc"];
+const LINK_DIRS: &[&str] = &[
+    "bin",
+    "sbin",
+    "lib",
+    "include",
+    "share",
+    "etc",
+    "Frameworks",
+];
 
 /// Directories older versions of nextbrew linked. Still unlinked, so those
 /// links are cleaned up on uninstall and upgrade.
@@ -139,6 +147,12 @@ fn dir_mode(top: &str, rel: &str) -> DirMode {
             DirMode::Mkpath
         }
         "lib" => DirMode::Link,
+        // `Foo.framework` and its `Versions` are shared so that several
+        // formulae can link their versions into them.
+        "Frameworks" if rel.ends_with(".framework") || rel.ends_with(".framework/Versions") => {
+            DirMode::Mkpath
+        }
+        "Frameworks" => DirMode::Link,
         _ => DirMode::Mkpath,
     }
 }
@@ -1002,6 +1016,27 @@ mod tests {
         let helpers = tmp.path().join("bin/helpers");
         assert!(helpers.is_symlink());
         assert_eq!(fs::read_link(&helpers).unwrap(), other);
+    }
+
+    #[test]
+    fn frameworks_share_their_framework_and_versions_directories() {
+        let tmp = TempDir::new().unwrap();
+        for (name, version) in [("python@3.13", "3.13"), ("python@3.14", "3.14")] {
+            let keg = tmp.path().join(format!("cellar/{name}/1.0"));
+            let headers = keg.join(format!(
+                "Frameworks/Python.framework/Versions/{version}/Headers"
+            ));
+            fs::create_dir_all(&headers).unwrap();
+            fs::write(headers.join("Python.h"), b"h").unwrap();
+            Linker::new(tmp.path()).unwrap().link_keg(&keg).unwrap();
+        }
+
+        let versions = tmp.path().join("Frameworks/Python.framework/Versions");
+        assert!(!versions.is_symlink() && !versions.parent().unwrap().is_symlink());
+        for version in ["3.13", "3.14"] {
+            assert!(versions.join(version).is_symlink());
+            assert!(versions.join(version).join("Headers/Python.h").exists());
+        }
     }
 
     #[test]
