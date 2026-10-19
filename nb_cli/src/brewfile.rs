@@ -482,6 +482,27 @@ pub fn parse(source: &str) -> Result<Vec<Entry>, ParseError> {
             }
             options.push(("clone_target".to_string(), clone_target));
         }
+        // `MacAppStore.entry` / `Extension.entry`.
+        match kind {
+            Kind::Extension("mas") => {
+                let id = options.iter().find(|(k, _)| k == "id").map(|(_, v)| v);
+                if !matches!(id, Some(Value::Int(_))) {
+                    let shown = id.map_or("nil".to_string(), ToString::to_string);
+                    return Err(ParseError {
+                        line,
+                        message: format!("options[:id]({shown}) should be an Integer object"),
+                    });
+                }
+            }
+            Kind::Extension("vscode") if !options.is_empty() => {
+                let keys: Vec<String> = options.iter().map(|(k, _)| format!(":{k}")).collect();
+                return Err(ParseError {
+                    line,
+                    message: format!("unknown options([{}]) for vscode", keys.join(", ")),
+                });
+            }
+            _ => {}
+        }
         let name = match kind {
             Kind::Tap => sanitize_tap_name(&name),
             Kind::Brew => sanitize_brew_name(&name),
@@ -619,6 +640,24 @@ brew "wget",
             let err = parse(source).unwrap_err();
             assert_eq!(err.line, line, "{source}: {err}");
         }
+    }
+
+    #[test]
+    fn checks_extension_options_like_homebrew() {
+        assert!(parse("mas \"Xcode\", id: 497799835\nvscode \"golang.go\"\n").is_ok());
+        assert!(
+            parse("mas \"Xcode\"\n")
+                .unwrap_err()
+                .message
+                .contains("should be an Integer")
+        );
+        assert!(parse("mas \"Xcode\", id: \"1\"\n").is_err());
+        assert!(
+            parse("vscode \"golang.go\", x: 1\n")
+                .unwrap_err()
+                .message
+                .contains("unknown options")
+        );
     }
 
     #[test]

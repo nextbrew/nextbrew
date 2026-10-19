@@ -509,6 +509,11 @@ impl Installer {
         self.cask_config = config;
     }
 
+    /// The prefix packages are installed into.
+    pub fn prefix(&self) -> &std::path::Path {
+        &self.prefix
+    }
+
     /// A formula as the API describes it.
     pub async fn formula(&self, name: &str) -> Result<Formula, Error> {
         self.api_client.get_formula(name).await

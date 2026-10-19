@@ -637,6 +637,14 @@ pub enum BundleCommands {
         no_tap: bool,
         #[arg(long, help = "Remove casks with zap instead of uninstall")]
         zap: bool,
+        #[arg(long, help = "Include Mac App Store apps")]
+        mas: bool,
+        #[arg(long, help = "Leave out Mac App Store apps")]
+        no_mas: bool,
+        #[arg(long, help = "Include VS Code extensions")]
+        vscode: bool,
+        #[arg(long, help = "Leave out VS Code extensions")]
+        no_vscode: bool,
     },
     /// Write what is installed into a Brewfile
     Dump {
@@ -666,5 +674,13 @@ pub enum BundleCommands {
         no_describe: bool,
         #[arg(long, help = "Do not add restart_service to formula lines")]
         no_restart: bool,
+        #[arg(long, help = "Include Mac App Store apps")]
+        mas: bool,
+        #[arg(long, help = "Leave out Mac App Store apps")]
+        no_mas: bool,
+        #[arg(long, help = "Include VS Code extensions")]
+        vscode: bool,
+        #[arg(long, help = "Leave out VS Code extensions")]
+        no_vscode: bool,
     },
 }

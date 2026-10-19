@@ -1,5 +1,6 @@
 pub mod autoremove;
 pub mod bundle;
+pub mod bundle_ext;
 pub mod completion;
 pub mod deps;
 pub mod doctor;

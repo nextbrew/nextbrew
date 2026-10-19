@@ -7,6 +7,7 @@ use std::path::{Path, PathBuf};
 
 use console::style;
 
+use super::bundle_ext::{self, Ext, Installed};
 use super::{install, services, upgrade};
 use crate::brewfile::{self, Entry, Kind, Value};
 use crate::cli::{BundleCommands, ServicesCommands};
@@ -113,8 +114,12 @@ pub async fn execute(
             tap,
             no_tap,
             zap,
+            mas,
+            no_mas,
+            vscode,
+            no_vscode,
         } => {
-            let no_type_args = !(formula || cask || tap);
+            let no_type_args = !(formula || cask || tap || mas || vscode);
             let selected = |asked: bool, off: bool, env: &str| {
                 !off && std::env::var_os(env).is_none() && (asked || all || no_type_args)
             };
@@ -122,8 +127,32 @@ pub async fn execute(
             let casks = selected(cask, no_cask, "HOMEBREW_BUNDLE_CLEANUP_NO_CASK");
             // nextbrew has no taps to untap.
             let _ = selected(tap, no_tap, "HOMEBREW_BUNDLE_CLEANUP_NO_TAP");
+            let extensions: Vec<Ext> = [
+                (
+                    Ext::Mas,
+                    selected(mas, no_mas, "HOMEBREW_BUNDLE_CLEANUP_NO_MAS"),
+                ),
+                (
+                    Ext::Vscode,
+                    selected(vscode, no_vscode, "HOMEBREW_BUNDLE_CLEANUP_NO_VSCODE"),
+                ),
+            ]
+            .into_iter()
+            .filter(|(_, on)| *on)
+            .map(|(ext, _)| ext)
+            .collect();
             let path = brewfile_path(file.as_deref(), global)?;
-            cleanup(installer, &path, force, zap, formulae, casks, ui).await
+            cleanup(
+                installer,
+                &path,
+                force,
+                zap,
+                formulae,
+                casks,
+                &extensions,
+                ui,
+            )
+            .await
         }
         BundleCommands::Dump {
             file,
@@ -137,16 +166,34 @@ pub async fn execute(
             no_tap,
             no_describe,
             no_restart,
+            mas,
+            no_mas,
+            vscode,
+            no_vscode,
         } => {
             // `type_selected?`: the types asked for, or all of them, minus
             // those turned off by flag or environment.
-            let no_type_args = !(formula || cask || tap);
+            let no_type_args = !(formula || cask || tap || mas || vscode);
             let selected = |asked: bool, off: bool, env: &str| {
                 !off && std::env::var_os(env).is_none() && (asked || no_type_args)
             };
             let options = DumpOptions {
                 formulae: selected(formula, no_formula, "HOMEBREW_BUNDLE_DUMP_NO_BREW"),
                 casks: selected(cask, no_cask, "HOMEBREW_BUNDLE_DUMP_NO_CASK"),
+                extensions: [
+                    (
+                        Ext::Mas,
+                        selected(mas, no_mas, "HOMEBREW_BUNDLE_DUMP_NO_MAS"),
+                    ),
+                    (
+                        Ext::Vscode,
+                        selected(vscode, no_vscode, "HOMEBREW_BUNDLE_DUMP_NO_VSCODE"),
+                    ),
+                ]
+                .into_iter()
+                .filter(|(_, on)| *on)
+                .map(|(ext, _)| ext)
+                .collect(),
                 describe: !no_describe && std::env::var_os("HOMEBREW_BUNDLE_NO_DESCRIBE").is_none(),
                 no_restart,
             };
@@ -287,6 +334,7 @@ fn unsupported(entry: &Entry) -> Option<String> {
             }
             cask_config(entry).err().map(|e| e.to_string())
         }
+        Kind::Extension(_) if Ext::of(entry).is_some() => None,
         Kind::Extension(kind) => Some(format!("nextbrew does not install `{kind}` entries")),
     }
 }
@@ -421,11 +469,16 @@ async fn install_from_file(
         }
     }
     let mut plans = Vec::new();
+    let mut extension_entries = Vec::new();
     for entry in others {
         if let Some(reason) = unsupported(&entry) {
             say_verb("Installing", &entry.name);
             say_failed("Installing", &entry.name, Some(&reason));
             failure += 1;
+            continue;
+        }
+        if Ext::of(&entry).is_some() {
+            extension_entries.push(entry);
             continue;
         }
         plans.push(plan_entry(installer, entry, options).await?);
@@ -477,6 +530,20 @@ async fn install_from_file(
         }
     }
 
+    // `batch_install_package_type!`: each extension's entries at once.
+    for ext in bundle_ext::HANDLED {
+        let group: Vec<&Entry> = extension_entries
+            .iter()
+            .filter(|entry| Ext::of(entry) == Some(*ext))
+            .collect();
+        if group.is_empty() {
+            continue;
+        }
+        let (ok, failed) = install_extension(installer, *ext, &group, options, ui).await;
+        success += ok;
+        failure += failed;
+    }
+
     for plan in single {
         let actionable = plan.actionable();
         if actionable {
@@ -520,6 +587,79 @@ async fn install_from_file(
         );
     }
     Ok(())
+}
+
+/// Install one extension's entries: its tool first if missing, then the
+/// entries not installed (or, for apps, outdated) in one go, then one by
+/// one if that failed. Returns how many succeeded and failed.
+async fn install_extension(
+    installer: &mut nb_io::Installer,
+    ext: Ext,
+    group: &[&Entry],
+    options: &InstallOptions,
+    ui: &mut StdUi,
+) -> (usize, usize) {
+    let exe = match ext.executable(installer.prefix()) {
+        Some(exe) => Some(exe),
+        None => {
+            let _ = install::execute(
+                installer,
+                vec![ext.provider().to_string()],
+                false,
+                false,
+                ui,
+            )
+            .await;
+            ext.executable(installer.prefix())
+        }
+    };
+    let Some(exe) = exe else {
+        for entry in group {
+            say_verb("Installing", &entry.name);
+            let reason = match ext {
+                Ext::Mas => format!(
+                    "Unable to install {} app. mas installation failed.",
+                    entry.name
+                ),
+                Ext::Vscode => format!(
+                    "Unable to install {} VSCode extension. VSCode is not installed.",
+                    entry.name
+                ),
+            };
+            say_failed("Installing", &entry.name, Some(&format!("Error: {reason}")));
+        }
+        return (0, group.len());
+    };
+    let installed = Installed::read(ext, installer.prefix());
+    let needs = |entry: &Entry, installed: &Installed| {
+        !installed.has(ext, entry) || (!options.no_upgrade && installed.outdated(ext, entry))
+    };
+    let actionable: Vec<&Entry> = group
+        .iter()
+        .copied()
+        .filter(|e| needs(e, &installed))
+        .collect();
+    for entry in group {
+        if actionable.contains(entry) {
+            say_verb("Installing", &entry.name);
+        } else if !options.quiet {
+            println!("Using {}", entry.name);
+        }
+    }
+    if actionable.is_empty() || bundle_ext::install_batch(ext, &exe, &actionable, &installed) {
+        return (group.len(), 0);
+    }
+    let (mut ok, mut failed) = (group.len() - actionable.len(), 0);
+    for entry in actionable {
+        let now = Installed::read(ext, installer.prefix());
+        if !needs(entry, &now) || bundle_ext::install_one(ext, &exe, entry, &now) {
+            ok += 1;
+        } else {
+            say_failed("Installing", &entry.name, None);
+            failed += 1;
+        }
+    }
+    (ok, failed)
 }
 
 /// `Bundle::Brew#install!` for an entry with options: conflicts, install or
@@ -739,9 +879,28 @@ async fn check(
             errors.push(format!("Cask {} {needs}", cask.name));
         }
     }
+    // VS Code extensions (Homebrew's registered extensions), then apps.
+    for ext in [Ext::Vscode, Ext::Mas] {
+        let wanted: Vec<&Entry> = entries.iter().filter(|e| Ext::of(e) == Some(ext)).collect();
+        if wanted.is_empty() {
+            continue;
+        }
+        let installed = Installed::read(ext, installer.prefix());
+        for entry in wanted {
+            let outdated = !no_upgrade && installed.outdated(ext, entry);
+            if !installed.has(ext, entry) || outdated {
+                let needs = if ext == Ext::Mas {
+                    needs
+                } else {
+                    "needs to be installed."
+                };
+                errors.push(format!("{} {} {needs}", ext.label(), entry.name));
+            }
+        }
+    }
     for entry in entries
         .iter()
-        .filter(|entry| matches!(entry.kind, Kind::Extension(_)))
+        .filter(|entry| matches!(entry.kind, Kind::Extension(_)) && Ext::of(entry).is_none())
     {
         if let Kind::Extension(kind) = entry.kind {
             errors.push(format!(
@@ -824,6 +983,7 @@ async fn check(
 /// `brew bundle cleanup`: what is installed but neither listed nor needed
 /// by what is listed. Without `--force` it is only shown, after asking on a
 /// terminal whether to go ahead.
+#[allow(clippy::too_many_arguments)]
 async fn cleanup(
     installer: &mut nb_io::Installer,
     path: &Path,
@@ -831,6 +991,7 @@ async fn cleanup(
     zap: bool,
     formulae: bool,
     casks: bool,
+    extensions: &[Ext],
     ui: &mut StdUi,
 ) -> Result<(), nb_core::Error> {
     let entries = read_brewfile(path)?;
@@ -893,6 +1054,16 @@ async fn cleanup(
         }
     }
 
+    let extension_items: Vec<(Ext, Vec<(String, String)>)> = bundle_ext::HANDLED
+        .iter()
+        .filter(|ext| extensions.contains(ext))
+        .map(|ext| {
+            let installed = Installed::read(*ext, installer.prefix());
+            (*ext, bundle_ext::cleanup_items(*ext, &entries, &installed))
+        })
+        .filter(|(_, items)| !items.is_empty())
+        .collect();
+
     if force {
         let requested: Vec<String> = entries
             .iter()
@@ -915,6 +1086,11 @@ async fn cleanup(
             let n = formulae_to_remove.len();
             println!("Uninstalled {n} formula{}", if n == 1 { "" } else { "e" });
         }
+        for (ext, items) in &extension_items {
+            if let Some(exe) = ext.executable(installer.prefix()) {
+                bundle_ext::cleanup(*ext, &exe, items);
+            }
+        }
         return Ok(());
     }
 
@@ -931,11 +1107,21 @@ async fn cleanup(
             would_uninstall = true;
         }
     }
+    for (ext, items) in &extension_items {
+        println!("Would uninstall {}:", ext.cleanup_heading());
+        for (_, shown) in items {
+            println!("{shown}");
+        }
+        would_uninstall = true;
+    }
     if !would_uninstall {
         return Ok(());
     }
     if confirm("cleanup") {
-        return Box::pin(cleanup(installer, path, true, zap, formulae, casks, ui)).await;
+        return Box::pin(cleanup(
+            installer, path, true, zap, formulae, casks, extensions, ui,
+        ))
+        .await;
     }
     println!("Run `nb bundle cleanup --force` to make these changes.");
     std::process::exit(1);
@@ -1015,6 +1201,7 @@ fn capitalize(word: &str) -> String {
 struct DumpOptions {
     formulae: bool,
     casks: bool,
+    extensions: Vec<Ext>,
     describe: bool,
     no_restart: bool,
 }
@@ -1050,6 +1237,12 @@ async fn build_brewfile(
     }
     if options.casks {
         sections.push(dump_casks(installer, options.describe).await?);
+    }
+    for ext in &options.extensions {
+        sections.push(bundle_ext::dump(
+            *ext,
+            &Installed::read(*ext, installer.prefix()),
+        ));
     }
     let sections: Vec<String> = sections.into_iter().filter(|s| !s.is_empty()).collect();
     Ok(format!("{}\n", sections.join("\n")))
@@ -1169,7 +1362,7 @@ mod tests {
             "brew \"x\", args: [\"HEAD\"]",
             "cask \"microsoft/git/microsoft-git\"",
             "cask \"firefox\", args: { language: \"ja\" }",
-            "mas \"Xcode\", id: 497799835",
+            "cargo \"ripgrep\"",
         ] {
             assert!(unsupported(&entry(source)).is_some(), "{source}");
         }
