@@ -134,7 +134,22 @@ async fn run(cli: Cli) -> Result<(), nb_core::Error> {
         Commands::Doctor { repair } => {
             commands::doctor::execute(&mut installer, repair, &mut ui).await
         }
-        Commands::List { pinned } => commands::list::execute(&mut installer, pinned),
+        Commands::List {
+            pinned,
+            formula,
+            cask,
+            versions,
+            one,
+        } => commands::list::execute(
+            &mut installer,
+            pinned,
+            commands::list::Listing {
+                formula,
+                cask,
+                versions,
+                one,
+            },
+        ),
         Commands::Info { formula } => commands::info::execute(&mut installer, formula),
         Commands::Gc => commands::gc::execute(&mut installer),
         Commands::Update => commands::update::execute(&mut installer).await,

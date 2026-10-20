@@ -22,6 +22,9 @@ impl Installer {
         let ordered = nb_core::resolve_closure(names, &formulas)?;
 
         let roots = root_install_names(names, &formulas);
+        for formula in requested_formulae(names, &formulas) {
+            crate::installer::cask::check_formula_deprecate_disable(formula)?;
+        }
         let mut items = Vec::with_capacity(ordered.len());
         let mut planned = HashSet::new();
         for requested in ordered {
@@ -30,10 +33,11 @@ impl Installer {
             if !planned.insert(install_name.clone()) {
                 continue;
             }
-            if !roots.contains(&install_name) && self.has_installed_keg(&install_name) {
+            let root = roots.contains(&install_name);
+            if !root && self.has_installed_keg(&install_name) {
                 continue;
             }
-            items.push(self.plan_item(install_name, formula, build_from_source)?);
+            items.push(self.plan_item(install_name, formula, build_from_source, !root)?);
         }
 
         rank_like_homebrew(&mut items, names, &formulas);
@@ -84,6 +88,24 @@ impl Installer {
             valid_roots.push(name.clone());
         }
 
+        let lifecycle_failures: HashSet<String> = requested_formulae(&valid_roots, &formulas)
+            .into_iter()
+            .filter_map(|formula| {
+                let error =
+                    crate::installer::cask::check_formula_deprecate_disable(formula).err()?;
+                failures.push(PlanFailure {
+                    name: formula.name.clone(),
+                    error,
+                });
+                Some(formula.name.clone())
+            })
+            .collect();
+        valid_roots.retain(|name| {
+            formulas
+                .get(name)
+                .is_none_or(|formula| !lifecycle_failures.contains(&formula.name))
+        });
+
         if !valid_roots.is_empty() {
             match nb_core::resolve_closure(&valid_roots, &formulas) {
                 Ok(ordered) => {
@@ -96,10 +118,16 @@ impl Installer {
                         if !planned.insert(install_name.clone()) {
                             continue;
                         }
-                        if !roots.contains(&install_name) && self.has_installed_keg(&install_name) {
+                        let root = roots.contains(&install_name);
+                        if !root && self.has_installed_keg(&install_name) {
                             continue;
                         }
-                        match self.plan_item(install_name.clone(), formula, build_from_source) {
+                        match self.plan_item(
+                            install_name.clone(),
+                            formula,
+                            build_from_source,
+                            !root,
+                        ) {
                             Ok(item) => items.push(item),
                             Err(error) => failures.push(PlanFailure {
                                 name: install_name,
@@ -147,8 +175,11 @@ impl Installer {
         install_name: String,
         formula: Formula,
         build_from_source: bool,
+        check_lifecycle: bool,
     ) -> Result<PlannedInstall, Error> {
-        crate::installer::cask::check_formula_deprecate_disable(&formula)?;
+        if check_lifecycle {
+            crate::installer::cask::check_formula_deprecate_disable(&formula)?;
+        }
         check_clt_for_bottle(&formula)?;
         let method = if build_from_source {
             match BuildPlan::from_formula(&formula, &self.prefix) {
@@ -381,6 +412,20 @@ fn root_install_names(names: &[String], formulas: &BTreeMap<String, Formula>) ->
                 .get(name)
                 .map(|formula| install_name_for(name, formula))
         })
+        .collect()
+}
+
+/// The formulae asked for, each once, in the order asked: Homebrew warns
+/// about (or refuses) these before it looks at their dependencies.
+fn requested_formulae<'a>(
+    names: &[String],
+    formulas: &'a BTreeMap<String, Formula>,
+) -> Vec<&'a Formula> {
+    let mut seen = HashSet::new();
+    names
+        .iter()
+        .filter_map(|name| formulas.get(name))
+        .filter(|formula| seen.insert(formula.name.clone()))
         .collect()
 }
 
@@ -752,6 +797,47 @@ mod tests {
             deps = dependencies,
             tag = get_test_bottle_tag(),
         )
+    }
+
+    #[tokio::test]
+    async fn a_requested_formula_is_checked_before_its_dependencies() {
+        let mock_server = MockServer::start().await;
+        let tmp = TempDir::new().unwrap();
+        let disabled = |name: &str, deps: &[&str]| {
+            bottled_formula(name, deps).replacen(
+                r#""versions""#,
+                r#""disabled": true, "versions""#,
+                1,
+            )
+        };
+        let installer = installer_serving(
+            &mock_server,
+            &tmp,
+            &[
+                ("app", disabled("app", &["lib"])),
+                ("lib", disabled("lib", &[])),
+            ],
+        )
+        .await;
+
+        let error = installer.plan(&["app".to_string()]).await.unwrap_err();
+        assert!(
+            error.to_string().contains("app has been disabled"),
+            "{error}"
+        );
+
+        let (plan, failures) = installer
+            .plan_best_effort(&["app".to_string()], false)
+            .await;
+        assert!(plan.items.is_empty());
+        assert_eq!(failures.len(), 1);
+        assert_eq!(failures[0].name, "app");
+        assert!(
+            failures[0]
+                .error
+                .to_string()
+                .contains("app has been disabled")
+        );
     }
 
     #[tokio::test]

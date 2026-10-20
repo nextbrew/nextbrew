@@ -192,6 +192,19 @@ pub enum Commands {
     List {
         #[arg(long, help = "List only pinned formulae, by name")]
         pinned: bool,
+        #[arg(
+            long,
+            visible_alias = "formulae",
+            conflicts_with = "cask",
+            help = "List only formulae, by name"
+        )]
+        formula: bool,
+        #[arg(long, visible_alias = "casks", help = "List only casks, by token")]
+        cask: bool,
+        #[arg(long, help = "Show the version of each package, one per line")]
+        versions: bool,
+        #[arg(short = '1', help = "List names one per line")]
+        one: bool,
     },
     /// Show information about an installed package
     Info {

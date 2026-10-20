@@ -72,6 +72,9 @@ impl Installer {
                     formula_name,
                     &version,
                 )?;
+            } else {
+                // Like Homebrew, leave no keg behind from a failed build.
+                Self::cleanup_materialized(&self.cellar, formula_name, &version);
             }
             return Err(build_err);
         }
