@@ -200,8 +200,10 @@ fn extract_zip_archive(path: &Path, dest_dir: &Path) -> Result<(), Error> {
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
+            // Only the permission bits, as unzip does without -K: a
+            // download must not install setuid or setgid files.
             if let Some(mode) = entry.unix_mode() {
-                let perms = std::fs::Permissions::from_mode(mode);
+                let perms = std::fs::Permissions::from_mode(mode & 0o777);
                 std::fs::set_permissions(&out_path, perms)
                     .map_err(Error::store("failed to set zip file permissions"))?;
             }
