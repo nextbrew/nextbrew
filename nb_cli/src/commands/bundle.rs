@@ -3,10 +3,12 @@
 //! `flatpak`, `winget`, build `args`) count as failures and say why, as a
 //! failed install does in Homebrew; none are skipped silently.
 
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 use console::style;
 
+use super::bundle_exec;
 use super::bundle_ext::{self, Ext, Installed};
 use super::{install, services, upgrade};
 use crate::brewfile::{self, Entry, Kind, Value};
@@ -89,6 +91,30 @@ pub async fn execute(
                 install_first(installer, &path, verbose, ui).await?;
             }
             remove(installer, &path, &names, directive).await
+        }
+        BundleCommands::Exec {
+            command,
+            options,
+            services,
+            sandbox,
+            deny_network,
+        } => {
+            if sandbox.is_some() || deny_network {
+                return Err(usage(
+                    "`--sandbox` and `--deny-network` are not supported by nextbrew.",
+                ));
+            }
+            in_build_environment(installer, &options, Some(command), services, verbose, ui).await
+        }
+        BundleCommands::Sh { options, services } => {
+            in_build_environment(installer, &options, None, services, verbose, ui).await
+        }
+        BundleCommands::Env { options } => {
+            let path = brewfile_path(options.file.as_deref(), options.global)?;
+            let (old, new) =
+                build_environment(installer, &path, &options, None, verbose, ui).await?;
+            print!("{}", bundle_exec::exports(&old, &new));
+            Ok(())
         }
         BundleCommands::Check {
             file,
@@ -254,6 +280,186 @@ fn read_brewfile(path: &Path) -> Result<Vec<Entry>, nb_core::Error> {
     brewfile::parse(&source).map_err(|e| nb_core::Error::ExecutionError {
         message: e.to_string(),
     })
+}
+
+/// `$HOMEBREW_BUNDLE_<NAME>` set, as for a switch that reads it.
+fn env_switch(name: &str) -> bool {
+    std::env::var_os(name).is_some_and(|v| !v.is_empty())
+}
+
+/// `run_external_command` up to running: `--install`, `--check`, then the
+/// user's environment and the build environment made from it.
+async fn build_environment(
+    installer: &mut nb_io::Installer,
+    path: &Path,
+    options: &crate::cli::BundleEnvArgs,
+    command: Option<&str>,
+    verbose: bool,
+    ui: &mut StdUi,
+) -> Result<(BTreeMap<String, String>, BTreeMap<String, String>), nb_core::Error> {
+    if options.install {
+        install_first(installer, path, verbose, ui).await?;
+    }
+    if options.check || env_switch("HOMEBREW_BUNDLE_CHECK") {
+        check(installer, path, false, false, true).await?;
+    }
+    let mut user: BTreeMap<String, String> = std::env::vars().collect();
+    let entries = read_brewfile(path)?;
+    let deps = bundle_exec::deps(installer, &entries, &mut user).await?;
+    let no_secrets = options.no_secrets || env_switch("HOMEBREW_BUNDLE_NO_SECRETS");
+    let env = bundle_exec::compose(user.clone(), &deps, installer.prefix(), command, no_secrets)?;
+    Ok((user, env))
+}
+
+/// `nb bundle exec` and `sh`: the command (or the user's shell) in the
+/// build environment, with the Brewfile's services running if asked.
+async fn in_build_environment(
+    installer: &mut nb_io::Installer,
+    options: &crate::cli::BundleEnvArgs,
+    command: Option<Vec<String>>,
+    services: bool,
+    verbose: bool,
+    ui: &mut StdUi,
+) -> Result<(), nb_core::Error> {
+    let path = brewfile_path(options.file.as_deref(), options.global)?;
+    let program = command.as_ref().and_then(|c| c.first()).cloned();
+    let (_, env) =
+        build_environment(installer, &path, options, program.as_deref(), verbose, ui).await?;
+    let mut cmd = match &command {
+        Some(command) => {
+            let mut cmd = std::process::Command::new(&command[0]);
+            cmd.args(&command[1..]).env_clear().envs(&env);
+            cmd
+        }
+        None => bundle_exec::shell(&env)?,
+    };
+    if !(services || env_switch("HOMEBREW_BUNDLE_SERVICES")) {
+        use std::os::unix::process::CommandExt;
+        let e = cmd.exec();
+        return Err(nb_core::Error::ExecutionError {
+            message: format!("failed to run {}: {e}", program.unwrap_or_default()),
+        });
+    }
+    let entries = read_brewfile(&path)?;
+    let (started, to_restart) = start_bundle_services(installer, &entries).await;
+    let status = cmd.status();
+    for name in started {
+        let stop = ServicesCommands::Stop {
+            formulas: vec![name.clone()],
+            all: false,
+            keep: true,
+            no_wait: false,
+            max_wait: None,
+        };
+        if services::execute(installer, Some(stop), false)
+            .await
+            .is_err()
+        {
+            warn(&format!("Failed to stop {name} service"));
+        }
+    }
+    for name in to_restart {
+        let run = ServicesCommands::Run {
+            formulas: vec![name.clone()],
+            all: false,
+            file: None,
+        };
+        if services::execute(installer, Some(run), false)
+            .await
+            .is_err()
+        {
+            warn(&format!("Failed to restart {name} service"));
+        }
+    }
+    match status {
+        Ok(status) => std::process::exit(status.code().unwrap_or(1)),
+        Err(e) => Err(nb_core::Error::ExecutionError {
+            message: format!("failed to run {}: {e}", program.unwrap_or_default()),
+        }),
+    }
+}
+
+fn warn(message: &str) {
+    eprintln!("{} {message}", style("Warning:").yellow().bold());
+}
+
+/// `run_services`: run each installed Brewfile formula's service that is
+/// not running, stopping running services it conflicts with (those named
+/// in `conflicts_with:` and other versions of the formula) first. Returns
+/// the services started, and the stopped ones to run again afterwards
+/// (those registered to start at login).
+async fn start_bundle_services(
+    installer: &nb_io::Installer,
+    entries: &[Entry],
+) -> (Vec<String>, Vec<String>) {
+    let launchd = nb_io::services::Launchd::current(
+        std::env::var_os("HOME")
+            .map(PathBuf::from)
+            .unwrap_or_default(),
+    );
+    let running = |name: &str| launchd.find(&nb_io::services::label(name)).running();
+    let registered = |name: &str| {
+        launchd
+            .dest_dir()
+            .join(format!("{}.plist", nb_io::services::label(name)))
+            .exists()
+    };
+    let installed: Vec<String> = installer
+        .list_installed()
+        .unwrap_or_default()
+        .into_iter()
+        .map(|keg| keg.name)
+        .collect();
+    let base = |name: &str| name.split('@').next().unwrap_or(name).to_string();
+    let (mut started, mut to_restart) = (Vec::new(), Vec::new());
+    for entry in entries.iter().filter(|e| e.kind == Kind::Brew) {
+        let Ok(service) = installer.service_formula(&entry.name).await else {
+            continue;
+        };
+        if !service.has_service || service.keg.is_none() || running(&service.name) {
+            continue;
+        }
+        let mut conflicts: Vec<String> = installed
+            .iter()
+            .filter(|other| **other != service.name && base(other) == base(&service.name))
+            .cloned()
+            .collect();
+        if let Some(Value::Array(names)) = entry.option("conflicts_with") {
+            conflicts.extend(names.iter().filter_map(|v| v.as_str().map(str::to_string)));
+        }
+        for conflict in conflicts.into_iter().filter(|c| running(c)) {
+            let stop = ServicesCommands::Stop {
+                formulas: vec![conflict.clone()],
+                all: false,
+                keep: true,
+                no_wait: false,
+                max_wait: None,
+            };
+            if services::execute(installer, Some(stop), false)
+                .await
+                .is_ok()
+            {
+                if registered(&conflict) {
+                    to_restart.push(conflict);
+                }
+            } else {
+                warn(&format!("Failed to stop {conflict} service"));
+            }
+        }
+        let run = ServicesCommands::Run {
+            formulas: vec![service.name.clone()],
+            all: false,
+            file: None,
+        };
+        if services::execute(installer, Some(run), false)
+            .await
+            .is_err()
+        {
+            warn(&format!("Failed to start {} service", service.name));
+        }
+        started.push(service.name);
+    }
+    (started, to_restart)
 }
 
 fn usage(message: &str) -> nb_core::Error {

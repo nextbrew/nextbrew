@@ -661,6 +661,36 @@ pub enum BundleCommands {
         #[command(flatten)]
         types: EntryTypes,
     },
+    /// Run a command in the build environment for the Brewfile's formulae
+    Exec {
+        #[arg(
+            required = true,
+            trailing_var_arg = true,
+            allow_hyphen_values = true,
+            value_name = "COMMAND"
+        )]
+        command: Vec<String>,
+        #[command(flatten)]
+        options: BundleEnvArgs,
+        #[arg(long, help = "Start the Brewfile's services while the command runs")]
+        services: bool,
+        #[arg(long, value_name = "PATH", help = "Not supported by nextbrew")]
+        sandbox: Option<String>,
+        #[arg(long, help = "Not supported by nextbrew")]
+        deny_network: bool,
+    },
+    /// Start a shell in the build environment for the Brewfile's formulae
+    Sh {
+        #[command(flatten)]
+        options: BundleEnvArgs,
+        #[arg(long, help = "Start the Brewfile's services while the shell runs")]
+        services: bool,
+    },
+    /// Print the build environment for the Brewfile's formulae as exports
+    Env {
+        #[command(flatten)]
+        options: BundleEnvArgs,
+    },
     /// Uninstall what a Brewfile does not list
     Cleanup {
         #[arg(
@@ -723,6 +753,28 @@ pub enum BundleCommands {
         #[command(flatten)]
         extensions: ExtensionFlags,
     },
+}
+
+/// What `nb bundle exec`, `sh` and `env` share.
+#[derive(clap::Args, Debug, Clone, Default)]
+pub struct BundleEnvArgs {
+    #[arg(
+        long,
+        value_name = "FILE",
+        help = "Read this Brewfile instead of ./Brewfile or $HOMEBREW_BUNDLE_FILE"
+    )]
+    pub file: Option<PathBuf>,
+    #[arg(long, help = "Read ~/.Brewfile (or $HOMEBREW_BUNDLE_FILE_GLOBAL)")]
+    pub global: bool,
+    #[arg(long, help = "Run `install` first")]
+    pub install: bool,
+    #[arg(
+        long,
+        help = "Check that the Brewfile's dependencies are installed first"
+    )]
+    pub check: bool,
+    #[arg(long, help = "Remove secrets from the environment first")]
+    pub no_secrets: bool,
 }
 
 /// The entry type `nb bundle add` and `remove` work on: one of these, or
