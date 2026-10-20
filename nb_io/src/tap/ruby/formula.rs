@@ -896,11 +896,6 @@ impl<'pr> Scope<'pr> for BottleDsl {
                         line,
                     });
                 }
-                let cellar = match args.keyword("cellar") {
-                    Some(Value::Sym(s)) => format!(":{s}"),
-                    Some(other) => other.to_s(),
-                    None => default_cellar().to_string(),
-                };
                 let tag = args.keywords.iter().find(|(key, value)| {
                     key != "cellar"
                         && matches!(value, Value::Str(s) if s.len() == 64 && s.chars().all(|c| c.is_ascii_hexdigit()))
@@ -910,6 +905,11 @@ impl<'pr> Scope<'pr> for BottleDsl {
                         message: "a bottle `sha256` without a tag".to_string(),
                         line,
                     });
+                };
+                let cellar = match args.keyword("cellar") {
+                    Some(Value::Sym(s)) => format!(":{s}"),
+                    Some(other) => other.to_s(),
+                    None => default_cellar(tag).to_string(),
                 };
                 let sha = sha.to_s().to_lowercase();
                 match self.bottle.files.iter_mut().find(|(t, _, _)| t == tag) {
@@ -923,11 +923,16 @@ impl<'pr> Scope<'pr> for BottleDsl {
     }
 }
 
-/// `Utils::Bottles::Tag#default_cellar` for this system.
-fn default_cellar() -> &'static str {
-    if cfg!(target_os = "linux") {
+/// `Utils::Bottles::Tag#default_cellar`: by the bottle's tag, not this
+/// system. A tag without an arch is x86_64, as `Tag.from_symbol` reads it.
+fn default_cellar(tag: &str) -> &'static str {
+    let (arm, system) = match tag.strip_prefix("arm64_") {
+        Some(system) => (true, system),
+        None => (false, tag.strip_prefix("x86_64_").unwrap_or(tag)),
+    };
+    if system == "linux" {
         "/home/linuxbrew/.linuxbrew/Cellar"
-    } else if cfg!(target_arch = "aarch64") {
+    } else if arm {
         "/opt/homebrew/Cellar"
     } else {
         "/usr/local/Cellar"
@@ -1155,8 +1160,13 @@ end
         );
         assert_eq!(
             j["bottle"]["stable"]["files"]["sonoma"]["cellar"],
-            "/opt/homebrew/Cellar"
+            "/usr/local/Cellar"
         );
+        assert_eq!(
+            default_cellar("arm64_linux"),
+            "/home/linuxbrew/.linuxbrew/Cellar"
+        );
+        assert_eq!(default_cellar("arm64_tahoe"), "/opt/homebrew/Cellar");
         assert_eq!(j["dependencies"], json!(["openssl@3"]));
         assert_eq!(j["build_dependencies"], json!(["pkgconf"]));
         assert_eq!(j["requirements"][0]["version"], "14");

@@ -34,11 +34,10 @@ pub struct Platform {
 
 impl Platform {
     pub fn current() -> Self {
-        let macos = if cfg!(target_os = "macos") {
-            Some((nb_core::macos_major_version().unwrap_or(15), 0))
-        } else {
-            None
-        };
+        #[cfg(target_os = "macos")]
+        let macos = Some((nb_core::macos_major_version().unwrap_or(15), 0));
+        #[cfg(not(target_os = "macos"))]
+        let macos = None;
         Self {
             macos,
             arm: matches!(std::env::consts::ARCH, "aarch64" | "arm"),
