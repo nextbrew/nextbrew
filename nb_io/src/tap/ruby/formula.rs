@@ -58,6 +58,8 @@ struct FormulaDsl {
     deps: Vec<Dep>,
     uses_from_macos: Vec<(String, Vec<String>, Option<String>)>,
     requirements: Vec<Json>,
+    /// `post_install_steps do ... end`, as the API carries them.
+    post_install_steps: Vec<Json>,
     keg_only: Option<(Json, String)>,
     conflicts: Vec<(String, Option<String>)>,
     link_overwrite: Vec<String>,
@@ -117,6 +119,7 @@ pub fn read_formula(
         pour_bottle_only_if: None,
         install_at: None,
         post_install_at: None,
+        post_install_steps: Vec::new(),
         resources: Vec::new(),
         patches: 0,
     };
@@ -158,6 +161,10 @@ pub fn read_formula(
         for statement in statements {
             dsl.class_statement(&mut ev, &statement)?;
         }
+    }
+    if ev.defs.contains_key("caveats") {
+        let text = ev.call_def(&root, "caveats", &mut dsl)?;
+        dsl.caveats = Some(text.to_s()).filter(|t| !t.is_empty());
     }
     if dsl.url.is_none() {
         return Err(RubyError {
@@ -508,6 +515,7 @@ impl FormulaDsl {
             "caveats": self.caveats,
             "deprecated": false,
             "disabled": false,
+            "post_install_steps": self.post_install_steps,
             "post_install_defined": self.post_install_at.is_some(),
             "service": self.service,
             "variations": {},
@@ -693,6 +701,11 @@ impl<'pr> Scope<'pr> for FormulaDsl {
                 }
             }
             "patch" => self.patches += 1,
+            "post_install_steps" if block.is_some() && args.positional.is_empty() => {
+                let mut steps = super::steps::StepsDsl::for_formula();
+                ev.exec(block.unwrap().body(), &mut steps)?;
+                self.post_install_steps.extend(steps.steps);
+            }
             "service" if block.is_some() => {
                 let mut service = ServiceDsl {
                     formula: self,
@@ -788,17 +801,18 @@ impl<'pr> Scope<'pr> for FormulaDsl {
     fn define(
         &mut self,
         ev: &mut Eval<'pr>,
-        def: &ruby_prism::DefNode<'pr>,
+        def: ruby_prism::DefNode<'pr>,
         at: usize,
     ) -> Result<bool> {
         match def.name().as_slice() {
             b"install" => self.install_at = Some(at),
             b"post_install" => self.post_install_at = Some(at),
-            b"caveats" => {
-                let text = ev.exec(def.body(), self)?;
-                self.caveats = Some(text.to_s()).filter(|t| !t.is_empty());
+            // Other methods, `caveats` among them, run when called: after
+            // the class body for `caveats`, which may use ones defined later.
+            name => {
+                let name = String::from_utf8_lossy(name).into_owned();
+                ev.defs.insert(name, def);
             }
-            _ => {}
         }
         Ok(true)
     }
@@ -1209,6 +1223,143 @@ end
         assert_eq!(err.message, "Unsupported platform");
     }
 
+    #[test]
+    fn reads_post_install_steps() {
+        let source = br##"
+class Foo < Formula
+  url "https://example.com/foo-8.4.1.tar.gz"
+  sha256 "abc"
+
+  post_install_steps do
+    mkdir_p "lib/foo", base: :homebrew_prefix
+    unless_path_exists "pecl", base: :prefix do
+      symlink "lib/foo", "pecl", source_base: :homebrew_prefix
+    end
+    on_macos do
+      run "foo", base: :bin, args: ["set", "{{etc}}/foo/#{version.major_minor}"], print_stdout: true
+    end
+    inreplace "foo.conf", %r{{{HOMEBREW_CELLAR}}/foo/[^/]}, "{{opt_prefix}}", base: :etc
+    copy "a", "b"
+    set_permissions "var/foo", "0755", recursive: false
+  end
+
+  def caveats
+    "config in #{etc}/foo/#{short_version}"
+  end
+
+  def short_version
+    version.to_s.split(".")[0..1].join(".")
+  end
+end
+"##;
+        let f = read_formula(source, "foo", &TapName::parse("me/tools").unwrap(), MAC_ARM).unwrap();
+        let steps = &f.json["post_install_steps"];
+        assert_eq!(
+            steps[0],
+            json!({"type": "mkdir_p", "path": {"base": "homebrew_prefix", "path": "lib/foo"}})
+        );
+        assert_eq!(
+            steps[1],
+            json!({
+                "type": "symlink",
+                "guards": [{"base": "prefix", "condition": "unless_exists", "id": "1", "path": "pecl"}],
+                "source": {"base": "homebrew_prefix", "path": "lib/foo"},
+                "target": {"base": "prefix", "path": "pecl"},
+            })
+        );
+        assert_eq!(
+            steps[2],
+            json!({
+                "type": "run",
+                "guards": [{"condition": "on", "value": "macos", "id": "2"}],
+                "command": {"base": "bin", "path": "foo"},
+                "args": ["set", "{{etc}}/foo/{{version.major_minor}}"],
+                "print_stdout": true,
+            })
+        );
+        assert_eq!(
+            steps[3],
+            json!({
+                "type": "inreplace",
+                "path": {"base": "etc", "path": "foo.conf"},
+                "before": "{{HOMEBREW_CELLAR}}/foo/[^/]",
+                "after": "{{opt_prefix}}",
+                "regexp": true,
+            })
+        );
+        assert_eq!(
+            steps[4],
+            json!({
+                "type": "copy",
+                "source": {"base": "prefix", "path": "a"},
+                "target": {"base": "prefix", "path": "b"},
+            })
+        );
+        assert_eq!(
+            steps[5],
+            json!({
+                "type": "set_permissions",
+                "paths": [{"path": "var/foo"}],
+                "permissions": "0755",
+                "non_recursive": true,
+            })
+        );
+        // `caveats` may call a method defined after it.
+        assert_eq!(f.json["caveats"], "config in $HOMEBREW_PREFIX/etc/foo/8.4");
+    }
+
+    #[test]
+    fn evaluates_regexps_and_ranges() {
+        let source = br#"
+class Foo < Formula
+  url "https://example.com/foo-1.2.3.tar.gz"
+  desc "a-b-c".gsub(/-(\w)/, "_\\1").sub(/^a/i, "A") + "abcdef"[1..2] + [1, 2, 3][1..].join + "x"[5..].to_s
+end
+"#;
+        let f = read_formula(source, "foo", &TapName::parse("me/tools").unwrap(), MAC_ARM).unwrap();
+        assert_eq!(f.json["desc"], "A_b_cbc23");
+    }
+
+    /// Compare the steps read from each `<name>.rb` under
+    /// `$NB_STEPS_COMPARE` with the formula API's, in `<name>.json`.
+    #[test]
+    #[ignore]
+    fn post_install_steps_match_the_api() {
+        let Some(root) = std::env::var_os("NB_STEPS_COMPARE") else {
+            return;
+        };
+        let core = TapName::parse("homebrew/core").unwrap();
+        let (mut same, mut differ) = (0, 0);
+        let mut files: Vec<_> = std::fs::read_dir(&root)
+            .unwrap()
+            .filter_map(|e| e.ok().map(|e| e.path()))
+            .filter(|p| p.extension().is_some_and(|e| e == "rb"))
+            .collect();
+        files.sort();
+        for file in files {
+            let name = file.file_stem().unwrap().to_string_lossy().into_owned();
+            let expected: Json =
+                serde_json::from_slice(&std::fs::read(file.with_extension("json")).unwrap())
+                    .unwrap();
+            let source = std::fs::read(&file).unwrap();
+            match read_formula(&source, &name, &core, MAC_ARM) {
+                Ok(f) if f.json["post_install_steps"] == expected => same += 1,
+                Ok(f) => {
+                    differ += 1;
+                    println!(
+                        "{name}:\n  ours: {}\n   api: {expected}",
+                        f.json["post_install_steps"]
+                    );
+                }
+                Err(e) => {
+                    differ += 1;
+                    println!("{name}: line {}: {}", e.line, e.message);
+                }
+            }
+        }
+        println!("same {same}, differ {differ}");
+    }
+
     /// Read every formula of the taps under `$NB_TAP_SURVEY` (one
     /// `user--repo` directory per tap) and count what could not be read.
     #[test]
@@ -1224,8 +1375,6 @@ end
             let Ok(tap) = TapName::parse(&dir_name) else {
                 continue;
             };
-            let taps = crate::tap::Taps::new(std::path::Path::new("/nonexistent"));
-            let _ = taps;
             let mut files = Vec::new();
             for sub in ["Formula", "HomebrewFormula"] {
                 let dir = tap_dir.path().join(sub);

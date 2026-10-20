@@ -3,6 +3,7 @@
 
 pub mod eval;
 pub mod formula;
+pub mod steps;
 pub mod value;
 
 pub use eval::{Platform, RubyError};

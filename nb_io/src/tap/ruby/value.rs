@@ -45,6 +45,12 @@ pub enum Value {
     Module(String),
     /// `Formula["name"]`: another formula, by name.
     FormulaRef(String),
+    /// A regular expression: its source, and `Regexp#options`
+    /// (`IGNORECASE` 1, `EXTENDED` 2, `MULTILINE` 4).
+    Regexp(String, u32),
+    /// An integer range: first, last, and whether `last` is left out
+    /// (`0...2`). A missing end (`1..`) is `i64::MAX`.
+    Range(i64, i64, bool),
 }
 
 impl Value {
@@ -67,6 +73,35 @@ impl Value {
             }
             Value::Str(s) | Value::Sym(s) | Value::Version(s) | Value::Module(s) => s.clone(),
             Value::FormulaRef(name) => name.clone(),
+            Value::Range(first, last, exclusive) => {
+                let dots = if *exclusive { "..." } else { ".." };
+                let last = if *last == i64::MAX {
+                    String::new()
+                } else {
+                    last.to_string()
+                };
+                format!("{first}{dots}{last}")
+            }
+            Value::Regexp(source, options) => {
+                // `(?mi-x:source)`: the flags on, then the ones off.
+                let flags = [(4, 'm'), (1, 'i'), (2, 'x')];
+                let on: String = flags
+                    .iter()
+                    .filter(|(b, _)| options & b != 0)
+                    .map(|f| f.1)
+                    .collect();
+                let off: String = flags
+                    .iter()
+                    .filter(|(b, _)| options & b == 0)
+                    .map(|f| f.1)
+                    .collect();
+                let off = if off.is_empty() {
+                    off
+                } else {
+                    format!("-{off}")
+                };
+                format!("(?{on}{off}:{source})")
+            }
             Value::Path(p) => p.to_string_lossy().into_owned(),
             Value::MacOs(major, 0) if *major >= 11 => major.to_string(),
             Value::MacOs(major, minor) => format!("{major}.{minor}"),
@@ -84,6 +119,7 @@ impl Value {
             Value::Nil => "nil".to_string(),
             Value::Str(s) => format!("{s:?}"),
             Value::Sym(s) => format!(":{s}"),
+            Value::Regexp(source, _) => format!("/{source}/"),
             Value::Hash(pairs) => {
                 let pairs: Vec<String> = pairs
                     .iter()
@@ -117,6 +153,8 @@ impl Value {
             Value::MacOs(..) => "MacOSVersion",
             Value::Module(_) => "Module",
             Value::FormulaRef(_) => "Formula",
+            Value::Regexp(..) => "Regexp",
+            Value::Range(..) => "Range",
         }
     }
 
@@ -170,6 +208,43 @@ pub fn version_tokens(version: &str) -> Vec<String> {
         tokens.push(current);
     }
     tokens
+}
+
+impl Value {
+    /// The part of `len` items a `Range` index selects, as `Array#[]`
+    /// does: `None` when it starts past the end.
+    pub fn range_bounds(&self, len: usize) -> Option<std::ops::Range<usize>> {
+        let Value::Range(first, last, exclusive) = *self else {
+            return None;
+        };
+        let len = len as i64;
+        let resolve = |i: i64| if i < 0 { len + i } else { i };
+        let start = resolve(first);
+        if start < 0 || start > len {
+            return None;
+        }
+        let end = if last == i64::MAX {
+            len
+        } else {
+            let last = resolve(last);
+            if exclusive { last } else { last + 1 }
+        };
+        Some(start as usize..end.clamp(start, len) as usize)
+    }
+
+    /// A `Regexp` as the `regex` crate reads it.
+    pub fn to_regex(&self) -> Option<regex::Regex> {
+        let Value::Regexp(source, options) = self else {
+            return None;
+        };
+        regex::RegexBuilder::new(source)
+            .case_insensitive(options & 1 != 0)
+            .ignore_whitespace(options & 2 != 0)
+            .dot_matches_new_line(options & 4 != 0)
+            .multi_line(true)
+            .build()
+            .ok()
+    }
 }
 
 #[cfg(test)]

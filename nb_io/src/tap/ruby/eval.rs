@@ -109,7 +109,7 @@ pub trait Scope<'pr> {
     fn define(
         &mut self,
         _ev: &mut Eval<'pr>,
-        _def: &ruby_prism::DefNode<'pr>,
+        _def: ruby_prism::DefNode<'pr>,
         _at: usize,
     ) -> Result<bool> {
         Ok(false)
@@ -127,6 +127,9 @@ pub struct Eval<'pr> {
     pub platform: Platform,
     pub locals: HashMap<String, Value>,
     pub constants: HashMap<String, Value>,
+    /// Methods the file defines (`def php_version`), callable without
+    /// arguments from what is evaluated.
+    pub defs: HashMap<String, ruby_prism::DefNode<'pr>>,
 }
 
 fn name_of(id: ruby_prism::ConstantId<'_>) -> String {
@@ -140,6 +143,7 @@ impl<'pr> Eval<'pr> {
             platform,
             locals: HashMap::new(),
             constants: HashMap::new(),
+            defs: HashMap::new(),
         }
     }
 
@@ -310,6 +314,18 @@ impl<'pr> Eval<'pr> {
                 .map(Int)
                 .map_err(|_| self.error(node, format!("integer `{text}` is not supported")));
         }
+        if let Some(range) = node.as_range_node() {
+            let mut bound = |ev: &mut Self, part: Option<Node<'pr>>, missing: i64| -> Result<i64> {
+                match part.map(|p| ev.eval(&p, scope)).transpose()? {
+                    None | Some(Nil) => Ok(missing),
+                    Some(Int(n)) => Ok(n),
+                    Some(_) => Err(ev.error(node, "only integer ranges are supported")),
+                }
+            };
+            let first = bound(self, range.left(), 0)?;
+            let last = bound(self, range.right(), i64::MAX)?;
+            return Ok(Range(first, last, range.is_exclude_end()));
+        }
         if let Some(f) = node.as_float_node() {
             return Ok(Float(f.value()));
         }
@@ -451,19 +467,30 @@ impl<'pr> Eval<'pr> {
         }
         if let Some(def) = node.as_def_node() {
             let at = node.location().start_offset();
-            if scope.define(self, &def, at)? {
-                return Ok(Value::Sym(name_of(def.name())));
+            let name = name_of(def.name());
+            if scope.define(self, def, at)? {
+                return Ok(Value::Sym(name));
             }
-            return Err(self.error(
-                node,
-                format!("`def {}` is not supported", name_of(def.name())),
-            ));
+            return Err(self.error(node, format!("`def {name}` is not supported")));
         }
         if node.as_self_node().is_some() {
             return Ok(Module("self".to_string()));
         }
         if let Some(r) = node.as_regular_expression_node() {
-            return Ok(Str(String::from_utf8_lossy(r.unescaped()).into_owned()));
+            // The flags follow the closing delimiter: `/a/i`, `%r{a}mx`.
+            let text = self.text(node);
+            let flags = &text[text.trim_end_matches(char::is_alphabetic).len()..];
+            let options = flags.chars().fold(0, |options, flag| {
+                options
+                    | match flag {
+                        'i' => 1,
+                        'x' => 2,
+                        'm' => 4,
+                        _ => 0,
+                    }
+            });
+            let source = String::from_utf8_lossy(r.unescaped()).into_owned();
+            return Ok(Regexp(source, options));
         }
         Err(self.error(node, format!("`{}` is not supported", self.text(node))))
     }
@@ -507,8 +534,12 @@ impl<'pr> Eval<'pr> {
                 return Ok(Value::Nil);
             }
             let args = self.args(call.arguments(), scope)?;
+            let no_args = args.positional.is_empty() && args.keywords.is_empty();
             return match scope.call(self, &name, args, block.as_ref(), line)? {
                 Some(value) => Ok(value),
+                None if no_args && block.is_none() && self.defs.contains_key(&name) => {
+                    self.call_def(node, &name, scope)
+                }
                 None => Err(self.error(node, format!("the method `{name}` is not supported"))),
             };
         };
@@ -528,6 +559,27 @@ impl<'pr> Eval<'pr> {
                 ),
             )),
         }
+    }
+
+    /// Run the file's own method `name`, which takes no arguments.
+    pub fn call_def(
+        &mut self,
+        node: &Node<'pr>,
+        name: &str,
+        scope: &mut dyn Scope<'pr>,
+    ) -> Result<Value> {
+        // Taken out while it runs, so a method calling itself is an error
+        // rather than endless.
+        let Some(def) = self.defs.remove(name) else {
+            return Err(self.error(node, format!("the method `{name}` is not supported")));
+        };
+        let result = if def.parameters().is_some() {
+            Err(self.error(node, format!("`{name}` with parameters is not supported")))
+        } else {
+            self.exec(def.body(), scope)
+        };
+        self.defs.insert(name.to_string(), def);
+        result
     }
 
     /// Methods on values that mean the same everywhere.
@@ -624,6 +676,8 @@ impl<'pr> Eval<'pr> {
             (_, "to_s" | "to_str") => Str(receiver.to_s()),
             (_, "to_sym") => Sym(receiver.to_s()),
             (_, "inspect") => Str(receiver.inspect()),
+            // Constants are often frozen; values here never change anyway.
+            (value, "freeze" | "dup") => value.clone(),
             (Str(s), "to_i") => Int(s.trim().parse().unwrap_or(0)),
             (Str(_) | Version(_), "+") => Str(format!(
                 "{}{}",
@@ -673,6 +727,21 @@ impl<'pr> Eval<'pr> {
                     })
                     .collect())
             }
+            (Str(s), "sub" | "gsub")
+                if args.positional.len() == 2 && matches!(args.positional[0], Regexp(..)) =>
+            {
+                let Some(pattern) = args.positional[0].to_regex() else {
+                    return Ok(None);
+                };
+                // Ruby's `\\1` back-references are `${1}` to the `regex` crate.
+                let to = args.positional[1].to_s().replace('$', "$$");
+                let to = backreference_to_regex(&to);
+                Str(if name == "sub" {
+                    pattern.replacen(s, 1, to.as_str()).into_owned()
+                } else {
+                    pattern.replace_all(s, to.as_str()).into_owned()
+                })
+            }
             (Str(s), "sub" | "gsub") if args.positional.len() == 2 => {
                 let from = args.positional[0].to_s();
                 let to = args.positional[1].to_s();
@@ -711,8 +780,23 @@ impl<'pr> Eval<'pr> {
                     let i = if *i < 0 { items.len() as i64 + i } else { *i };
                     items.get(i as usize).cloned().unwrap_or(Nil)
                 }
+                Some(range @ Range(..)) => match range.range_bounds(items.len()) {
+                    Some(bounds) => Array(items[bounds].to_vec()),
+                    None => Nil,
+                },
                 _ => return Ok(None),
             },
+            (Str(s), "[]") if matches!(arg, Some(Range(..))) => {
+                let chars: Vec<char> = s.chars().collect();
+                match arg.unwrap().range_bounds(chars.len()) {
+                    Some(bounds) => Str(chars[bounds].iter().collect()),
+                    None => Nil,
+                }
+            }
+            (Range(first, last, exclusive), "to_a") if *last != i64::MAX => {
+                let end = if *exclusive { *last } else { *last + 1 };
+                Array((*first..end).map(Int).collect())
+            }
             (Array(items), "each" | "map" | "select" | "reject" | "each_with_index")
                 if block.is_some() =>
             {
@@ -752,6 +836,26 @@ impl<'pr> Eval<'pr> {
         };
         Ok(Some(value))
     }
+}
+
+/// A Ruby replacement string's `\\1` and `\\0` as `${1}` and `${0}`.
+fn backreference_to_regex(to: &str) -> String {
+    let mut out = String::new();
+    let mut chars = to.chars().peekable();
+    while let Some(c) = chars.next() {
+        match (c, chars.peek()) {
+            ('\\', Some(d)) if d.is_ascii_digit() => {
+                out.push_str(&format!("${{{d}}}"));
+                chars.next();
+            }
+            ('\\', Some('\\')) => {
+                out.push('\\');
+                chars.next();
+            }
+            _ => out.push(c),
+        }
+    }
+    out
 }
 
 fn compare(op: &str, ordering: std::cmp::Ordering) -> bool {
