@@ -182,7 +182,12 @@ impl Cellar {
             return Ok(());
         }
 
-        fs::remove_dir_all(&keg_path).map_err(Error::store("failed to remove keg"))?;
+        if fs::remove_dir_all(&keg_path).is_err() {
+            // A post-install step may have left a directory without the
+            // permission to list or change it; give them back and retry.
+            make_dirs_removable(&keg_path);
+            fs::remove_dir_all(&keg_path).map_err(Error::store("failed to remove keg"))?;
+        }
 
         // Also try to remove the parent (name) directory if it's now empty
         if let Some(parent) = keg_path.parent() {
@@ -190,6 +195,24 @@ impl Cellar {
         }
 
         Ok(())
+    }
+}
+
+/// `chmod u+rwx` every directory under `dir`, without following symlinks.
+fn make_dirs_removable(dir: &Path) {
+    use std::os::unix::fs::PermissionsExt;
+    let Ok(meta) = fs::symlink_metadata(dir) else {
+        return;
+    };
+    if !meta.is_dir() {
+        return;
+    }
+    let mode = meta.permissions().mode();
+    let _ = fs::set_permissions(dir, fs::Permissions::from_mode(mode | 0o700));
+    if let Ok(entries) = fs::read_dir(dir) {
+        for entry in entries.flatten() {
+            make_dirs_removable(&entry.path());
+        }
     }
 }
 
@@ -323,6 +346,20 @@ mod tests {
     use super::*;
     use std::os::unix::fs::PermissionsExt;
     use tempfile::TempDir;
+
+    #[test]
+    fn removes_a_keg_with_a_directory_it_cannot_list() {
+        let tmp = TempDir::new().unwrap();
+        let cellar = Cellar::new(tmp.path()).unwrap();
+        let keg = cellar.keg_path("php", "8.4");
+        let alias = keg.join("share/pear/.channels/.alias");
+        fs::create_dir_all(&alias).unwrap();
+        fs::write(alias.join("pecl.txt"), "").unwrap();
+        fs::set_permissions(&alias, fs::Permissions::from_mode(0o644)).unwrap();
+
+        cellar.remove_keg("php", "8.4").unwrap();
+        assert!(!keg.exists());
+    }
 
     fn setup_store_entry(tmp: &TempDir) -> PathBuf {
         let store_entry = tmp.path().join("store/abc123");

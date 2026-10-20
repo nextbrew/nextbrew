@@ -1,5 +1,6 @@
 pub mod bottle;
 pub mod post_install;
+pub mod requirements;
 pub mod resolve;
 pub mod types;
 

@@ -181,12 +181,32 @@ fn glob(pattern: &Path) -> Result<Vec<PathBuf>, StepError> {
         return Ok(Vec::new());
     }
 
+    // As Ruby's `Dir.glob` without `File::FNM_DOTMATCH`, a name starting
+    // with a dot only matches a pattern segment that starts with one.
+    let dot_segments: Vec<globset::GlobMatcher> = pattern
+        .strip_prefix(&root)
+        .unwrap_or(pattern)
+        .components()
+        .map(|c| c.as_os_str().to_string_lossy().into_owned())
+        .filter(|segment| segment.starts_with('.') || segment.starts_with("{."))
+        .filter_map(|segment| GlobBuilder::new(&segment).build().ok())
+        .map(|glob| glob.compile_matcher())
+        .collect();
+    let hidden_allowed = |path: &Path| {
+        path.strip_prefix(&root)
+            .unwrap_or(path)
+            .components()
+            .map(|c| c.as_os_str())
+            .filter(|name| name.to_string_lossy().starts_with('.'))
+            .all(|name| dot_segments.iter().any(|m| m.is_match(name)))
+    };
+
     let mut found: Vec<PathBuf> = WalkDir::new(&root)
         .min_depth(1)
         .into_iter()
         .filter_map(Result::ok)
         .map(walkdir::DirEntry::into_path)
-        .filter(|path| matcher.is_match(path))
+        .filter(|path| matcher.is_match(path) && hidden_allowed(path))
         .collect();
     found.sort();
     Ok(found)
@@ -323,6 +343,27 @@ mod tests {
 
         let spec = PathSpec::absolute(format!("{}/*crt?.o", man.display()));
         assert!(expand_glob(&ctx, &spec).unwrap().is_empty());
+    }
+
+    #[test]
+    fn globs_skip_dot_names_unless_the_pattern_names_them() {
+        let tmp = TempDir::new().unwrap();
+        let ctx = context(tmp.path(), "x", "1");
+        let channels = ctx.prefix.join("pear/.channels");
+        fs::create_dir_all(channels.join(".alias")).unwrap();
+        fs::write(channels.join("pecl.reg"), "").unwrap();
+        fs::write(channels.join(".alias/pecl.txt"), "").unwrap();
+        let glob = |pattern: &str| {
+            let spec = PathSpec::absolute(format!("{}/{pattern}", ctx.prefix.display()));
+            expand_glob(&ctx, &spec).unwrap()
+        };
+        assert_eq!(glob("pear/.channels/*"), vec![channels.join("pecl.reg")]);
+        assert_eq!(
+            glob("pear/.channels/.alias/*"),
+            vec![channels.join(".alias/pecl.txt")]
+        );
+        assert_eq!(glob("pear/.channels/.*"), vec![channels.join(".alias")]);
+        assert_eq!(glob("**/*.reg"), Vec::<PathBuf>::new());
     }
 
     #[test]

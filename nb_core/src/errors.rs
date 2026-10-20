@@ -57,6 +57,11 @@ pub enum Error {
         step: String,
         message: String,
     },
+    /// Requirements (`depends_on arch:` and the like) this system does not
+    /// meet, each as `name: message`.
+    UnsatisfiedRequirements {
+        messages: Vec<String>,
+    },
 }
 
 impl fmt::Display for Error {
@@ -112,6 +117,16 @@ impl fmt::Display for Error {
                 step,
                 message,
             } => write!(f, "post-install step `{step}` of {name} failed: {message}"),
+            Error::UnsatisfiedRequirements { messages } => {
+                for message in messages {
+                    writeln!(f, "{}", message.trim_end())?;
+                }
+                write!(
+                    f,
+                    "{}",
+                    crate::formula::requirements::unsatisfied_error(messages.len())
+                )
+            }
         }
     }
 }

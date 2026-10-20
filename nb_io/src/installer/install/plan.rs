@@ -176,6 +176,8 @@ impl Installer {
             }
         };
 
+        check_requirements(&formula, matches!(method, InstallMethod::Source(_)))?;
+
         Ok(PlannedInstall {
             install_name,
             formula,
@@ -457,6 +459,68 @@ const DEFAULT_PREFIX: &str = if cfg!(target_os = "linux") {
 /// `pour_bottle? only_if: :clt_installed` on macOS: Homebrew pours such a
 /// bottle only with the Command Line Tools installed, and a build from
 /// source needs them too, so their absence ends the install.
+/// `FormulaInstaller#check_requirements`: refuse a formula whose
+/// `depends_on macos:` / `arch:` / `xcode:` / `:linux` this system does not
+/// meet. Only for formulae read from a tap: Homebrew does not load the
+/// requirements of the formulae it reads from the API, and installs them
+/// regardless.
+fn check_requirements(formula: &Formula, building: bool) -> Result<(), Error> {
+    use nb_core::formula::requirements::unsatisfied_requirements;
+    if formula.requirements.is_empty() || formula.third_party_tap().is_none() {
+        return Ok(());
+    }
+    let messages = unsatisfied_requirements(formula, building, current_system());
+    if messages.is_empty() {
+        return Ok(());
+    }
+    Err(Error::UnsatisfiedRequirements { messages })
+}
+
+/// This system, as requirements see it; looked at once, when first needed.
+fn current_system() -> &'static nb_core::formula::requirements::System {
+    static SYSTEM: std::sync::OnceLock<nb_core::formula::requirements::System> =
+        std::sync::OnceLock::new();
+    SYSTEM.get_or_init(|| nb_core::formula::requirements::System {
+        #[cfg(target_os = "macos")]
+        macos: nb_core::macos_major_version().map(|major| (major, 0)),
+        #[cfg(not(target_os = "macos"))]
+        macos: None,
+        arm: cfg!(target_arch = "aarch64"),
+        xcode: if cfg!(target_os = "macos") {
+            xcode_version()
+        } else {
+            None
+        },
+    })
+}
+
+/// `MacOS::Xcode.installed?` and `.version`: the Xcode.app `xcode-select`
+/// points into, or /Applications/Xcode.app, and its version (empty when
+/// unreadable).
+fn xcode_version() -> Option<String> {
+    let selected = std::process::Command::new("/usr/bin/xcode-select")
+        .arg("-p")
+        .output()
+        .ok()
+        .map(|out| String::from_utf8_lossy(&out.stdout).trim().to_string())
+        .and_then(|path| {
+            path.find(".app/")
+                .map(|end| std::path::PathBuf::from(&path[..end + 4]))
+        });
+    let app = selected
+        .or_else(|| Some(std::path::PathBuf::from("/Applications/Xcode.app")))
+        .filter(|app| app.join("Contents/Developer").is_dir())?;
+    let version = std::process::Command::new("/usr/libexec/PlistBuddy")
+        .args(["-c", "Print :CFBundleShortVersionString"])
+        .arg(app.join("Contents/version.plist"))
+        .output()
+        .ok()
+        .filter(|out| out.status.success())
+        .map(|out| String::from_utf8_lossy(&out.stdout).trim().to_string())
+        .unwrap_or_default();
+    Some(version)
+}
+
 fn check_clt_for_bottle(formula: &Formula) -> Result<(), Error> {
     let clt = Path::new("/Library/Developer/CommandLineTools/usr/bin/clang").exists();
     check_clt(formula, !cfg!(target_os = "macos") || clt)
