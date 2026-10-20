@@ -113,7 +113,10 @@ pub async fn suggest_missing_formula_matches(
 
 pub fn suggest_homebrew(formula: &str, error: &nb_core::Error) {
     // Homebrew refuses these too.
-    if matches!(error, nb_core::Error::UnsatisfiedRequirements { .. }) {
+    if matches!(
+        error,
+        nb_core::Error::UnsatisfiedRequirements { .. } | nb_core::Error::NoBottleAvailable { .. }
+    ) {
         return;
     }
     eprintln!();

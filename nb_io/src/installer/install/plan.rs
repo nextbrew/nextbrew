@@ -165,6 +165,17 @@ impl Installer {
         } else {
             match self.select_pourable_bottle(&formula) {
                 Ok(bottle) => InstallMethod::Bottle(bottle),
+                Err(_)
+                    if refuses_without_bottle(
+                        &formula,
+                        self.db.get_installed(&install_name).is_some(),
+                        refuses_fresh_installs_without_bottles(),
+                    ) =>
+                {
+                    return Err(Error::NoBottleAvailable {
+                        name: formula.name.clone(),
+                    });
+                }
                 Err(_) => match BuildPlan::from_formula(&formula, &self.prefix) {
                     Some(plan) => InstallMethod::Source(plan),
                     None => {
@@ -456,9 +467,33 @@ const DEFAULT_PREFIX: &str = if cfg!(target_os = "linux") {
     "/usr/local"
 };
 
-/// `pour_bottle? only_if: :clt_installed` on macOS: Homebrew pours such a
-/// bottle only with the Command Line Tools installed, and a build from
-/// source needs them too, so their absence ends the install.
+/// `FormulaInstaller#check_install_sanity`: Homebrew refuses a
+/// homebrew/core formula with no bottle for this platform unless asked to
+/// build it (`--build-from-source`) or some version of it is installed (an
+/// upgrade or reinstall builds it). Homebrew does so only in its default
+/// prefix; nextbrew pours bottles into its own prefix the same way, so it
+/// refuses there too.
+fn refuses_without_bottle(formula: &Formula, installed: bool, fresh_install_refused: bool) -> bool {
+    fresh_install_refused
+        && !installed
+        && formula.third_party_tap().is_none()
+        && select_bottle(formula).is_err()
+}
+
+/// `FormulaInstaller#fresh_install?`'s platforms: Apple Silicon on a
+/// supported macOS, and Linux.
+#[cfg(target_os = "macos")]
+fn refuses_fresh_installs_without_bottles() -> bool {
+    cfg!(target_arch = "aarch64")
+        && nb_core::macos_major_version()
+            .is_some_and(|major| major >= super::diagnostic::MACOS_OLDEST_SUPPORTED)
+}
+
+#[cfg(not(target_os = "macos"))]
+fn refuses_fresh_installs_without_bottles() -> bool {
+    cfg!(target_os = "linux")
+}
+
 /// `FormulaInstaller#check_requirements`: refuse a formula whose
 /// `depends_on macos:` / `arch:` / `xcode:` / `:linux` this system does not
 /// meet. Only for formulae read from a tap: Homebrew does not load the
@@ -521,6 +556,9 @@ fn xcode_version() -> Option<String> {
     Some(version)
 }
 
+/// `pour_bottle? only_if: :clt_installed` on macOS: Homebrew pours such a
+/// bottle only with the Command Line Tools installed, and a build from
+/// source needs them too, so their absence ends the install.
 fn check_clt_for_bottle(formula: &Formula) -> Result<(), Error> {
     let clt = Path::new("/Library/Developer/CommandLineTools/usr/bin/clang").exists();
     check_clt(formula, !cfg!(target_os = "macos") || clt)
@@ -577,6 +615,34 @@ mod tests {
     use crate::storage::store::Store;
     use crate::{Installer, Linker};
 
+    #[test]
+    fn refuses_a_core_formula_without_a_bottle_unless_installed() {
+        let mut formula: nb_core::Formula = serde_json::from_str(
+            r#"{"name": "nobottle", "versions": {"stable": "1.0"}, "dependencies": [],
+                "bottle": {"stable": {"files": {}}}}"#,
+        )
+        .unwrap();
+        assert!(super::refuses_without_bottle(&formula, false, true));
+        assert!(!super::refuses_without_bottle(&formula, true, true));
+        assert!(!super::refuses_without_bottle(&formula, false, false));
+        formula.tap = Some("someone/tools".to_string());
+        assert!(!super::refuses_without_bottle(&formula, false, true));
+        formula.tap = Some("homebrew/core".to_string());
+        assert!(super::refuses_without_bottle(&formula, false, true));
+
+        let error = nb_core::Error::NoBottleAvailable {
+            name: "nobottle".to_string(),
+        };
+        assert_eq!(
+            error.to_string(),
+            "nobottle: no bottle available!\n\
+             If no compatible bottle is available, you can try to install from source with:\n  \
+             nb install --build-from-source nobottle"
+        );
+    }
+
+    /// A tap formula with no bottle is built from its `.rb`, as Homebrew
+    /// builds it.
     #[tokio::test]
     async fn falls_back_to_source_when_no_bottle() {
         let mock_server = MockServer::start().await;
@@ -584,6 +650,7 @@ mod tests {
 
         let formula_json = r#"{
             "name": "nobottle",
+            "tap": "someone/tools",
             "versions": { "stable": "1.0.0" },
             "dependencies": [],
             "build_dependencies": ["pkgconf"],

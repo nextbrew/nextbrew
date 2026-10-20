@@ -62,6 +62,11 @@ pub enum Error {
     UnsatisfiedRequirements {
         messages: Vec<String>,
     },
+    /// A homebrew/core formula without a bottle for this platform, which
+    /// Homebrew builds only when asked to.
+    NoBottleAvailable {
+        name: String,
+    },
 }
 
 impl fmt::Display for Error {
@@ -127,6 +132,12 @@ impl fmt::Display for Error {
                     crate::formula::requirements::unsatisfied_error(messages.len())
                 )
             }
+            Error::NoBottleAvailable { name } => write!(
+                f,
+                "{name}: no bottle available!\n\
+                 If no compatible bottle is available, you can try to install from source with:\n  \
+                 nb install --build-from-source {name}"
+            ),
         }
     }
 }

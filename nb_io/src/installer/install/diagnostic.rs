@@ -690,7 +690,7 @@ fn check_deprecated_disabled(names: &[String]) -> Option<Finding> {
 /// Homebrew's support window (`brew.sh`): keep in step with
 /// `HOMEBREW_MACOS_OLDEST_SUPPORTED` and `HOMEBREW_MACOS_NEWEST_UNSUPPORTED`.
 #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
-const MACOS_OLDEST_SUPPORTED: u32 = 15;
+pub(super) const MACOS_OLDEST_SUPPORTED: u32 = 15;
 #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
 const MACOS_NEWEST_UNSUPPORTED: u32 = 28;
 /// The last macOS Homebrew builds Intel bottles for (`version > :tahoe`).
