@@ -11,7 +11,7 @@ use std::path::{Component, Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::time::Duration;
 
-use nb_core::{PathSpec, ProcessMatch, StepAction, Sudo};
+use nb_core::{DataDirInit, PathSpec, ProcessMatch, StepAction, Sudo};
 use regex::Regex;
 use tracing::{debug, warn};
 
@@ -223,6 +223,11 @@ pub(super) fn run_step(
                 ));
             }
         }
+        StepAction::InitDataDir {
+            path,
+            using,
+            locale,
+        } => init_data_dir(ctx, path, *using, locale.as_deref())?,
         StepAction::CompileGsettingsSchemas { path } => run_formula_tool(
             ctx,
             "glib",
@@ -1126,10 +1131,24 @@ fn run_formula_tool(
             tool.display()
         )));
     }
+    run_tool(ctx, &tool, args, &[])
+}
+
+/// Run `tool` in the post-install environment without the variables in
+/// `unset`, failing with the tail of its stderr.
+fn run_tool(
+    ctx: &PostInstallContext,
+    tool: &Path,
+    args: &[OsString],
+    unset: &[&str],
+) -> Result<(), StepError> {
     let home = isolated_home(ctx)?;
-    let output = Command::new(&tool)
-        .args(args)
-        .envs(command_env(ctx, home.as_ref()))
+    let mut cmd = Command::new(tool);
+    cmd.args(args).envs(command_env(ctx, home.as_ref()));
+    for var in unset {
+        cmd.env_remove(var);
+    }
+    let output = cmd
         .output()
         .map_err(StepError::io(format!("running {}", tool.display())))?;
     if output.status.success() {
@@ -1141,6 +1160,60 @@ fn run_formula_tool(
             output.status,
             output_tail(&output.stderr)
         )))
+    }
+}
+
+/// Homebrew's `run_init_data_dir`: create the data directory, and run the
+/// database's initialiser unless its marker file shows it already ran.
+fn init_data_dir(
+    ctx: &PostInstallContext,
+    path: &PathSpec,
+    using: DataDirInit,
+    locale: Option<&str>,
+) -> Result<(), StepError> {
+    let path = resolve(ctx, path)?;
+    fs::create_dir_all(&path).map_err(StepError::io(format!("creating {}", path.display())))?;
+    let marker = match using {
+        DataDirInit::PostgresqlInitdb => "PG_VERSION",
+        DataDirInit::MysqlInitialize => "mysql/general_log.CSM",
+        DataDirInit::MariadbInstallDb => "mysql/user.frm",
+    };
+    if path.join(marker).exists() {
+        return Ok(());
+    }
+    let bin = ctx.keg.join("bin");
+    let datadir = path.into_os_string();
+    let mysql_args = |first: &str| -> Result<Vec<OsString>, StepError> {
+        let user =
+            std::env::var("USER").map_err(|_| StepError::Failed("USER is not set".to_string()))?;
+        let mut datadir_arg = OsString::from("--datadir=");
+        datadir_arg.push(&datadir);
+        Ok(vec![
+            first.into(),
+            format!("--user={user}").into(),
+            format!("--basedir={}", ctx.keg.display()).into(),
+            datadir_arg,
+            "--tmpdir=/tmp".into(),
+        ])
+    };
+    match using {
+        DataDirInit::PostgresqlInitdb => {
+            let locale = format!("--locale={}", locale.unwrap_or("en_US.UTF-8"));
+            let args = [locale.into(), "-E".into(), "UTF-8".into(), datadir.clone()];
+            run_tool(ctx, &bin.join("initdb"), &args, &[])
+        }
+        DataDirInit::MysqlInitialize => run_tool(
+            ctx,
+            &bin.join("mysqld"),
+            &mysql_args("--initialize-insecure")?,
+            &["TMPDIR"],
+        ),
+        DataDirInit::MariadbInstallDb => run_tool(
+            ctx,
+            &bin.join("mysql_install_db"),
+            &mysql_args("--verbose")?,
+            &["TMPDIR"],
+        ),
     }
 }
 
@@ -1652,6 +1725,37 @@ mod tests {
         assert!(dst.join("sub").is_dir() && !dst.join("sub").is_symlink());
         assert!(dst.join("sub/b").is_symlink());
         assert!(!dst.join(".DS_Store").exists());
+    }
+
+    #[test]
+    fn init_data_dir_runs_the_initialiser_once() {
+        let tmp = TempDir::new().unwrap();
+        let ctx = context(tmp.path(), "postgresql@17", "17.6");
+        let bin = ctx.keg.join("bin");
+        fs::create_dir_all(&bin).unwrap();
+        // A fake initdb that records its arguments and leaves the marker.
+        let log = tmp.path().join("args");
+        fs::write(
+            bin.join("initdb"),
+            format!(
+                "#!/bin/sh\necho \"$@\" >> {}\ntouch \"$4/PG_VERSION\"\n",
+                log.display()
+            ),
+        )
+        .unwrap();
+        fs::set_permissions(bin.join("initdb"), fs::Permissions::from_mode(0o755)).unwrap();
+        let step = || StepAction::InitDataDir {
+            path: PathSpec::based(PathBase::Var, "{{formula_name}}"),
+            using: DataDirInit::PostgresqlInitdb,
+            locale: None,
+        };
+        run(&ctx, step()).unwrap();
+        run(&ctx, step()).unwrap();
+        let data = ctx.prefix.join("var/postgresql@17");
+        assert_eq!(
+            fs::read_to_string(&log).unwrap(),
+            format!("--locale=en_US.UTF-8 -E UTF-8 {}\n", data.display())
+        );
     }
 
     #[test]

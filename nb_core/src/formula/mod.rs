@@ -9,7 +9,8 @@ pub use bottle::{SelectedBottle, compatible_codenames, current_platform_tag, sel
 #[cfg(target_os = "macos")]
 pub use bottle::macos_major_version;
 pub use post_install::{
-    Guard, PathBase, PathSpec, Platform, PostInstallStep, ProcessMatch, StepAction, Sudo,
+    DataDirInit, Guard, PathBase, PathSpec, Platform, PostInstallStep, ProcessMatch, StepAction,
+    Sudo,
 };
 pub use resolve::resolve_closure;
 pub use types::{

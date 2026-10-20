@@ -353,6 +353,13 @@ pub enum StepAction {
     ConfigureClangSystem,
     /// Generate GCC's specs file. Linux only.
     ConfigureGccRuntime,
+    /// Create a database's data directory and initialise it once.
+    InitDataDir {
+        path: PathSpec,
+        using: DataDirInit,
+        #[serde(default)]
+        locale: Option<String>,
+    },
     CompileGsettingsSchemas {
         path: PathSpec,
     },
@@ -409,6 +416,7 @@ impl StepAction {
             StepAction::InstallGzippedExecutable { .. } => "install_gzipped_executable",
             StepAction::ConfigureClangSystem => "configure_clang_system",
             StepAction::ConfigureGccRuntime => "configure_gcc_runtime",
+            StepAction::InitDataDir { .. } => "init_data_dir",
             StepAction::CompileGsettingsSchemas { .. } => "compile_gsettings_schemas",
             StepAction::GioQuerymodules { .. } => "gio_querymodules",
             StepAction::GdkPixbufQueryLoaders => "gdk_pixbuf_query_loaders",
@@ -419,6 +427,15 @@ impl StepAction {
             StepAction::Unsupported { kind, .. } => kind,
         }
     }
+}
+
+/// The initialiser an `init_data_dir` step runs.
+#[derive(Debug, Clone, Copy, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum DataDirInit {
+    PostgresqlInitdb,
+    MysqlInitialize,
+    MariadbInstallDb,
 }
 
 /// A post-install step: an action and the guards that gate it.
@@ -576,6 +593,24 @@ mod tests {
                 "opt/ruby@3.4/lib/libruby.3.4.dylib"
             ))]
         );
+    }
+
+    #[test]
+    fn init_data_dir_step() {
+        let s = step(
+            r#"{"path": {"base": "var", "path": "postgresql@12"}, "using": "postgresql_initdb",
+                "locale": "C", "type": "init_data_dir"}"#,
+        );
+        assert_eq!(
+            s.action,
+            StepAction::InitDataDir {
+                path: PathSpec::based(PathBase::Var, "postgresql@12"),
+                using: DataDirInit::PostgresqlInitdb,
+                locale: Some("C".into()),
+            }
+        );
+        let s = step(r#"{"path": {"path": "x"}, "using": "sqlite", "type": "init_data_dir"}"#);
+        assert!(matches!(s.action, StepAction::Unsupported { .. }));
     }
 
     #[test]
