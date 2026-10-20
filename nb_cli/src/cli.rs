@@ -130,6 +130,26 @@ pub enum Commands {
         #[command(flatten)]
         cask_options: CaskOptions,
     },
+    /// Uninstall and install formulae and casks again
+    Reinstall {
+        #[arg(required = true, num_args = 1..)]
+        formulas: Vec<String>,
+        #[arg(long, short = 's', help = "Build from source instead of using bottles")]
+        build_from_source: bool,
+        #[arg(
+            long,
+            visible_alias = "formulae",
+            conflicts_with = "cask",
+            help = "Treat the names as formulae"
+        )]
+        formula: bool,
+        #[arg(long, visible_alias = "casks", help = "Treat the names as casks")]
+        cask: bool,
+        #[arg(long, help = "Also remove the casks' user data (zap stanza)")]
+        zap: bool,
+        #[command(flatten)]
+        cask_options: CaskOptions,
+    },
     /// Install or dump from a Brewfile
     #[command(args_conflicts_with_subcommands = true)]
     Bundle {

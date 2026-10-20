@@ -22,7 +22,12 @@ impl Installer {
         self.uninstall_inner(name, version, false)
     }
 
-    fn uninstall_inner(&mut self, name: &str, version: &str, zap: bool) -> Result<(), Error> {
+    pub(super) fn uninstall_inner(
+        &mut self,
+        name: &str,
+        version: &str,
+        zap: bool,
+    ) -> Result<(), Error> {
         let keg_name = formula_token(name);
 
         let keg_path = self.cellar.keg_path(keg_name, version);

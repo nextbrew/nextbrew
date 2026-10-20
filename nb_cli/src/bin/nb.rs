@@ -79,6 +79,30 @@ async fn run(cli: Cli) -> Result<(), nb_core::Error> {
             let command = command.unwrap_or(nb_cli::cli::BundleCommands::Install(install));
             commands::bundle::execute(&mut installer, command, cli.verbose > 0, &mut ui).await
         }
+        Commands::Reinstall {
+            formulas,
+            build_from_source,
+            formula,
+            cask,
+            zap,
+            cask_options,
+        } => {
+            installer.set_cask_config(cask_config(&cask_options)?);
+            let formulas: Vec<String> = formulas
+                .into_iter()
+                .map(|name| {
+                    if cask && !name.starts_with("cask:") {
+                        format!("cask:{name}")
+                    } else if formula && !name.starts_with("cask:") && !name.contains('/') {
+                        format!("formula:{name}")
+                    } else {
+                        name
+                    }
+                })
+                .collect();
+            commands::reinstall::execute(&mut installer, formulas, build_from_source, zap, &mut ui)
+                .await
+        }
         Commands::Uninstall {
             formulas,
             all,

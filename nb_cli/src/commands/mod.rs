@@ -15,6 +15,7 @@ pub mod migrate;
 pub mod outdated;
 pub mod pin;
 pub mod postinstall;
+pub mod reinstall;
 pub mod reset;
 pub mod run;
 pub mod search;

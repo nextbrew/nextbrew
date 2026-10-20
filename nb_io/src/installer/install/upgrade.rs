@@ -29,6 +29,36 @@ impl Installer {
         link: bool,
         progress: Option<Arc<ProgressCallback>>,
     ) -> Result<ExecuteResult, Error> {
+        self.replace(name, build_from_source, link, progress, None)
+            .await
+    }
+
+    /// `brew reinstall` of an installed package: its latest version put in
+    /// afresh, as an upgrade does, even when it is already current. The
+    /// keg is unpacked again from the bottle rather than copied from the
+    /// store, and a cask is uninstalled (with `zap`, its user data too)
+    /// before it is installed again.
+    pub async fn reinstall(
+        &mut self,
+        name: &str,
+        build_from_source: bool,
+        link: bool,
+        zap: bool,
+        progress: Option<Arc<ProgressCallback>>,
+    ) -> Result<ExecuteResult, Error> {
+        self.replace(name, build_from_source, link, progress, Some(zap))
+            .await
+    }
+
+    async fn replace(
+        &mut self,
+        name: &str,
+        build_from_source: bool,
+        link: bool,
+        progress: Option<Arc<ProgressCallback>>,
+        // `Some(zap)` for a reinstall.
+        reinstall: Option<bool>,
+    ) -> Result<ExecuteResult, Error> {
         // One lock for the entire flow — uninstall + install must not race
         // with other nb processes touching the same package.
         let _lock = acquire_install_lock(&self.locks_dir)?;
@@ -39,7 +69,7 @@ impl Installer {
 
         // `plan_with_options` doesn't consult the installed DB, so an
         // empty-plan check wouldn't fire on already-current packages.
-        if self.is_outdated(name).await?.is_none() {
+        if reinstall.is_none() && self.is_outdated(name).await?.is_none() {
             return Ok(ExecuteResult::default());
         }
 
@@ -66,7 +96,7 @@ impl Installer {
             );
             let given = std::mem::take(&mut self.cask_config);
             self.cask_config = saved.overlay(&given);
-            self.uninstall_by_version(name, &old.version)?;
+            self.uninstall_inner(name, &old.version, reinstall == Some(true))?;
             let installed = self.install_single_cask(token, link).await;
             self.cask_config = given;
             installed?;
@@ -92,11 +122,29 @@ impl Installer {
         self.prefetch_plan_bottles(&plan, progress.clone()).await?;
 
         self.uninstall_by_version(name, &old.version)?;
+        if reinstall.is_some() {
+            self.forget_store_entry(&old.store_key)?;
+        }
 
         // We already hold the lock, so call the no-lock variant.
         let result = self.execute_inner(plan, link, progress).await;
         self.keep_on_request(&old)?;
         result
+    }
+
+    /// Drop a keg's store entry once nothing uses it, so the next install
+    /// unpacks the bottle again.
+    fn forget_store_entry(&mut self, store_key: &str) -> Result<(), Error> {
+        if self
+            .db
+            .get_unreferenced_store_keys()?
+            .iter()
+            .any(|key| key == store_key)
+        {
+            self.store.remove_entry(store_key)?;
+            self.db.delete_store_ref(store_key)?;
+        }
+        Ok(())
     }
 
     /// The reinstall records a new keg, which would otherwise count as a
@@ -529,6 +577,52 @@ mod tests {
             installer.get_installed("steadypkg").unwrap().version,
             "1.0.0"
         );
+    }
+
+    #[tokio::test]
+    async fn reinstall_puts_back_a_damaged_keg() {
+        let mock_server = MockServer::start().await;
+        let tmp = TempDir::new().unwrap();
+        let tag = get_test_bottle_tag();
+        let bottle = create_bottle_tarball("fixme");
+        let sha = sha256_hex(&bottle);
+        Mock::given(method("GET"))
+            .and(path("/formula/fixme.json"))
+            .respond_with(ResponseTemplate::new(200).set_body_string(formula_json(
+                &mock_server.uri(),
+                "fixme",
+                "1.0.0",
+                tag,
+                &sha,
+            )))
+            .mount(&mock_server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path(format!("/bottles/fixme-1.0.0.{tag}.bottle.tar.gz")))
+            .respond_with(ResponseTemplate::new(200).set_body_bytes(bottle))
+            .mount(&mock_server)
+            .await;
+
+        let root = tmp.path().join("nextbrew");
+        let prefix = tmp.path().join("homebrew");
+        let mut installer = make_installer(&root, &prefix, &mock_server.uri());
+        installer
+            .install(&["fixme".to_string()], true)
+            .await
+            .unwrap();
+        let program = root.join("cellar/fixme/1.0.0/bin/fixme");
+        fs::remove_file(&program).unwrap();
+
+        // An upgrade leaves a current keg alone; a reinstall does not.
+        installer.upgrade("fixme", false, true, None).await.unwrap();
+        assert!(!program.exists());
+        installer
+            .reinstall("fixme", false, true, false, None)
+            .await
+            .unwrap();
+        assert!(program.exists(), "the keg is unpacked again");
+        assert!(prefix.join("bin/fixme").exists());
+        assert!(installer.get_installed("fixme").unwrap().on_request);
     }
 
     #[tokio::test]

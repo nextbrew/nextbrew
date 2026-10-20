@@ -15,8 +15,6 @@ pub async fn execute(
     no_link: bool,
     ui: &mut StdUi,
 ) -> Result<(), nb_core::Error> {
-    let start = Instant::now();
-
     // Reported at the end so explicit-arg upgrades still run; we exit
     // non-zero afterwards rather than discard partial progress.
     let mut missing: Vec<String> = Vec::new();
@@ -102,7 +100,71 @@ pub async fn execute(
         };
     }
 
-    ui.heading(format!("Upgrading {}...", style(outdated.len()).bold()))
+    let names: Vec<String> = outdated.into_iter().map(|pkg| pkg.name).collect();
+    let pending = missing
+        .into_iter()
+        .next()
+        .map(|name| nb_core::Error::NotInstalled { name })
+        .or(pinned_error);
+    replace_packages(
+        installer,
+        &names,
+        Replace::Upgrade,
+        build_from_source,
+        no_link,
+        pending,
+        ui,
+    )
+    .await
+}
+
+/// What `replace_packages` does to each package.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Replace {
+    Upgrade,
+    /// With `--zap` for casks or not.
+    Reinstall {
+        zap: bool,
+    },
+}
+
+impl Replace {
+    fn verb(self) -> &'static str {
+        match self {
+            Replace::Upgrade => "Upgrading",
+            Replace::Reinstall { .. } => "Reinstalling",
+        }
+    }
+
+    fn action(self) -> &'static str {
+        match self {
+            Replace::Upgrade => "upgrade",
+            Replace::Reinstall { .. } => "reinstall",
+        }
+    }
+
+    fn done(self) -> &'static str {
+        match self {
+            Replace::Upgrade => "upgraded",
+            Replace::Reinstall { .. } => "reinstalled",
+        }
+    }
+}
+
+/// Upgrade or reinstall installed packages one by one with a progress
+/// display, then report. `pending` is an earlier failure to return once
+/// the rest are done.
+pub(crate) async fn replace_packages(
+    installer: &mut nb_io::Installer,
+    names: &[String],
+    mode: Replace,
+    build_from_source: bool,
+    no_link: bool,
+    pending: Option<nb_core::Error>,
+    ui: &mut StdUi,
+) -> Result<(), nb_core::Error> {
+    let start = Instant::now();
+    ui.heading(format!("{} {}...", mode.verb(), style(names.len()).bold()))
         .map_err(ui_error)?;
 
     let multi = MultiProgress::new();
@@ -198,7 +260,7 @@ pub async fn execute(
             InstallProgress::InstallCompleted { name } => {
                 if let Some(pb) = bars.get(&name) {
                     pb.set_style(done_style_clone.clone());
-                    pb.set_message(format!("{} upgraded", style("✓").green()));
+                    pb.set_message(format!("{} {}", style("✓").green(), mode.done()));
                     pb.finish();
                 }
             }
@@ -232,19 +294,23 @@ pub async fn execute(
     let mut notices = Vec::new();
     let mut post_install_failures = Vec::new();
 
-    for pkg in &outdated {
-        let name = &pkg.name;
+    for name in names {
         ui.step_start(name).map_err(ui_error)?;
 
-        match installer
-            .upgrade(
-                name,
-                build_from_source,
-                !no_link,
-                Some(progress_callback.clone()),
-            )
-            .await
-        {
+        let progress = Some(progress_callback.clone());
+        let result = match mode {
+            Replace::Upgrade => {
+                installer
+                    .upgrade(name, build_from_source, !no_link, progress)
+                    .await
+            }
+            Replace::Reinstall { zap } => {
+                installer
+                    .reinstall(name, build_from_source, !no_link, zap, progress)
+                    .await
+            }
+        };
+        match result {
             Ok(result) => {
                 ui.step_ok().map_err(ui_error)?;
                 upgraded += 1;
@@ -271,13 +337,22 @@ pub async fn execute(
     ui.blank_line().map_err(ui_error)?;
 
     for (name, err) in &errors {
-        ui.error(format!("Failed to upgrade {}: {}", style(name).bold(), err))
-            .map_err(ui_error)?;
+        ui.error(format!(
+            "Failed to {} {}: {}",
+            mode.action(),
+            style(name).bold(),
+            err
+        ))
+        .map_err(ui_error)?;
     }
 
-    if errors.is_empty() && missing.is_empty() && pinned_error.is_none() {
+    if errors.is_empty() && pending.is_none() {
         ui.heading(format!(
-            "Upgraded {} packages in {:.2}s",
+            "{} {} packages in {:.2}s",
+            match mode {
+                Replace::Upgrade => "Upgraded",
+                Replace::Reinstall { .. } => "Reinstalled",
+            },
             style(upgraded).green().bold(),
             elapsed.as_secs_f64()
         ))
@@ -285,12 +360,8 @@ pub async fn execute(
         super::install::report_post_install(ui, &notices, post_install_failures)
     } else if !errors.is_empty() {
         Err(errors.remove(0).1)
-    } else if let Some(e) = pinned_error {
-        Err(e)
     } else {
-        Err(nb_core::Error::NotInstalled {
-            name: missing.remove(0),
-        })
+        Err(pending.expect("a pending failure"))
     }
 }
 
