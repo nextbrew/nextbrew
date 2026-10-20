@@ -328,6 +328,48 @@ pub enum Commands {
         #[arg(required = true, num_args = 1..)]
         formulas: Vec<String>,
     },
+    /// Tap a formula repository, or list the tapped ones
+    Tap {
+        /// `user/repo`
+        name: Option<String>,
+        /// Where to fetch it from instead of github.com/user/homebrew-repo
+        url: Option<String>,
+        #[arg(long, short = 'f', help = "Tap even a tap nextbrew reads from the API")]
+        force: bool,
+        #[arg(long, help = "Change an installed tap's remote to URL")]
+        custom_remote: bool,
+    },
+    /// Remove tapped formula repositories
+    Untap {
+        #[arg(required = true, num_args = 1..)]
+        names: Vec<String>,
+        #[arg(
+            long,
+            short = 'f',
+            help = "Uninstall what was installed from the tap first"
+        )]
+        force: bool,
+    },
+    /// Trust third-party taps, formulae or casks so they may be loaded
+    Trust {
+        names: Vec<String>,
+        #[arg(long, visible_alias = "taps", conflicts_with_all = ["formula", "cask"])]
+        tap: bool,
+        #[arg(long, visible_alias = "formulae", conflicts_with = "cask")]
+        formula: bool,
+        #[arg(long, visible_alias = "casks")]
+        cask: bool,
+    },
+    /// Stop trusting third-party taps, formulae or casks
+    Untrust {
+        names: Vec<String>,
+        #[arg(long, visible_alias = "taps", conflicts_with_all = ["formula", "cask"])]
+        tap: bool,
+        #[arg(long, visible_alias = "formulae", conflicts_with = "cask")]
+        formula: bool,
+        #[arg(long, visible_alias = "casks")]
+        cask: bool,
+    },
     /// Manage background services with launchd
     Services {
         #[command(subcommand)]

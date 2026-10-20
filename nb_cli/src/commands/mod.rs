@@ -20,6 +20,7 @@ pub mod reset;
 pub mod run;
 pub mod search;
 pub mod services;
+pub mod tap;
 pub mod uninstall;
 pub mod update;
 pub mod upgrade;

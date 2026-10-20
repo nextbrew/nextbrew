@@ -19,6 +19,9 @@ pub struct InstalledKeg {
     /// Asked for by the user, as opposed to pulled in as a dependency;
     /// `autoremove` only removes the latter.
     pub on_request: bool,
+    /// The third-party tap (`user/repo`) the formula or cask came from;
+    /// `None` for homebrew/core and homebrew/cask.
+    pub tap: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -36,7 +39,7 @@ pub struct KegFileRecord {
 }
 
 impl Database {
-    const SCHEMA_VERSION: u32 = 2;
+    const SCHEMA_VERSION: u32 = 3;
 
     pub fn open(path: &Path) -> Result<Self, Error> {
         let conn = Connection::open(path).map_err(Error::store("failed to open database"))?;
@@ -95,6 +98,7 @@ impl Database {
         match version {
             1 => Self::migrate_to_v1(conn),
             2 => Self::migrate_to_v2(conn),
+            3 => Self::migrate_to_v3(conn),
             _ => Err(Error::StoreCorruption {
                 message: format!("unknown migration version {}", version),
             }),
@@ -142,6 +146,12 @@ impl Database {
         .map_err(Error::store("failed to add pinned and on_request columns"))
     }
 
+    /// Everything installed before taps came from homebrew/core or cask.
+    fn migrate_to_v3(conn: &Connection) -> Result<(), Error> {
+        conn.execute_batch("ALTER TABLE installed_kegs ADD COLUMN tap TEXT;")
+            .map_err(Error::store("failed to add tap column"))
+    }
+
     pub fn transaction(&mut self) -> Result<InstallTransaction<'_>, Error> {
         let tx = self
             .conn
@@ -154,7 +164,7 @@ impl Database {
     pub fn get_installed(&self, name: &str) -> Option<InstalledKeg> {
         self.conn
             .query_row(
-                "SELECT name, version, store_key, installed_at, pinned, on_request
+                "SELECT name, version, store_key, installed_at, pinned, on_request, tap
                  FROM installed_kegs WHERE name = ?1",
                 params![name],
                 |row| {
@@ -165,6 +175,7 @@ impl Database {
                         installed_at: row.get(3)?,
                         pinned: row.get(4)?,
                         on_request: row.get(5)?,
+                        tap: row.get(6)?,
                     })
                 },
             )
@@ -175,7 +186,7 @@ impl Database {
         let mut stmt = self
             .conn
             .prepare(
-                "SELECT name, version, store_key, installed_at, pinned, on_request
+                "SELECT name, version, store_key, installed_at, pinned, on_request, tap
                  FROM installed_kegs ORDER BY name",
             )
             .map_err(Error::store("failed to prepare statement"))?;
@@ -189,6 +200,7 @@ impl Database {
                     installed_at: row.get(3)?,
                     pinned: row.get(4)?,
                     on_request: row.get(5)?,
+                    tap: row.get(6)?,
                 })
             })
             .map_err(Error::store("failed to query installed kegs"))?
@@ -205,6 +217,17 @@ impl Database {
                 params![name, pinned],
             )
             .map_err(Error::store("failed to update pin"))?;
+        Ok(())
+    }
+
+    /// Record the tap an installed formula or cask came from.
+    pub fn set_tap(&self, name: &str, tap: Option<&str>) -> Result<(), Error> {
+        self.conn
+            .execute(
+                "UPDATE installed_kegs SET tap = ?2 WHERE name = ?1",
+                params![name, tap],
+            )
+            .map_err(Error::store("failed to record the tap"))?;
         Ok(())
     }
 
@@ -716,10 +739,10 @@ mod tests {
     }
 
     #[test]
-    fn new_database_starts_at_version_2() {
+    fn new_database_starts_at_version_3() {
         let db = Database::in_memory().expect("failed to create database");
         let version = Database::get_schema_version(&db.conn).expect("failed to get version");
-        assert_eq!(version, 2);
+        assert_eq!(version, 3);
     }
 
     #[test]
@@ -728,7 +751,7 @@ mod tests {
         Database::migrate(&db.conn).expect("first migration failed");
         Database::migrate(&db.conn).expect("second migration failed");
         let version = Database::get_schema_version(&db.conn).expect("failed to get version");
-        assert_eq!(version, 2);
+        assert_eq!(version, 3);
     }
 
     #[test]

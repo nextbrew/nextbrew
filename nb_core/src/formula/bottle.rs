@@ -62,7 +62,17 @@ pub fn default_homebrew_prefix() -> &'static str {
     }
 }
 
-const MACOS_CODENAMES_NEWEST_FIRST: &[&str] = &["tahoe", "sequoia", "sonoma", "ventura"];
+/// Homebrew's `MacOSVersion::SYMBOLS` a bottle can be for; Catalina and
+/// older bottles are never poured.
+const MACOS_CODENAMES_NEWEST_FIRST: &[&str] = &[
+    "golden_gate",
+    "tahoe",
+    "sequoia",
+    "sonoma",
+    "ventura",
+    "monterey",
+    "big_sur",
+];
 
 #[cfg(any(target_os = "linux", test))]
 fn preferred_linux_bottle_tags_for_arch(arch: &str) -> &'static [&'static str] {
@@ -364,6 +374,7 @@ mod tests {
             service: None,
             desc: None,
             lifecycle: Default::default(),
+            tap: None,
         };
 
         let selected = select_bottle(&formula).unwrap();
@@ -411,6 +422,7 @@ mod tests {
             service: None,
             desc: None,
             lifecycle: Default::default(),
+            tap: None,
         };
 
         let err = select_bottle(&formula).unwrap_err();
@@ -457,6 +469,7 @@ mod tests {
             oldnames: Vec::new(),
             post_install_steps: Vec::new(),
             lifecycle: Default::default(),
+            tap: None,
         };
 
         let err = select_bottle(&formula).unwrap_err();
@@ -469,37 +482,45 @@ mod tests {
     #[test]
     fn compatible_codenames_on_sequoia_excludes_tahoe() {
         let codenames = compatible_codenames(Some(15));
-        assert_eq!(codenames, vec!["sequoia", "sonoma", "ventura"]);
+        assert_eq!(
+            codenames,
+            vec!["sequoia", "sonoma", "ventura", "monterey", "big_sur"]
+        );
     }
 
     #[test]
     fn compatible_codenames_on_tahoe_includes_all() {
         let codenames = compatible_codenames(Some(26));
-        assert_eq!(codenames, vec!["tahoe", "sequoia", "sonoma", "ventura"]);
+        assert_eq!(
+            codenames,
+            vec![
+                "tahoe", "sequoia", "sonoma", "ventura", "monterey", "big_sur"
+            ]
+        );
     }
 
     #[test]
     fn compatible_codenames_on_sonoma_excludes_newer() {
         let codenames = compatible_codenames(Some(14));
-        assert_eq!(codenames, vec!["sonoma", "ventura"]);
+        assert_eq!(codenames, vec!["sonoma", "ventura", "monterey", "big_sur"]);
     }
 
     #[test]
-    fn compatible_codenames_on_ventura_returns_only_ventura() {
+    fn compatible_codenames_on_ventura_returns_ventura_and_older() {
         let codenames = compatible_codenames(Some(13));
-        assert_eq!(codenames, vec!["ventura"]);
+        assert_eq!(codenames, vec!["ventura", "monterey", "big_sur"]);
     }
 
     #[test]
     fn compatible_codenames_unknown_version_returns_all() {
         let codenames = compatible_codenames(Some(99));
-        assert_eq!(codenames, vec!["tahoe", "sequoia", "sonoma", "ventura"]);
+        assert_eq!(codenames, MACOS_CODENAMES_NEWEST_FIRST);
     }
 
     #[test]
     fn compatible_codenames_none_returns_all() {
         let codenames = compatible_codenames(None);
-        assert_eq!(codenames, vec!["tahoe", "sequoia", "sonoma", "ventura"]);
+        assert_eq!(codenames, MACOS_CODENAMES_NEWEST_FIRST);
     }
 
     #[test]
@@ -549,6 +570,7 @@ mod tests {
             service: None,
             desc: None,
             lifecycle: Default::default(),
+            tap: None,
         };
 
         let selected = select_bottle_with_version(&formula, Some(15)).unwrap();
@@ -607,6 +629,7 @@ mod tests {
             service: None,
             desc: None,
             lifecycle: Default::default(),
+            tap: None,
         };
 
         let selected = select_bottle_with_version(&formula, Some(26)).unwrap();

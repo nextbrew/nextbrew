@@ -143,6 +143,68 @@ pub struct ApiClient {
     /// caller that needs it; see [`ApiClient::ensure_index`].
     index_usable: OnceCell<bool>,
     formula_candidates: RwLock<Option<Arc<[String]>>>,
+    /// Third-party taps, read for formulae the API does not have.
+    taps: Option<Arc<TapSource>>,
+}
+
+/// Where tap formulae come from: the installed taps, which of them may be
+/// loaded, and which installed formulae came from a tap.
+#[derive(Debug)]
+pub struct TapSource {
+    pub taps: crate::tap::Taps,
+    pub trust: crate::tap::trust::TrustStore,
+    pub platform: crate::tap::ruby::Platform,
+    /// Installed formulae from taps, by name.
+    pub installed: std::sync::RwLock<std::collections::HashMap<String, crate::tap::TapName>>,
+}
+
+impl TapSource {
+    pub fn new(prefix: &std::path::Path) -> Self {
+        Self {
+            taps: crate::tap::Taps::new(prefix),
+            trust: crate::tap::trust::TrustStore::new(),
+            platform: crate::tap::ruby::Platform::current(),
+            installed: Default::default(),
+        }
+    }
+
+    /// The formula `name` of `tap`, read from its file.
+    pub fn formula(&self, tap: &crate::tap::TapName, name: &str) -> Result<Formula, Error> {
+        let full = format!("{tap}/{name}");
+        if !self.taps.is_installed(tap) {
+            return Err(Error::InvalidArgument {
+                message: format!(
+                    "No available formula with the name \"{full}\".\nThis command requires the tap {tap}.\nIf you trust this tap, tap it explicitly and then try again:\n  nb tap {tap}"
+                ),
+            });
+        }
+        let Some((resolved, file)) = self.taps.find_formula(tap, name) else {
+            return Err(Error::MissingFormula { name: full });
+        };
+        self.trust
+            .require(crate::tap::trust::TrustKind::Formula, tap, &resolved)?;
+        let source = std::fs::read(&file).map_err(Error::file("failed to read the formula"))?;
+        let read = crate::tap::ruby::read_formula(&source, &resolved, tap, self.platform).map_err(
+            |e| Error::UnsupportedFormula {
+                name: format!("{tap}/{resolved}"),
+                reason: format!("{} (line {})", e.message, e.line),
+            },
+        )?;
+        serde_json::from_value(read.json).map_err(|e| Error::UnsupportedFormula {
+            name: format!("{tap}/{resolved}"),
+            reason: e.to_string(),
+        })
+    }
+
+    /// The installed taps with a formula `name`, as `FromNameLoader`
+    /// searches them for a name homebrew/core does not have.
+    pub fn taps_with(&self, name: &str) -> Vec<crate::tap::TapName> {
+        self.taps
+            .installed()
+            .into_iter()
+            .filter(|tap| !tap.is_core() && self.taps.find_formula(tap, name).is_some())
+            .collect()
+    }
 }
 
 impl ApiClient {
@@ -189,7 +251,22 @@ impl ApiClient {
             cache: None,
             index_usable: OnceCell::new(),
             formula_candidates: RwLock::new(None),
+            taps: None,
         }
+    }
+
+    pub fn with_taps(mut self, taps: TapSource) -> Self {
+        self.taps = Some(Arc::new(taps));
+        self
+    }
+
+    pub fn taps(&self) -> Option<&TapSource> {
+        self.taps.as_deref()
+    }
+
+    /// The HTTP client, for fetching taps.
+    pub fn http(&self) -> &reqwest::Client {
+        &self.client
     }
 
     #[cfg(test)]
@@ -345,14 +422,52 @@ impl ApiClient {
     /// name the index does not have may be newer than the index, so it is
     /// still asked for; a 404 there is final.
     pub async fn get_formula(&self, name: &str) -> Result<Formula, Error> {
-        // Formulae of other taps are Ruby only; nextbrew reads the API.
+        // Formulae of other taps are read from their Ruby files.
         let name = name.strip_prefix("homebrew/core/").unwrap_or(name);
-        if name.split('/').count() == 3 {
-            return Err(Error::UnsupportedTap {
-                name: name.to_string(),
-            });
+        if let Some((tap, short)) = crate::tap::TapName::split_full_name(name) {
+            return match &self.taps {
+                Some(taps) => taps.formula(&tap, &short),
+                None => Err(Error::UnsupportedTap {
+                    name: name.to_string(),
+                }),
+            };
         }
+        // An installed formula from a tap is that one, not core's.
+        if let Some(taps) = &self.taps {
+            let installed = taps
+                .installed
+                .read()
+                .ok()
+                .and_then(|map| map.get(name).cloned());
+            if let Some(tap) = installed {
+                return taps.formula(&tap, name);
+            }
+        }
+        match self.get_core_formula(name).await {
+            Err(Error::MissingFormula { .. }) if self.taps.is_some() => {
+                let taps = self.taps.as_ref().unwrap();
+                match taps.taps_with(name).as_slice() {
+                    [] => Err(Error::MissingFormula {
+                        name: name.to_string(),
+                    }),
+                    [tap] => taps.formula(tap, name),
+                    many => Err(Error::InvalidArgument {
+                        message: format!(
+                            "Formulae found in multiple taps:\n{}\n\nPlease use the fully-qualified name (e.g. {}/{name}) to refer to a specific formula.",
+                            many.iter()
+                                .map(|tap| format!("       * {tap}/{name}"))
+                                .collect::<Vec<_>>()
+                                .join("\n"),
+                            many[0]
+                        ),
+                    }),
+                }
+            }
+            other => other,
+        }
+    }
 
+    async fn get_core_formula(&self, name: &str) -> Result<Formula, Error> {
         let parse_body = |body: String| {
             serde_json::from_str(&body).map_err(Error::network("failed to parse formula JSON"))
         };

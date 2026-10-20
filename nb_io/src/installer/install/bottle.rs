@@ -65,6 +65,7 @@ impl Installer {
         tx.commit().inspect_err(|_| {
             Self::cleanup_materialized(&self.cellar, formula_name, &version);
         })?;
+        self.record_tap(install_name, &item.formula)?;
 
         // Aliases only: Homebrew refreshes an old name's opt link that a
         // rename left behind, but never makes a new one.

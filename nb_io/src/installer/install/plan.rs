@@ -349,16 +349,13 @@ impl Installer {
     }
 }
 
-/// The name to record an install under. A formula reached through an alias
-/// or old name, like `nb install python` or node's `uses_from_macos "python"`,
-/// is recorded under its own name (`python@3.14`) so the database matches its
-/// keg in the Cellar. Tap references keep their full name.
-fn install_name_for(requested: &str, formula: &Formula) -> String {
-    if formula_token(requested) == formula.name {
-        requested.to_string()
-    } else {
-        formula.name.clone()
-    }
+/// The name to record an install under: the formula's own name, as its keg
+/// in the Cellar has it. A formula reached through an alias or old name,
+/// like `nb install python` (`python@3.14`), or through its tap,
+/// `hashicorp/tap/terraform` (`terraform`), is recorded under that name;
+/// the tap is recorded beside it.
+fn install_name_for(_requested: &str, formula: &Formula) -> String {
+    formula.name.clone()
 }
 
 /// The install names of the packages the caller asked for, as opposed to the

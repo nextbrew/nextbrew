@@ -13,6 +13,7 @@ bytes.workspace = true
 futures-util.workspace = true
 rayon.workspace = true
 regex.workspace = true
+ruby-prism = "=1.9.0"
 rustls.workspace = true
 rustls-native-certs.workspace = true
 webpki-roots.workspace = true

@@ -20,25 +20,29 @@ impl Installer {
         let formula_name = &item.formula.name;
         let version = item.formula.effective_version();
 
-        let ruby_source_path =
-            item.formula
-                .ruby_source_path
-                .as_deref()
-                .ok_or_else(|| Error::ExecutionError {
-                    message: format!("no ruby_source_path for formula '{formula_name}'"),
-                })?;
+        let formula_rb = match item.formula.third_party_tap() {
+            // A tap formula is built from its file in the tap.
+            Some(tap) => self.tap_formula_rb(tap, formula_name)?,
+            None => {
+                let ruby_source_path =
+                    item.formula.ruby_source_path.as_deref().ok_or_else(|| {
+                        Error::ExecutionError {
+                            message: format!("no ruby_source_path for formula '{formula_name}'"),
+                        }
+                    })?;
 
-        let cache_dir = self.prefix.join("tmp").join("rb_cache");
-        let formula_rb_checksum = item
-            .formula
-            .ruby_source_checksum
-            .as_ref()
-            .map(|checksum| checksum.sha256.as_str());
+                let cache_dir = self.prefix.join("tmp").join("rb_cache");
+                let formula_rb_checksum = item
+                    .formula
+                    .ruby_source_checksum
+                    .as_ref()
+                    .map(|checksum| checksum.sha256.as_str());
 
-        let formula_rb = self
-            .api_client
-            .fetch_formula_rb(ruby_source_path, &cache_dir, formula_rb_checksum)
-            .await?;
+                self.api_client
+                    .fetch_formula_rb(ruby_source_path, &cache_dir, formula_rb_checksum)
+                    .await?
+            }
+        };
 
         let mut installed_deps = std::collections::HashMap::new();
         for dep_name in &build_plan.runtime_dependencies {
@@ -96,6 +100,7 @@ impl Installer {
             Self::cleanup_materialized(&self.cellar, formula_name, &version);
             return Err(e);
         }
+        self.record_tap(install_name, &item.formula)?;
 
         // Aliases only: Homebrew refreshes an old name's opt link that a
         // rename left behind, but never makes a new one.

@@ -66,6 +66,7 @@ async fn run(cli: Cli) -> Result<(), nb_core::Error> {
                     }
                 })
                 .collect();
+            commands::tap::prepare_full_names(&installer, &formulas).await?;
             commands::install::execute(
                 &mut installer,
                 formulas,
@@ -190,6 +191,48 @@ async fn run(cli: Cli) -> Result<(), nb_core::Error> {
         Commands::Unlink { formulas } => commands::link::unlink(&mut installer, formulas),
         Commands::Pin { formulas } => commands::pin::execute(&installer, formulas, true),
         Commands::Unpin { formulas } => commands::pin::execute(&installer, formulas, false),
+        Commands::Tap {
+            name,
+            url,
+            force,
+            custom_remote,
+        } => {
+            if custom_remote && url.is_none() {
+                Err(nb_core::Error::InvalidArgument {
+                    message: format!(
+                        "Tap {} with option `--custom-remote` but without a remote URL.",
+                        name.as_deref().unwrap_or_default()
+                    ),
+                })
+            } else {
+                commands::tap::tap(&installer, name, url, force).await
+            }
+        }
+        Commands::Untap { names, force } => {
+            commands::tap::untap(&mut installer, names, force, &mut ui).await
+        }
+        Commands::Trust {
+            names,
+            tap,
+            formula,
+            cask,
+        } => commands::tap::trust(
+            &installer,
+            names,
+            commands::tap::trust_kind(tap, formula, cask),
+            commands::tap::TrustAction::Trust,
+        ),
+        Commands::Untrust {
+            names,
+            tap,
+            formula,
+            cask,
+        } => commands::tap::trust(
+            &installer,
+            names,
+            commands::tap::trust_kind(tap, formula, cask),
+            commands::tap::TrustAction::Untrust,
+        ),
         Commands::Services { command } => {
             commands::services::execute(&installer, command, cli.verbose > 0).await
         }

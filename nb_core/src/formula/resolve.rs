@@ -146,6 +146,7 @@ mod tests {
             service: None,
             desc: None,
             lifecycle: Default::default(),
+            tap: None,
         }
     }
 

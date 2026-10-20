@@ -48,6 +48,26 @@ pub struct SourceUrl {
     pub tag: Option<String>,
     #[serde(default)]
     pub revision: Option<String>,
+    /// The download strategy `url ..., using:` names, like `git`.
+    #[serde(default)]
+    pub using: Option<String>,
+}
+
+impl SourceUrl {
+    /// Whether the source is checked out of a version control repository
+    /// rather than downloaded as an archive, as `DownloadStrategyDetector`
+    /// decides from the url and its `using:`, `tag:` and `revision:`.
+    pub fn is_vcs(&self) -> bool {
+        const VCS: &[&str] = &["git", "github_git", "svn", "hg", "bzr", "cvs", "fossil"];
+        self.tag.is_some()
+            || self.revision.is_some()
+            || self
+                .using
+                .as_deref()
+                .is_some_and(|using| VCS.contains(&using))
+            || self.url.ends_with(".git")
+            || self.url.starts_with("git://")
+    }
 }
 
 #[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
@@ -158,6 +178,10 @@ pub struct Formula {
     pub service: Option<serde_json::Value>,
     #[serde(flatten)]
     pub lifecycle: Lifecycle,
+    /// The tap the formula is from: `homebrew/core`, or `user/repo` for a
+    /// third-party tap.
+    #[serde(default)]
+    pub tap: Option<String>,
 }
 
 /// The `deprecate!` / `disable!` keys of the formula JSON, under their API
@@ -179,6 +203,11 @@ pub struct Lifecycle {
 }
 
 impl Formula {
+    /// The third-party tap the formula is from, if any.
+    pub fn third_party_tap(&self) -> Option<&str> {
+        self.tap.as_deref().filter(|tap| *tap != "homebrew/core")
+    }
+
     pub fn effective_version(&self) -> String {
         if self.revision > 0 {
             format!("{}_{}", self.versions.stable, self.revision)
@@ -315,12 +344,14 @@ pub struct Versions {
     pub stable: String,
 }
 
-#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+/// `{}` for a formula without bottles, as the API writes it.
+#[derive(Debug, Clone, Default, Deserialize, PartialEq, Eq)]
 pub struct Bottle {
+    #[serde(default)]
     pub stable: BottleStable,
 }
 
-#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, Deserialize, PartialEq, Eq)]
 pub struct BottleStable {
     pub files: BTreeMap<String, BottleFile>,
     /// Rebuild number for the bottle. When > 0, the bottle's internal paths

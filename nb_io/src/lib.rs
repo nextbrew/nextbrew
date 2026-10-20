@@ -9,6 +9,7 @@ pub mod progress;
 pub mod services;
 pub mod ssl;
 pub mod storage;
+pub mod tap;
 
 pub use build::{BuildExecutor, DepInfo};
 pub use cellar::{Cellar, LinkedFile, Linker, MaterializedKeg};

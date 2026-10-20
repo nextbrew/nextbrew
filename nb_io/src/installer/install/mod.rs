@@ -19,6 +19,7 @@ mod post_install;
 mod quarantine;
 mod services;
 mod source;
+mod taps;
 mod undeletable;
 mod uninstall;
 mod upgrade;
@@ -527,6 +528,36 @@ impl Installer {
         self.api_client.get_cask(token).await
     }
 
+    /// Record the third-party tap an installed formula came from (or that
+    /// it came from homebrew/core), so it is read from there again.
+    pub(super) fn record_tap(&self, install_name: &str, formula: &Formula) -> Result<(), Error> {
+        let tap = formula.third_party_tap();
+        self.db.set_tap(install_name, tap)?;
+        if let Some(source) = self.api_client.taps()
+            && let Ok(mut installed) = source.installed.write()
+        {
+            match tap.and_then(|t| crate::tap::TapName::parse(t).ok()) {
+                Some(tap) => installed.insert(install_name.to_string(), tap),
+                None => installed.remove(install_name),
+            };
+        }
+        Ok(())
+    }
+
+    /// The file of the formula `name` in the third-party `tap`.
+    pub(super) fn tap_formula_rb(&self, tap: &str, name: &str) -> Result<PathBuf, Error> {
+        let missing = || Error::MissingFormula {
+            name: format!("{tap}/{name}"),
+        };
+        let source = self.api_client.taps().ok_or_else(missing)?;
+        let tap = crate::tap::TapName::parse(tap)?;
+        source
+            .taps
+            .find_formula(&tap, name)
+            .map(|(_, file)| file)
+            .ok_or_else(missing)
+    }
+
     pub fn keg_path(&self, name: &str, version: &str) -> PathBuf {
         self.cellar.keg_path(name, version)
     }
@@ -591,6 +622,19 @@ pub fn create_installer(
         Cellar::new_at(prefix.join("Cellar")).map_err(Error::store("failed to create cellar"))?;
     let linker = Linker::new(prefix).map_err(Error::store("failed to create linker"))?;
     let db = Database::open(&root.join("db/nb.sqlite3"))?;
+    let tap_source = crate::network::api::TapSource::new(prefix);
+    if let Ok(mut installed) = tap_source.installed.write() {
+        for keg in db.list_installed()? {
+            if let Some(tap) = keg
+                .tap
+                .as_deref()
+                .and_then(|t| crate::tap::TapName::parse(t).ok())
+            {
+                installed.insert(keg.name, tap);
+            }
+        }
+    }
+    let api_client = api_client.with_taps(tap_source);
 
     let locks_dir = root.join("locks");
     fs::create_dir_all(&locks_dir).map_err(Error::store("failed to create locks directory"))?;

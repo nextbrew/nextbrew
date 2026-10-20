@@ -32,8 +32,10 @@ pub struct BuildPlan {
 }
 
 impl BuildPlan {
+    /// The plan to build `formula` from its source archive; `None` when it
+    /// has no source, or its source is a repository nextbrew cannot check out.
     pub fn from_formula(formula: &Formula, prefix: &Path) -> Option<Self> {
-        let source = formula.source_url()?;
+        let source = formula.source_url().filter(|source| !source.is_vcs())?;
         let version = formula.effective_version();
         let cellar_path = prefix.join("Cellar").join(&formula.name).join(&version);
 
@@ -109,6 +111,7 @@ mod tests {
                     checksum: Some("abc123".to_string()),
                     tag: None,
                     revision: None,
+                    using: None,
                 }),
                 head: None,
             }),
@@ -124,6 +127,7 @@ mod tests {
             service: None,
             desc: None,
             lifecycle: Default::default(),
+            tap: None,
         }
     }
 
@@ -157,6 +161,22 @@ mod tests {
         f.urls = None;
         let prefix = PathBuf::from("/opt/nextbrew");
         assert!(BuildPlan::from_formula(&f, &prefix).is_none());
+    }
+
+    #[test]
+    fn returns_none_for_a_git_source() {
+        let prefix = PathBuf::from("/opt/nextbrew");
+        let plan_with = |url: &str, tag: Option<&str>, using: Option<&str>| {
+            let mut f = test_formula("xcodes", url, &[]);
+            let source = f.urls.as_mut().unwrap().stable.as_mut().unwrap();
+            source.tag = tag.map(str::to_string);
+            source.using = using.map(str::to_string);
+            BuildPlan::from_formula(&f, &prefix)
+        };
+        assert!(plan_with("https://github.com/XcodesOrg/xcodes.git", None, None).is_none());
+        assert!(plan_with("https://example.com/src", Some("2.1.0"), None).is_none());
+        assert!(plan_with("https://example.com/src", None, Some("git")).is_none());
+        assert!(plan_with("https://example.com/src.tar.gz", None, Some("nounzip")).is_some());
     }
 
     #[test]
