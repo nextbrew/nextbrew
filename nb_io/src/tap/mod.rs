@@ -118,12 +118,96 @@ impl TapName {
             .join(&self.user)
             .join(format!("homebrew-{}", self.repo))
     }
+
+    /// `Tap#uses_custom_remote?`: fetched from somewhere other than its
+    /// GitHub repository.
+    pub fn uses_custom_remote(&self, remote: Option<&str>) -> bool {
+        remote.is_some_and(|remote| {
+            !remote.is_empty() && !same_remote(remote, &self.default_remote())
+        })
+    }
+
+    /// `Tap#reference`: how the trust list names the tap, `user/repo` on its
+    /// GitHub repository and its remote otherwise, so that trusting a tap
+    /// does not carry over to another remote.
+    pub fn reference(&self, remote: Option<&str>) -> String {
+        match remote {
+            Some(remote) if self.uses_custom_remote(Some(remote)) => remote.to_string(),
+            _ => self.name(),
+        }
+    }
+
+    /// `Tap#matches_reference?`: a remote reference matches the tap on that
+    /// remote, a `user/repo` one only the tap on its GitHub repository.
+    pub fn matches_reference(&self, reference: &str, remote: Option<&str>) -> bool {
+        if is_remote_reference(reference) {
+            remote.is_some_and(|remote| same_remote(reference, remote))
+        } else {
+            !self.uses_custom_remote(remote) && self.name() == reference.to_lowercase()
+        }
+    }
 }
 
 impl std::fmt::Display for TapName {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "{}/{}", self.user, self.repo)
     }
+}
+
+/// `Tap.remote_reference?`: a URL or a path rather than `user/repo`.
+pub fn is_remote_reference(reference: &str) -> bool {
+    static URL: std::sync::LazyLock<regex::Regex> =
+        std::sync::LazyLock::new(|| regex::Regex::new(r"\A[^/]+:.").unwrap());
+    URL.is_match(reference) || reference.starts_with(['/', '.', '~'])
+}
+
+/// `Tap.normalize_remote`: every form of a GitHub remote as
+/// `https://github.com/owner/repo`, and without a `.git` suffix or trailing
+/// slashes on hosts where those do not change the repository.
+pub fn normalize_remote(remote: &str) -> Option<String> {
+    static GITHUB_PREFIX: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| {
+        regex::Regex::new(
+            r"\A(?:[a-z][a-z0-9+.-]*://(?:[^@/]+@)?github\.com/|(?:[^@/]+@)?github\.com:)",
+        )
+        .unwrap()
+    });
+    static HOST: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| {
+        regex::Regex::new(r"\A(?:[a-z][a-z0-9+.-]*://)?(?:[^@/]+@)?([^/:]+)").unwrap()
+    });
+    let remote = remote.trim().to_lowercase();
+    if remote.is_empty() {
+        return None;
+    }
+    let remote = GITHUB_PREFIX
+        .replace(&remote, "https://github.com/")
+        .into_owned();
+    let host = HOST.captures(&remote).and_then(|c| c.get(1));
+    if !host.is_some_and(|h| ["codeberg.org", "github.com", "gitlab.com"].contains(&h.as_str())) {
+        return Some(remote);
+    }
+    let remote = remote.trim_end_matches('/');
+    Some(remote.strip_suffix(".git").unwrap_or(remote).to_string())
+}
+
+/// `Tap.same_remote?`.
+pub fn same_remote(first: &str, second: &str) -> bool {
+    normalize_remote(first).is_some_and(|first| Some(first) == normalize_remote(second))
+}
+
+/// `Tap.remote_to_reference`: the trust list reference for a remote, the
+/// tap's name when it is that tap's GitHub repository.
+pub fn remote_to_reference(url: &str) -> Option<String> {
+    static TAP_REPOSITORY: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| {
+        regex::Regex::new(r"\A.+[/:]([^/:]+/[^/:]+?)(?:\.git/*|/*)\z").unwrap()
+    });
+    let normalised = normalize_remote(url)?;
+    let tap = TAP_REPOSITORY
+        .captures(&normalised)
+        .and_then(|c| TapName::parse(&c[1]).ok());
+    Some(match tap {
+        Some(tap) if same_remote(&normalised, &tap.default_remote()) => tap.name(),
+        _ => normalised,
+    })
 }
 
 /// What nextbrew records about an installed tap.
@@ -249,6 +333,13 @@ impl Taps {
     pub fn state(&self, tap: &TapName) -> Option<TapState> {
         let json = std::fs::read(self.path(tap).join(STATE_FILE)).ok()?;
         serde_json::from_slice(&json).ok()
+    }
+
+    /// Where an installed tap was fetched from.
+    pub fn remote(&self, tap: &TapName) -> Option<String> {
+        self.state(tap)
+            .map(|state| state.remote)
+            .filter(|remote| !remote.is_empty())
     }
 
     /// The checks `Tap#install` makes before fetching anything.
@@ -643,6 +734,59 @@ fn clone_git(remote: &str, dest: &Path) -> Result<Option<String>, Error> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn normalises_remotes_as_homebrew() {
+        for github in [
+            "git@github.com:Me/homebrew-test.git",
+            "https://github.com/me/homebrew-test/",
+            "ssh://git@github.com/me/homebrew-test",
+        ] {
+            assert_eq!(
+                normalize_remote(github).as_deref(),
+                Some("https://github.com/me/homebrew-test")
+            );
+        }
+        // Elsewhere `.git` may name another repository.
+        assert_eq!(
+            normalize_remote("https://git.example.com/x.git").as_deref(),
+            Some("https://git.example.com/x.git")
+        );
+        assert_eq!(
+            normalize_remote("/Users/Me/tap").as_deref(),
+            Some("/users/me/tap")
+        );
+        assert_eq!(normalize_remote("  "), None);
+    }
+
+    #[test]
+    fn remote_references() {
+        assert!(is_remote_reference("/Users/me/tap"));
+        assert!(is_remote_reference("~/tap"));
+        assert!(is_remote_reference("https://example.com/tap"));
+        assert!(is_remote_reference("git@example.com:me/tap"));
+        assert!(!is_remote_reference("me/tap"));
+        assert_eq!(
+            remote_to_reference("git@github.com:me/homebrew-tap.git").as_deref(),
+            Some("me/tap")
+        );
+        assert_eq!(
+            remote_to_reference("https://github.com/me/tap").as_deref(),
+            Some("https://github.com/me/tap")
+        );
+        assert_eq!(
+            remote_to_reference("/Users/me/tap").as_deref(),
+            Some("/users/me/tap")
+        );
+
+        let tap = TapName::parse("me/tap").unwrap();
+        assert!(!tap.uses_custom_remote(None));
+        assert!(!tap.uses_custom_remote(Some("https://github.com/Me/homebrew-tap.git")));
+        assert!(tap.uses_custom_remote(Some("/Users/me/tap")));
+        assert!(tap.matches_reference("me/tap", None));
+        assert!(!tap.matches_reference("me/tap", Some("/Users/me/tap")));
+        assert!(tap.matches_reference("/users/me/tap", Some("/Users/me/tap")));
+    }
 
     #[test]
     fn reads_tap_names_like_tap_fetch() {

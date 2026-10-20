@@ -181,8 +181,13 @@ impl TapSource {
         let Some((resolved, file)) = self.taps.find_formula(tap, name) else {
             return Err(Error::MissingFormula { name: full });
         };
-        self.trust
-            .require(crate::tap::trust::TrustKind::Formula, tap, &resolved)?;
+        let remote = self.taps.remote(tap);
+        self.trust.require(
+            crate::tap::trust::TrustKind::Formula,
+            tap,
+            &resolved,
+            remote.as_deref(),
+        )?;
         let source = std::fs::read(&file).map_err(Error::file("failed to read the formula"))?;
         let read = crate::tap::ruby::read_formula(&source, &resolved, tap, self.platform).map_err(
             |e| Error::UnsupportedFormula {

@@ -118,43 +118,65 @@ impl TrustStore {
         Ok(true)
     }
 
-    /// Forget everything about a tap once it is untapped.
-    pub fn forget_tap(&self, tap: &TapName) -> Result<(), Error> {
-        let mut store = self.read();
-        let name = tap.name();
-        let prefix = format!("{name}/");
-        let mut changed = false;
-        for entries in store.values_mut() {
-            let before = entries.len();
-            entries.retain(|entry| *entry != name && !entry.starts_with(&prefix));
-            changed |= entries.len() != before;
+    /// `Homebrew::Trust.item_trust_name`: how the trust list names `name`
+    /// of `tap`, under the tap's remote when it has a custom one.
+    pub fn item_trust_name(tap: &TapName, name: &str, remote: Option<&str>) -> String {
+        let name = name.to_lowercase();
+        let reference = tap.reference(remote);
+        if reference == tap.name() {
+            format!("{tap}/{name}")
+        } else {
+            format!("{}/{name}", reference.to_lowercase())
         }
-        store.retain(|_, entries| !entries.is_empty());
-        if changed {
-            self.write(&store)?;
-        }
-        Ok(())
     }
 
-    /// Whether `user/repo/name` (or its tap) may be loaded. Official taps
-    /// always may.
-    pub fn trusted(&self, kind: TrustKind, tap: &TapName, name: &str) -> bool {
-        if tap.is_official() {
+    /// Whether `tap` itself is trusted on `remote`.
+    pub fn trusted_tap(&self, tap: &TapName, remote: Option<&str>) -> bool {
+        tap.is_official()
+            || self
+                .entries(TrustKind::Tap)
+                .iter()
+                .any(|reference| tap.matches_reference(reference, remote))
+    }
+
+    /// `Homebrew::Trust.trusted?`: whether `name` of `tap` (fetched from
+    /// `remote`) may be loaded, because it or its tap is trusted. Official
+    /// taps always may.
+    pub fn trusted(
+        &self,
+        kind: TrustKind,
+        tap: &TapName,
+        name: &str,
+        remote: Option<&str>,
+    ) -> bool {
+        let name = name.to_lowercase();
+        let entries = self.entries(kind);
+        if entries.contains(&format!("{tap}/{name}")) || self.trusted_tap(tap, remote) {
             return true;
         }
-        let store = self.read();
-        let has = |kind: TrustKind, entry: &str| {
-            store
-                .get(kind.key())
-                .is_some_and(|entries| entries.iter().any(|e| e == entry))
+        if entries.contains(&Self::item_trust_name(tap, &name, remote)) {
+            return true;
+        }
+        let Some(remote) = remote.filter(|_| tap.uses_custom_remote(remote)) else {
+            return false;
         };
-        has(TrustKind::Tap, &tap.name())
-            || has(kind, &format!("{}/{}", tap.name(), name.to_lowercase()))
+        let suffix = format!("/{name}");
+        entries.iter().any(|entry| {
+            entry
+                .strip_suffix(&suffix)
+                .is_some_and(|reference| super::same_remote(reference, remote))
+        })
     }
 
     /// `require_trusted_formula!` / `require_trusted_cask!`.
-    pub fn require(&self, kind: TrustKind, tap: &TapName, name: &str) -> Result<(), Error> {
-        if self.trusted(kind, tap, name) {
+    pub fn require(
+        &self,
+        kind: TrustKind,
+        tap: &TapName,
+        name: &str,
+        remote: Option<&str>,
+    ) -> Result<(), Error> {
+        if self.trusted(kind, tap, name, remote) {
             return Ok(());
         }
         let full = format!("{tap}/{name}");
@@ -177,20 +199,60 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let store = TrustStore::at(tmp.path().join("trust.json"));
         let tap = TapName::parse("me/tools").unwrap();
-        assert!(!store.trusted(TrustKind::Formula, &tap, "foo"));
-        assert!(store.require(TrustKind::Formula, &tap, "foo").is_err());
+        assert!(!store.trusted(TrustKind::Formula, &tap, "foo", None));
+        assert!(
+            store
+                .require(TrustKind::Formula, &tap, "foo", None)
+                .is_err()
+        );
         assert!(store.trust(TrustKind::Formula, "Me/Tools/Foo").unwrap());
         assert!(!store.trust(TrustKind::Formula, "me/tools/foo").unwrap());
-        assert!(store.trusted(TrustKind::Formula, &tap, "foo"));
-        assert!(!store.trusted(TrustKind::Cask, &tap, "foo"));
+        assert!(store.trusted(TrustKind::Formula, &tap, "foo", None));
+        assert!(!store.trusted(TrustKind::Cask, &tap, "foo", None));
         store.trust(TrustKind::Tap, "me/tools").unwrap();
-        assert!(store.trusted(TrustKind::Cask, &tap, "anything"));
-        store.forget_tap(&tap).unwrap();
-        assert!(!store.trusted(TrustKind::Formula, &tap, "foo"));
+        assert!(store.trusted(TrustKind::Cask, &tap, "anything", None));
         assert!(store.trusted(
             TrustKind::Formula,
             &TapName::parse("homebrew/core").unwrap(),
-            "x"
+            "x",
+            None
         ));
+    }
+
+    #[test]
+    fn trust_of_a_custom_remote_tap_follows_its_remote() {
+        let tmp = tempfile::tempdir().unwrap();
+        let store = TrustStore::at(tmp.path().join("trust.json"));
+        let tap = TapName::parse("me/test").unwrap();
+        let (one, two) = (Some("/Users/me/one"), Some("/Users/me/two"));
+        let github = Some("git@github.com:Me/homebrew-test.git");
+
+        assert_eq!(tap.reference(one), "/Users/me/one");
+        assert_eq!(tap.reference(github), "me/test");
+        assert_eq!(
+            TrustStore::item_trust_name(&tap, "Foo", one),
+            "/users/me/one/foo"
+        );
+
+        // `user/repo` trusts the tap only on its GitHub repository.
+        store.trust(TrustKind::Tap, "me/test").unwrap();
+        assert!(store.trusted(TrustKind::Formula, &tap, "foo", github));
+        assert!(!store.trusted(TrustKind::Formula, &tap, "foo", one));
+        store.untrust(TrustKind::Tap, "me/test").unwrap();
+
+        store.trust(TrustKind::Tap, &tap.reference(one)).unwrap();
+        assert!(store.trusted(TrustKind::Formula, &tap, "foo", one));
+        assert!(!store.trusted(TrustKind::Formula, &tap, "foo", two));
+        store.untrust(TrustKind::Tap, &tap.reference(one)).unwrap();
+
+        store
+            .trust(
+                TrustKind::Formula,
+                &TrustStore::item_trust_name(&tap, "foo", one),
+            )
+            .unwrap();
+        assert!(store.trusted(TrustKind::Formula, &tap, "foo", Some("/users/me/one")));
+        assert!(!store.trusted(TrustKind::Formula, &tap, "foo", two));
+        assert!(!store.trusted(TrustKind::Formula, &tap, "bar", one));
     }
 }

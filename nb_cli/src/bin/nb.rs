@@ -205,7 +205,7 @@ async fn run(cli: Cli) -> Result<(), nb_core::Error> {
                     ),
                 })
             } else {
-                commands::tap::tap(&installer, name, url, force).await
+                commands::tap::tap(&installer, name, url, force, custom_remote).await
             }
         }
         Commands::Untap { names, force } => {

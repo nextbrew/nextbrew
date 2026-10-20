@@ -2,7 +2,7 @@ use chrono::{DateTime, Local};
 use console::style;
 
 pub fn execute(installer: &mut nb_io::Installer, formula: String) -> Result<(), nb_core::Error> {
-    if let Some(keg) = installer.get_installed(&formula) {
+    if let Some(keg) = installer.get_installed_by_full_name(&formula) {
         print_field("Name:", style(&keg.name).bold());
         print_field("Version:", &keg.version);
         print_field("Store key:", &keg.store_key[..12]);

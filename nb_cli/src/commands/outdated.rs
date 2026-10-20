@@ -6,7 +6,11 @@ pub async fn execute(
     verbose: bool,
     json: bool,
 ) -> Result<(), nb_core::Error> {
-    let (outdated, warnings) = installer.check_outdated().await?;
+    let (mut outdated, warnings) = installer.check_outdated().await?;
+    // Formulae from third-party taps go by their full names, as in brew.
+    for pkg in &mut outdated {
+        pkg.name = installer.installed_full_name(&pkg.name);
+    }
 
     // Warnings always go to stderr (never pollute stdout, especially in --json mode)
     for warning in &warnings {

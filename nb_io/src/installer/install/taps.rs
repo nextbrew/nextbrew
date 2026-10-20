@@ -24,12 +24,35 @@ impl Installer {
             .await
     }
 
-    /// Remove `tap` and forget which of its files were trusted.
+    /// Remove `tap`. What was trusted stays trusted, as with `brew untap`.
     pub fn untap(&self, tap: &TapName) -> Result<TapContents, Error> {
-        let source = self.tap_source()?;
-        let contents = source.taps.uninstall(tap)?;
-        source.trust.forget_tap(tap)?;
-        Ok(contents)
+        self.tap_source()?.taps.uninstall(tap)
+    }
+
+    /// The installed formula `name`, which may be given in full as
+    /// `user/repo/name` for one from that tap.
+    pub fn get_installed_by_full_name(
+        &self,
+        name: &str,
+    ) -> Option<crate::storage::db::InstalledKeg> {
+        if let Some(keg) = self.db.get_installed(name) {
+            return Some(keg);
+        }
+        let (tap, short) = TapName::split_full_name(name)?;
+        let tap = (!tap.is_core()).then(|| tap.name());
+        self.db.get_installed(&short).filter(|keg| keg.tap == tap)
+    }
+
+    /// `Formula#full_name` of an installed formula: `user/repo/name` for one
+    /// from a third-party tap.
+    pub fn installed_full_name(&self, name: &str) -> String {
+        if name.starts_with("cask:") {
+            return name.to_string();
+        }
+        match self.db.get_installed(name).and_then(|keg| keg.tap) {
+            Some(tap) => format!("{tap}/{name}"),
+            None => name.to_string(),
+        }
     }
 
     /// The installed formulae and casks that came from `tap`, by install

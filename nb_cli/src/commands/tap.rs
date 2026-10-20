@@ -8,12 +8,14 @@ fn ohai(message: &str) {
     eprintln!("{} {}", style("==>").blue().bold(), style(message).bold());
 }
 
-/// `brew tap [user/repo] [URL]`.
+/// `brew tap [user/repo] [URL]`; with `custom_remote`, moving an installed
+/// tap to URL.
 pub async fn tap(
     installer: &nb_io::Installer,
     name: Option<String>,
     remote: Option<String>,
     force: bool,
+    custom_remote: bool,
 ) -> Result<(), nb_core::Error> {
     let source = installer.tap_source()?;
     let Some(name) = name else {
@@ -34,9 +36,13 @@ pub async fn tap(
             && !current.is_empty()
             && *remote != current
         {
-            return Err(nb_core::Error::InvalidArgument {
-                message: format!("Tap {tap} remote mismatch.\n{current} != {remote}"),
-            });
+            if !custom_remote {
+                return Err(nb_core::Error::InvalidArgument {
+                    message: format!("Tap {tap} remote mismatch.\n{current} != {remote}"),
+                });
+            }
+            ohai(&format!("{tap}: changed remote from {current} to {remote}"));
+            installer.tap(&tap, Some(remote)).await?;
         }
         // Already tapped: nothing to do, as brew says nothing.
         return Ok(());
@@ -160,8 +166,12 @@ pub fn trust(
         return Ok(());
     }
     for name in names {
-        let (kind, target) = trust_target(installer, &name, kind)?;
-        if kind == TrustKind::Tap && TapName::parse(&target)?.is_official() {
+        let include_existing = matches!(action, TrustAction::Untrust);
+        let (kind, target) = trust_target(installer, &name, kind, include_existing)?;
+        if kind == TrustKind::Tap
+            && !nb_io::tap::is_remote_reference(&target)
+            && TapName::parse(&target)?.is_official()
+        {
             println!("Official tap {target} is always trusted.");
             continue;
         }
@@ -176,11 +186,33 @@ pub fn trust(
                 println!("{verb} {label}: {target}");
             }
             TrustAction::Untrust => {
-                let verb = if source.trust.untrust(kind, &target)? {
-                    "Untrusted"
-                } else {
-                    "Not trusted"
-                };
+                let mut removed = source.trust.untrust(kind, &target)?;
+                // A full name also forgets the entry under a custom remote.
+                if kind != TrustKind::Tap
+                    && let Some((tap, item)) = TapName::split_full_name(&target)
+                {
+                    let remote = source.taps.remote(&tap);
+                    if tap.uses_custom_remote(remote.as_deref()) {
+                        let entry = nb_io::tap::trust::TrustStore::item_trust_name(
+                            &tap,
+                            &item,
+                            remote.as_deref(),
+                        );
+                        removed |= source.trust.untrust(kind, &entry)?;
+                    }
+                }
+                // Untrusting a tap forgets what of it was trusted.
+                if kind == TrustKind::Tap {
+                    let prefix = format!("{}/", target.to_lowercase());
+                    for item_kind in [TrustKind::Formula, TrustKind::Cask] {
+                        for entry in source.trust.entries(item_kind) {
+                            if entry.starts_with(&prefix) {
+                                removed |= source.trust.untrust(item_kind, &entry)?;
+                            }
+                        }
+                    }
+                }
+                let verb = if removed { "Untrusted" } else { "Not trusted" };
                 println!("{verb} {label}: {target}");
             }
         }
@@ -188,15 +220,32 @@ pub fn trust(
     Ok(())
 }
 
-/// `Homebrew::Trust.target`: a tap for `user/repo`, otherwise the formula
-/// or cask of that full name in its tap.
+/// `Homebrew::Trust.target`: a tap for `user/repo` or a remote, otherwise
+/// the formula or cask of that full name in its tap, named under the tap's
+/// remote when it has a custom one. With `include_existing` (untrusting), an
+/// entry already in the list under the plain full name is that one.
 fn trust_target(
     installer: &nb_io::Installer,
     name: &str,
     kind: Option<TrustKind>,
+    include_existing: bool,
 ) -> Result<(TrustKind, String), nb_core::Error> {
+    let source = installer.tap_source()?;
+    if nb_io::tap::is_remote_reference(name) && kind.is_none_or(|k| k == TrustKind::Tap) {
+        let reference = nb_io::tap::remote_to_reference(name).ok_or_else(|| {
+            nb_core::Error::InvalidArgument {
+                message: format!("Invalid tap remote URL: {name}"),
+            }
+        })?;
+        return Ok((TrustKind::Tap, reference));
+    }
     if name.matches('/').count() == 1 || kind == Some(TrustKind::Tap) {
-        return Ok((TrustKind::Tap, TapName::parse(name)?.name()));
+        let tap = TapName::parse(name)?;
+        let remote = source.taps.remote(&tap);
+        return Ok((
+            TrustKind::Tap,
+            tap.reference(remote.as_deref()).to_lowercase(),
+        ));
     }
     let Some((tap, item)) = TapName::split_full_name(name) else {
         return Err(nb_core::Error::InvalidArgument {
@@ -204,14 +253,17 @@ fn trust_target(
                 .to_string(),
         });
     };
-    let taps = &installer.tap_source()?.taps;
-    let formula = taps.find_formula(&tap, &item).map(|(n, _)| n);
-    let cask = taps.find_cask(&tap, &item).map(|(n, _)| n);
+    let remote = source.taps.remote(&tap);
+    let formula = source.taps.find_formula(&tap, &item).map(|(n, _)| n);
+    let cask = source.taps.find_cask(&tap, &item).map(|(n, _)| n);
     let pick = |kind: TrustKind, found: Option<String>| {
-        (
-            kind,
-            format!("{tap}/{}", found.unwrap_or(item.to_lowercase())),
-        )
+        let item = found.unwrap_or(item.to_lowercase());
+        let full = format!("{tap}/{item}");
+        if include_existing && source.trust.entries(kind).contains(&full) {
+            return (kind, full);
+        }
+        let entry = nb_io::tap::trust::TrustStore::item_trust_name(&tap, &item, remote.as_deref());
+        (kind, entry)
     };
     match (kind, formula, cask) {
         (Some(TrustKind::Formula), f, _) => Ok(pick(TrustKind::Formula, f)),
@@ -255,11 +307,13 @@ pub async fn prepare_full_names(
                         .map(|(n, _)| (TrustKind::Cask, n))
                 })
         };
+        let source = installer.tap_source()?;
+        let remote = source.taps.remote(&tap);
         if let Some((kind, resolved)) = found
-            && installer
-                .tap_source()?
-                .trust
-                .trust(kind, &format!("{tap}/{resolved}"))?
+            && source.trust.trust(
+                kind,
+                &nb_io::tap::trust::TrustStore::item_trust_name(&tap, &resolved, remote.as_deref()),
+            )?
         {
             ohai(&format!("Trusted {} {tap}/{item}", kind.label()));
         }
