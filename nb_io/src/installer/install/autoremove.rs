@@ -26,14 +26,30 @@ impl Installer {
             }
         }
 
+        // What was built from source keeps its build dependencies, as in
+        // Homebrew's `Utils::Autoremove` (only bottles ignore them).
+        let built: HashSet<&str> = installed
+            .iter()
+            .filter(|keg| keg.store_key.starts_with("source:"))
+            .map(|keg| keg.name.as_str())
+            .collect();
         let mut needed = HashSet::new();
-        if !roots.is_empty() {
+        let mut wanted = roots;
+        while !wanted.is_empty() {
             // Fails as a whole when any lookup fails: removing on a partial
             // view would delete something that is needed.
-            for (name, formula) in self.fetch_all_formulas(&roots).await? {
+            let mut build_deps = Vec::new();
+            for (name, formula) in self.fetch_all_formulas(&wanted).await? {
+                if built.contains(formula.name.as_str()) {
+                    build_deps.extend(formula.build_dependencies.iter().cloned());
+                }
                 needed.insert(name);
                 needed.insert(formula.name);
             }
+            wanted = build_deps
+                .into_iter()
+                .filter(|dep| !needed.contains(dep))
+                .collect();
         }
 
         Ok(installed

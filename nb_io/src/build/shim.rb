@@ -48,6 +48,8 @@ FORMULA_NAME = ENV.fetch("NEXTBREW_FORMULA_NAME")
 FORMULA_VERSION = ENV.fetch("NEXTBREW_FORMULA_VERSION")
 FORMULA_FILE = ENV.fetch("NEXTBREW_FORMULA_FILE")
 INSTALLED_DEPS = JSON.parse(ENV.fetch("NEXTBREW_INSTALLED_DEPS", "{}"))
+# Where the source was unpacked, wherever the formula goes from there.
+BUILDPATH = Pathname.new(Dir.pwd)
 
 module OS
   def self.mac?
@@ -161,6 +163,18 @@ module Homebrew
       FileUtils.mkdir_p(path.to_s)
       prepend(key, path, ":")
     end
+
+    # Homebrew's: build with one job, for the block or from now on.
+    def deparallelize
+      old = delete("MAKEFLAGS")
+      return unless block_given?
+
+      begin
+        yield
+      ensure
+        self["MAKEFLAGS"] = old
+      end
+    end
   end
 end
 ENV.extend(Homebrew::EnvExtension)
@@ -253,7 +267,33 @@ class BuildOptions
   def without?(name); true; end
 end
 
+module Metafiles
+  LICENSES = %w[copying copyright license licence].freeze
+  EXTENSIONS = %w[
+    .adoc .asc .asciidoc .creole .html .markdown .md .mdown .mediawiki .mkdn
+    .org .pod .rdoc .rst .rtf .textile .txt .wiki
+  ].freeze
+  BASENAMES = %w[
+    about authors changelog changes history news notes notice readme todo
+  ].freeze
+
+  module_function
+
+  def copy?(file)
+    file = file.downcase
+    license = file.split(/\.|-/).first
+    return false unless license
+    return true if LICENSES.include?(license)
+
+    ext = File.extname(file)
+    file = File.basename(file, ext) if EXTENSIONS.include?(ext)
+    BASENAMES.include?(file)
+  end
+end
+
 class Pathname
+  # Homebrew's: move each source here (a file it has already moved is an
+  # error, as there). A directory already here gets the source's contents.
   def install(*sources)
     sources.flatten.each do |src|
       if src.is_a?(Hash)
@@ -261,14 +301,27 @@ class Pathname
         next
       end
       src = Pathname.new(src) unless src.is_a?(Pathname)
-      if src.directory?
-        dst = self + src.basename
-        FileUtils.mkdir_p(dst)
+      dst = self + src.basename
+      if src.directory? && !src.symlink? && dst.directory?
         Dir.children(src.to_s).each { |child| dst.install(src + child) }
       else
-        FileUtils.mkdir_p(self)
-        FileUtils.cp(src.to_s, self.to_s)
+        move_here(src, dst)
       end
+    end
+  end
+
+  # Homebrew's: move the licence, readme and the like from `from` here.
+  def install_metafiles(from = Pathname.pwd)
+    Pathname.new(from).children.each do |p|
+      next if p.directory?
+      next if File.empty?(p)
+      next unless Metafiles.copy?(p.basename.to_s)
+
+      filename = p.symlink? ? p.dirname.join(p.readlink) : p
+      next unless filename.exist?
+
+      filename.chmod 0644
+      install(filename)
     end
   end
 
@@ -300,12 +353,27 @@ class Pathname
 
   def install_renamed(from, to)
     from = Pathname.new(from) unless from.is_a?(Pathname)
+    move_here(from, self + to.to_s)
+  end
+
+  def move_here(src, dst)
+    raise Errno::ENOENT, src.to_s if !src.symlink? && !src.exist?
+
     FileUtils.mkdir_p(self)
-    FileUtils.cp(from.to_s, (self + to.to_s).to_s)
+    FileUtils.mkdir_p(dst.dirname)
+    # A symlink whose target has moved already: FileUtils.mv can't.
+    if src.symlink?
+      raise "mv #{src} #{dst} failed" unless Kernel.system("mv", src.to_s, dst.to_s)
+    else
+      FileUtils.mv(src.to_s, dst.to_s)
+    end
   end
 end
 
 class Formula
+  # As Homebrew's: `rm`, `chmod`, `cp`, `mkdir_p` and the like.
+  include FileUtils
+
   class << self
     attr_accessor :formula_name, :formula_version
 
@@ -430,6 +498,7 @@ class Formula
   def bash_completion; prefix + "etc" + "bash_completion.d"; end
   def zsh_completion; share + "zsh" + "site-functions"; end
   def fish_completion; share + "fish" + "vendor_completions.d"; end
+  def pwsh_completion; share + "pwsh" + "completions"; end
   def elisp; share + "emacs" + "site-lisp" + name; end
 
   def resource(name)
@@ -447,7 +516,7 @@ class Formula
   end
 
   def buildpath
-    Pathname.new(Dir.pwd)
+    BUILDPATH
   end
 
   def testpath
@@ -499,12 +568,55 @@ class Formula
     ["--prefix=#{prefix}", "--libdir=lib", "--buildtype=release", "--wrap-mode=nofallback"]
   end
 
-  def std_go_args(**overrides)
-    ldflags = overrides.fetch(:ldflags, "")
-    output = overrides.fetch(:output, bin + name)
-    args = ["build", "-trimpath", "-o=#{output}"]
-    args << "-ldflags=#{ldflags}" unless ldflags.empty?
+  # Homebrew's: the arguments after `go build`, always stripping symbols.
+  def std_go_args(output: bin + name, ldflags: nil, gcflags: nil, tags: nil)
+    ldflags = ["-s", "-w"].concat(Array(ldflags))
+    args = ["-trimpath", "-o=#{output}"]
+    args << "-tags=#{Array(tags).join(",")}" if tags
+    args << "-ldflags=#{ldflags.join(" ")}"
+    args << "-gcflags=#{Array(gcflags).join(" ")}" if gcflags
     args
+  end
+
+  # Homebrew's: each shell's completion script, written by running
+  # `commands` with that shell's parameter.
+  def generate_completions_from_executable(*commands, base_name: nil, shell_parameter_format: nil,
+                                           shells: nil)
+    shells ||= [:cobra, :typer].include?(shell_parameter_format) ? [:bash, :zsh, :fish, :pwsh] : [:bash, :zsh, :fish]
+    executable = commands.first.to_s
+    base_name ||= File.basename(executable) if executable.start_with?(bin.to_s, sbin.to_s)
+    base_name ||= name
+    paths = {
+      bash: bash_completion + base_name,
+      zsh:  zsh_completion + "_#{base_name}",
+      fish: fish_completion + "#{base_name}.fish",
+      pwsh: pwsh_completion + "_#{base_name}.ps1",
+    }
+    shells.each do |shell|
+      env = { "SHELL" => shell.to_s }
+      shell_name = (shell == :pwsh) ? "powershell" : shell.to_s
+      parameter = case shell_parameter_format
+      when nil then shell_name
+      when :arg then "--shell=#{shell_name}"
+      when :clap
+        env["COMPLETE"] = shell_name
+        nil
+      when :click
+        env["_#{File.basename(executable).upcase.tr("-", "_")}_COMPLETE"] = "#{shell_name}_source"
+        nil
+      when :cobra then ["completion", shell_name]
+      when :flag then "--#{shell_name}"
+      when :none then nil
+      when :typer
+        env["_TYPER_COMPLETE_TEST_DISABLE_SHELL_DETECTION"] = "1"
+        ["--show-completion", shell_name]
+      else "#{shell_parameter_format}#{shell}"
+      end
+      args = (commands + Array(parameter)).map(&:to_s)
+      output = IO.popen(env, args, &:read)
+      exit 1 unless $?.success?
+      paths[shell].write(output)
+    end
   end
 
   def self.method_missing(method_name, *args, &block)
@@ -647,4 +759,12 @@ instance = formula_class.new
 puts "==> Building #{FORMULA_NAME} #{FORMULA_VERSION}"
 FileUtils.mkdir_p(instance.prefix.to_s)
 instance.install
+
+# As Homebrew's build: the licence and readme into the keg, from the
+# source, or else from `libexec`.
+instance.prefix.install_metafiles(BUILDPATH)
+if instance.libexec.exist? &&
+   instance.prefix.children.none? { |p| p.file? && Metafiles.copy?(p.basename.to_s) }
+  instance.prefix.install_metafiles(instance.libexec)
+end
 puts "==> Build complete: #{FORMULA_NAME} #{FORMULA_VERSION}"

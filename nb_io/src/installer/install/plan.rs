@@ -18,7 +18,7 @@ impl Installer {
         names: &[String],
         build_from_source: bool,
     ) -> Result<InstallPlan, Error> {
-        let formulas = self.fetch_all_formulas(names).await?;
+        let mut formulas = self.fetch_all_formulas(names).await?;
         let ordered = nb_core::resolve_closure(names, &formulas)?;
 
         let roots = root_install_names(names, &formulas);
@@ -39,6 +39,8 @@ impl Installer {
             }
             items.push(self.plan_item(install_name, formula, build_from_source, !root)?);
         }
+        self.plan_build_dependencies(&mut items, &mut formulas)
+            .await?;
 
         rank_like_homebrew(&mut items, names, &formulas);
         Ok(InstallPlan {
@@ -52,7 +54,7 @@ impl Installer {
         names: &[String],
         build_from_source: bool,
     ) -> (InstallPlan, Vec<PlanFailure>) {
-        let (formulas, fetch_failures) = self.fetch_all_formulas_best_effort(names).await;
+        let (mut formulas, fetch_failures) = self.fetch_all_formulas_best_effort(names).await;
         let mut items = Vec::new();
         let mut failures = Vec::new();
         let mut valid_roots = Vec::new();
@@ -145,6 +147,21 @@ impl Installer {
             }
         }
 
+        if let Err(error) = self
+            .plan_build_dependencies(&mut items, &mut formulas)
+            .await
+        {
+            // What needs building can't be built without them.
+            let (building, rest): (Vec<_>, Vec<_>) = items
+                .into_iter()
+                .partition(|item| matches!(item.method, InstallMethod::Source(_)));
+            items = rest;
+            failures.extend(building.into_iter().map(|item| PlanFailure {
+                name: item.install_name,
+                error: error.clone(),
+            }));
+        }
+
         rank_like_homebrew(&mut items, names, &formulas);
         (
             InstallPlan {
@@ -153,6 +170,53 @@ impl Installer {
             },
             failures,
         )
+    }
+
+    /// `FormulaInstaller#compute_dependencies` for a build: Homebrew installs
+    /// the build dependencies of what it builds from source (from bottles,
+    /// with their own dependencies) before building it, and leaves them
+    /// installed as dependencies. They go first in the plan.
+    async fn plan_build_dependencies(
+        &self,
+        items: &mut Vec<PlannedInstall>,
+        formulas: &mut BTreeMap<String, Formula>,
+    ) -> Result<(), Error> {
+        let mut checked = HashSet::new();
+        loop {
+            let planned: HashSet<String> =
+                items.iter().map(|item| item.install_name.clone()).collect();
+            let missing: Vec<String> = items
+                .iter()
+                .filter_map(|item| match &item.method {
+                    InstallMethod::Source(plan) => Some(plan.build_dependencies.iter()),
+                    InstallMethod::Bottle(_) => None,
+                })
+                .flatten()
+                .filter(|dep| checked.insert((*dep).clone()))
+                .filter(|dep| !planned.contains(*dep) && !self.has_installed_keg(dep))
+                .cloned()
+                .collect();
+            if missing.is_empty() {
+                return Ok(());
+            }
+            let fetched = self.fetch_all_formulas(&missing).await?;
+            let mut added: Vec<PlannedInstall> = Vec::new();
+            for requested in nb_core::resolve_closure(&missing, &fetched)? {
+                let formula = fetched.get(&requested).cloned().unwrap();
+                let install_name = install_name_for(&requested, &formula);
+                if planned.contains(&install_name)
+                    || added.iter().any(|item| item.install_name == install_name)
+                    || self.has_installed_keg(&install_name)
+                {
+                    continue;
+                }
+                added.push(self.plan_item(install_name, formula, false, true)?);
+            }
+            for (name, formula) in fetched {
+                formulas.entry(name).or_insert(formula);
+            }
+            items.splice(0..0, added);
+        }
     }
 
     /// Whether a package is recorded as installed and its keg is on disk, at
@@ -687,7 +751,7 @@ mod tests {
     }
 
     /// A tap formula with no bottle is built from its `.rb`, as Homebrew
-    /// builds it.
+    /// builds it, after its build dependencies are poured (with theirs).
     #[tokio::test]
     async fn falls_back_to_source_when_no_bottle() {
         let mock_server = MockServer::start().await;
@@ -714,6 +778,15 @@ mod tests {
             .respond_with(ResponseTemplate::new(200).set_body_string(formula_json))
             .mount(&mock_server)
             .await;
+        for (name, deps) in [("pkgconf", vec!["libfoo"]), ("libfoo", vec![])] {
+            Mock::given(method("GET"))
+                .and(path(format!("/formula/{name}.json")))
+                .respond_with(
+                    ResponseTemplate::new(200).set_body_string(bottled_formula(name, &deps)),
+                )
+                .mount(&mock_server)
+                .await;
+        }
 
         let root = tmp.path().join("nextbrew");
         let prefix = tmp.path().join("homebrew");
@@ -740,14 +813,24 @@ mod tests {
 
         let plan = installer.plan(&["nobottle".to_string()]).await.unwrap();
 
-        assert_eq!(plan.items.len(), 1);
-        assert_eq!(plan.items[0].formula.name, "nobottle");
+        let names: Vec<&str> = plan
+            .items
+            .iter()
+            .map(|item| item.formula.name.as_str())
+            .collect();
+        assert_eq!(names, ["libfoo", "pkgconf", "nobottle"]);
         assert!(matches!(
             plan.items[0].method,
-            nb_core::InstallMethod::Source(_)
+            nb_core::InstallMethod::Bottle(_)
         ));
+        assert!(matches!(
+            plan.items[1].method,
+            nb_core::InstallMethod::Bottle(_)
+        ));
+        // Dependencies, not asked for.
+        assert_eq!(plan.roots, ["nobottle"]);
 
-        if let nb_core::InstallMethod::Source(ref bp) = plan.items[0].method {
+        if let nb_core::InstallMethod::Source(ref bp) = plan.items[2].method {
             assert_eq!(bp.source_url, "https://example.com/nobottle-1.0.0.tar.gz");
             assert_eq!(bp.formula_name, "nobottle");
             assert_eq!(bp.build_dependencies, vec!["pkgconf"]);
@@ -1181,5 +1264,37 @@ mod tests {
             failures[0].error,
             nb_core::Error::MissingFormula { .. }
         ));
+    }
+
+    /// Homebrew's autoremove keeps the build dependencies of what was built
+    /// from source; those of a bottle can go.
+    #[tokio::test]
+    async fn autoremove_keeps_build_dependencies_of_source_builds() {
+        let mock_server = MockServer::start().await;
+        let tmp = TempDir::new().unwrap();
+        let tool = bottled_formula("tool", &[]).replacen(
+            r#""versions""#,
+            r#""build_dependencies": ["go"], "versions""#,
+            1,
+        );
+        let mut installer = installer_serving(
+            &mock_server,
+            &tmp,
+            &[("tool", tool), ("go", bottled_formula("go", &[]))],
+        )
+        .await;
+        let record = |installer: &mut Installer, tool_key: &str| {
+            let tx = installer.db.transaction().unwrap();
+            tx.record_install("tool", "1.0.0", tool_key).unwrap();
+            tx.record_install("go", "1.0.0", "go-bottle").unwrap();
+            tx.commit().unwrap();
+            installer.mark_on_request(&["tool".to_string()]).unwrap();
+        };
+
+        record(&mut installer, "source:tool:1.0.0");
+        assert!(installer.unneeded_formulae().await.unwrap().is_empty());
+
+        record(&mut installer, "tool-bottle");
+        assert_eq!(installer.unneeded_formulae().await.unwrap(), ["go"]);
     }
 }

@@ -1003,6 +1003,13 @@ impl<'pr> Scope<'pr> for ServiceDsl<'_> {
     ) -> Result<Option<Value>> {
         let first = args.first().cloned().unwrap_or(Value::Nil);
         let value = match name {
+            // `Homebrew::Service#std_service_path_env`, as the API writes it.
+            "std_service_path_env" => {
+                return Ok(Some(Value::Str(
+                    "$HOMEBREW_PREFIX/bin:$HOMEBREW_PREFIX/sbin:/usr/bin:/bin:/usr/sbin:/sbin"
+                        .to_string(),
+                )));
+            }
             "run" if !args.keywords.is_empty() => Json::Object(
                 args.keywords
                     .iter()
@@ -1435,12 +1442,10 @@ class Foo < Formula
     run [opt_bin/"foo", "serve"]
     keep_alive true
     log_path var/"log/foo.log"
-    environment_variables PATH: std_service_path_env
+    environment_variables PATH: std_service_path_env, LANG: "en_US.UTF-8"
   end
 end
-"#
-            .replace("std_service_path_env", "\"/usr/bin\"")
-            .as_str(),
+"#,
         );
         let service = &f.json["service"];
         assert_eq!(
@@ -1449,6 +1454,10 @@ end
         );
         assert_eq!(service["keep_alive"], json!({"always": true}));
         assert_eq!(service["log_path"], "$HOMEBREW_PREFIX/var/log/foo.log");
-        assert_eq!(service["environment_variables"]["PATH"], "/usr/bin");
+        assert_eq!(
+            service["environment_variables"]["PATH"],
+            "$HOMEBREW_PREFIX/bin:$HOMEBREW_PREFIX/sbin:/usr/bin:/bin:/usr/sbin:/sbin"
+        );
+        assert_eq!(service["environment_variables"]["LANG"], "en_US.UTF-8");
     }
 }

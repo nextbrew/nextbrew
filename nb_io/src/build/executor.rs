@@ -342,6 +342,122 @@ end
         run_build(ruby, &shim_path, source_root, &env).await
     }
 
+    /// A keg built in `source` by `install`, as `(file, contents)` sorted.
+    async fn build_keg(source: &[(&str, &str)], install: &str) -> Option<Vec<(String, String)>> {
+        let ruby = find_ruby().await.ok()?;
+        let tmp = tempfile::tempdir().unwrap();
+        let source_root = tmp.path().join("source");
+        std::fs::create_dir_all(&source_root).unwrap();
+        for (file, contents) in source {
+            std::fs::write(source_root.join(file), contents).unwrap();
+        }
+        let prefix = tmp.path().join("prefix");
+        let formula = format!("class Foo < Formula\n  def install\n{install}\n  end\nend\n");
+        run_shim_formula(&ruby, &source_root, &prefix, &formula)
+            .await
+            .unwrap();
+        let keg = prefix.join("Cellar/foo/1.0.0");
+        let mut files: Vec<(String, String)> = walkdir::WalkDir::new(&keg)
+            .into_iter()
+            .filter_map(Result::ok)
+            .filter(|entry| entry.file_type().is_file())
+            .map(|entry| {
+                let name = entry.path().strip_prefix(&keg).unwrap();
+                let contents = std::fs::read_to_string(entry.path()).unwrap_or_default();
+                (name.display().to_string(), contents)
+            })
+            .collect();
+        files.sort();
+        Some(files)
+    }
+
+    /// As Homebrew's build: licences and readmes left in the source go into
+    /// the keg; other files, empty ones and those installed already don't.
+    #[tokio::test]
+    async fn run_build_installs_metafiles() {
+        let Some(files) = build_keg(
+            &[
+                ("LICENSE.txt", "licence"),
+                ("README.md", "readme"),
+                ("NOTICE", ""),
+                ("CHANGELOG", "changes"),
+                ("Makefile", "all:"),
+                ("foo", "binary"),
+            ],
+            r#"    bin.install "foo"
+    doc.install "CHANGELOG""#,
+        )
+        .await
+        else {
+            return;
+        };
+        let names: Vec<&str> = files.iter().map(|(name, _)| name.as_str()).collect();
+        assert_eq!(
+            names,
+            [
+                "LICENSE.txt",
+                "README.md",
+                "bin/foo",
+                "share/doc/foo/CHANGELOG"
+            ]
+        );
+    }
+
+    /// Homebrew's `std_go_args`, `ENV.deparallelize` and
+    /// `generate_completions_from_executable`.
+    #[tokio::test]
+    async fn run_build_has_homebrew_build_helpers() {
+        let Some(files) = build_keg(
+            &[("tool", "#!/bin/sh\necho \"complete $*\"\n")],
+            r#"    ENV["MAKEFLAGS"] = "-j8"
+    ENV.deparallelize
+    (prefix/"env").write ENV.fetch("MAKEFLAGS", "unset")
+    (prefix/"args").write std_go_args(ldflags: "-X main.v=1").join("|")
+    (prefix/"args2").write std_go_args(output: bin/"x", tags: %w[a b], ldflags: %w[-X y]).join("|")
+    chmod 0755, "tool"
+    generate_completions_from_executable("./tool", "completion")
+    generate_completions_from_executable("./tool", base_name: "other", shell_parameter_format: :flag, shells: [:zsh])"#,
+        )
+        .await
+        else {
+            return;
+        };
+        let get = |name: &str| {
+            files
+                .iter()
+                .find(|(file, _)| file == name)
+                .map(|(_, contents)| contents.replace('\n', ""))
+        };
+        assert_eq!(get("env").as_deref(), Some("unset"));
+        let args = get("args").unwrap();
+        assert!(
+            args.starts_with("-trimpath|-o=")
+                && args.ends_with("/bin/foo|-ldflags=-s -w -X main.v=1"),
+            "{args}"
+        );
+        let args2 = get("args2").unwrap();
+        assert!(
+            args2.ends_with("/bin/x|-tags=a,b|-ldflags=-s -w -X y"),
+            "{args2}"
+        );
+        assert_eq!(
+            get("etc/bash_completion.d/foo").as_deref(),
+            Some("complete completion bash")
+        );
+        assert_eq!(
+            get("share/zsh/site-functions/_foo").as_deref(),
+            Some("complete completion zsh")
+        );
+        assert_eq!(
+            get("share/fish/vendor_completions.d/foo.fish").as_deref(),
+            Some("complete completion fish")
+        );
+        assert_eq!(
+            get("share/zsh/site-functions/_other").as_deref(),
+            Some("complete --zsh")
+        );
+    }
+
     #[tokio::test]
     async fn run_build_rejects_resource_checksum_mismatch() {
         let Some(ruby) = find_ruby().await.ok() else {
