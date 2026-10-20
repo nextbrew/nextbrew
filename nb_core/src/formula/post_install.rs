@@ -353,6 +353,8 @@ pub enum StepAction {
     ConfigureClangSystem,
     /// Generate GCC's specs file. Linux only.
     ConfigureGccRuntime,
+    /// Compile glibc's locales and link the system's time zones. Linux only.
+    ConfigureGlibcRuntime,
     /// Create a database's data directory and initialise it once.
     InitDataDir {
         path: PathSpec,
@@ -416,6 +418,7 @@ impl StepAction {
             StepAction::InstallGzippedExecutable { .. } => "install_gzipped_executable",
             StepAction::ConfigureClangSystem => "configure_clang_system",
             StepAction::ConfigureGccRuntime => "configure_gcc_runtime",
+            StepAction::ConfigureGlibcRuntime => "configure_glibc_runtime",
             StepAction::InitDataDir { .. } => "init_data_dir",
             StepAction::CompileGsettingsSchemas { .. } => "compile_gsettings_schemas",
             StepAction::GioQuerymodules { .. } => "gio_querymodules",
@@ -615,8 +618,8 @@ mod tests {
 
     #[test]
     fn unknown_step_type_is_unsupported_not_an_error() {
-        let s = step(r#"{"type": "bootstrap_cpython"}"#);
-        assert_eq!(s.action.kind(), "bootstrap_cpython");
+        let s = step(r#"{"type": "configure_php"}"#);
+        assert_eq!(s.action.kind(), "configure_php");
         assert!(matches!(s.action, StepAction::Unsupported { .. }));
     }
 

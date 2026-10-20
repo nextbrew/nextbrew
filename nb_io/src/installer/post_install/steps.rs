@@ -11,7 +11,7 @@ use std::path::{Component, Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::time::Duration;
 
-use nb_core::{DataDirInit, PathSpec, ProcessMatch, StepAction, Sudo};
+use nb_core::{DataDirInit, PathBase, PathSpec, ProcessMatch, StepAction, Sudo};
 use regex::Regex;
 use tracing::{debug, warn};
 
@@ -223,6 +223,7 @@ pub(super) fn run_step(
                 ));
             }
         }
+        StepAction::ConfigureGlibcRuntime => configure_glibc_runtime(ctx)?,
         StepAction::InitDataDir {
             path,
             using,
@@ -1163,6 +1164,67 @@ fn run_tool(
     }
 }
 
+/// Homebrew's `run_configure_glibc_runtime`: compile the user's locales
+/// and en_US.UTF-8 into the keg, and link the system's time zone data.
+fn configure_glibc_runtime(ctx: &PostInstallContext) -> Result<(), StepError> {
+    let lib = ctx.base_path(PathBase::Lib, None)?.join("locale");
+    fs::create_dir_all(&lib).map_err(StepError::io(format!("creating {}", lib.display())))?;
+    let localedef = ctx.base_path(PathBase::Bin, None)?.join("localedef");
+    for locale in glibc_locales(&ctx.name, std::env::vars()) {
+        run_tool(ctx, &localedef, &localedef_args(&locale), &[])?;
+    }
+    for (source, target) in [
+        (
+            "/etc/localtime",
+            ctx.base_path(PathBase::Etc, None)?.join("localtime"),
+        ),
+        (
+            "/usr/share/zoneinfo",
+            ctx.base_path(PathBase::Share, None)?.join("zoneinfo"),
+        ),
+    ] {
+        if Path::new(source).exists() && !target.exists() {
+            if let Some(parent) = target.parent() {
+                fs::create_dir_all(parent).map_err(StepError::io("creating directory"))?;
+            }
+            symlink(source, &target)
+                .map_err(StepError::io(format!("linking {}", target.display())))?;
+        }
+    }
+    Ok(())
+}
+
+/// The locales glibc's post-install compiles, sorted and unique.
+// ponytail: brew hands Ruby only LANG, LC_ALL and LC_CTYPE (bin/brew), so
+// only those are read; its forced LC_ALL for a non-UTF-8 charmap is not.
+fn glibc_locales(name: &str, env: impl Iterator<Item = (String, String)>) -> Vec<String> {
+    let legacy = name != "glibc";
+    let mut locales: Vec<String> = env
+        .filter(|(key, _)| matches!(key.as_str(), "LANG" | "LC_ALL" | "LC_CTYPE"))
+        .map(|(_, value)| value)
+        .filter(|v| !v.is_empty() && v != "C" && !(legacy && v.starts_with("C.")))
+        .collect();
+    locales.push("en_US.UTF-8".to_string());
+    locales.sort();
+    locales.dedup();
+    locales
+}
+
+/// `localedef -i <lang> [-f <charmap>] <locale>`, `utf8` read as `UTF-8`.
+fn localedef_args(locale: &str) -> Vec<OsString> {
+    let (lang, charmap) = match locale.split_once('.') {
+        Some((lang, charmap)) => (lang, charmap),
+        None => (locale, ""),
+    };
+    let mut args = vec!["-i".into(), lang.into()];
+    if !charmap.is_empty() {
+        let charmap = if charmap == "utf8" { "UTF-8" } else { charmap };
+        args.extend(["-f".into(), charmap.into()]);
+    }
+    args.push(locale.into());
+    args
+}
+
 /// Homebrew's `run_init_data_dir`: create the data directory, and run the
 /// database's initialiser unless its marker file shows it already ran.
 fn init_data_dir(
@@ -1221,7 +1283,6 @@ fn init_data_dir(
 mod tests {
     use super::super::test_support::context;
     use super::*;
-    use nb_core::PathBase;
     use std::os::unix::fs::PermissionsExt;
     use tempfile::TempDir;
 
@@ -1725,6 +1786,30 @@ mod tests {
         assert!(dst.join("sub").is_dir() && !dst.join("sub").is_symlink());
         assert!(dst.join("sub/b").is_symlink());
         assert!(!dst.join(".DS_Store").exists());
+    }
+
+    #[test]
+    fn glibc_compiles_the_users_locales_like_homebrew() {
+        let env = [
+            ("LANG", "de_DE.utf8"),
+            ("LC_CTYPE", "en_GB"),
+            ("LC_ALL", "C"),
+            ("LC_TIME", "fr_FR"),
+        ]
+        .map(|(k, v)| (k.to_string(), v.to_string()));
+        let locales = glibc_locales("glibc", env.clone().into_iter());
+        assert_eq!(locales, ["de_DE.utf8", "en_GB", "en_US.UTF-8"]);
+        assert_eq!(
+            localedef_args("de_DE.utf8"),
+            ["-i", "de_DE", "-f", "UTF-8", "de_DE.utf8"]
+        );
+        assert_eq!(localedef_args("en_GB"), ["-i", "en_GB", "en_GB"]);
+        // Older glibc formulae also skip C.UTF-8.
+        let env = [("LANG", "C.UTF-8")].map(|(k, v)| (k.to_string(), v.to_string()));
+        assert_eq!(
+            glibc_locales("glibc@2.17", env.into_iter()),
+            ["en_US.UTF-8"]
+        );
     }
 
     #[test]
