@@ -157,6 +157,12 @@ fn has_glob_chars(path: &Path) -> bool {
         .contains(['*', '?', '[', '{'])
 }
 
+/// Ruby's `Dir.glob` of an absolute pattern, sorted; nothing for one that
+/// does not parse.
+pub(crate) fn ruby_glob(pattern: &Path) -> Vec<PathBuf> {
+    glob(pattern).unwrap_or_default()
+}
+
 /// Paths matching an absolute glob pattern, sorted.
 fn glob(pattern: &Path) -> Result<Vec<PathBuf>, StepError> {
     let pattern_text = pattern.to_string_lossy();

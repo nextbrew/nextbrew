@@ -14,6 +14,7 @@
 mod ca_bundle;
 mod clang;
 mod paths;
+pub(crate) use paths::ruby_glob;
 mod steps;
 mod template;
 // Only the macOS CA bundle build reads certificates.

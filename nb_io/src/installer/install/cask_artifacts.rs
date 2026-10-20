@@ -124,7 +124,8 @@ pub(super) fn place_wrappers(places: &Places, cask: &ResolvedCask) -> Result<(),
     Ok(())
 }
 
-/// Link the man pages and shell completions, then generate the rest.
+/// Link the man pages, shell completions and binaries with a path in the
+/// prefix as their target, then generate the rest.
 pub(super) fn place_linked(places: &Places, cask: &ResolvedCask) -> Result<(), Error> {
     for artifact in cask.placed.iter().filter(|a| a.linked) {
         let source = source_path(places, cask, artifact)?;
@@ -139,6 +140,16 @@ pub(super) fn place_linked(places: &Places, cask: &ResolvedCask) -> Result<(), E
                     target.display()
                 ),
             });
+        }
+        if artifact.kind == "binary"
+            && let Ok(meta) = fs::metadata(&source)
+            && meta.permissions().mode() & 0o111 == 0
+        {
+            // `Binary#link`: make it executable.
+            let mut permissions = meta.permissions();
+            permissions.set_mode(permissions.mode() | 0o111);
+            fs::set_permissions(&source, permissions)
+                .map_err(Error::store("failed to make a binary executable"))?;
         }
         fs::create_dir_all(destination.parent().expect("link dir"))
             .map_err(Error::store("failed to create link directory"))?;

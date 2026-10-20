@@ -61,6 +61,19 @@ impl StepsDsl {
         }
     }
 
+    /// The DSL a cask's `preflight_steps` and the like build: paths are
+    /// relative to the staged download unless they say otherwise.
+    pub fn for_cask() -> Self {
+        Self {
+            default_base: Some("staged_path".into()),
+            default_source_base: Some("staged_path".into()),
+            default_target_base: Some("staged_path".into()),
+            steps: Vec::new(),
+            guards: Vec::new(),
+            next_guard_id: 0,
+        }
+    }
+
     /// `add_step`, with `normalise_steps` and `compact_step`.
     fn add_step(&mut self, kind: &str, fields: Vec<(&str, Json)>) {
         let mut step = Map::new();

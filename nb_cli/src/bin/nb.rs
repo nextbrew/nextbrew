@@ -107,9 +107,24 @@ async fn run(cli: Cli) -> Result<(), nb_core::Error> {
         Commands::Uninstall {
             formulas,
             all,
+            formula,
+            cask,
             zap,
             ignore_dependencies,
         } => {
+            // `--cask` names casks; `--formula` keeps names from meaning one.
+            let formulas: Vec<String> = formulas
+                .into_iter()
+                .map(|name| {
+                    if cask && !name.starts_with("cask:") {
+                        format!("cask:{name}")
+                    } else if formula && !name.starts_with("cask:") {
+                        format!("formula:{name}")
+                    } else {
+                        name
+                    }
+                })
+                .collect();
             let result = commands::uninstall::execute(
                 &mut installer,
                 formulas,

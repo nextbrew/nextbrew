@@ -461,8 +461,8 @@ impl Installer {
             let token = name
                 .strip_prefix("cask:")
                 .expect("install_casks expects cask: prefixed names");
-            self.install_single_cask(token, link).await?;
-            self.mark_on_request(std::slice::from_ref(name))?;
+            let install_name = self.install_single_cask(token, link).await?;
+            self.mark_on_request(&[install_name])?;
             installed += 1;
         }
         Ok(ExecuteResult {

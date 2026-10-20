@@ -38,9 +38,15 @@ impl Installer {
         if let Some(keg) = self.db.get_installed(name) {
             return Some(keg);
         }
-        let (tap, short) = TapName::split_full_name(name)?;
+        let (kind, bare) = match name.strip_prefix("cask:") {
+            Some(bare) => ("cask:", bare),
+            None => ("", name),
+        };
+        let (tap, short) = TapName::split_full_name(bare)?;
         let tap = (!tap.is_core()).then(|| tap.name());
-        self.db.get_installed(&short).filter(|keg| keg.tap == tap)
+        self.db
+            .get_installed(&format!("{kind}{short}"))
+            .filter(|keg| keg.tap == tap)
     }
 
     /// `Formula#full_name` of an installed formula: `user/repo/name` for one

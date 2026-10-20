@@ -41,7 +41,19 @@ pub async fn resolve_install_name(installer: &Installer, name: String) -> String
     if let Some(formula) = name.strip_prefix("formula:") {
         return formula.to_string();
     }
-    if name.starts_with("cask:") || name.contains('/') {
+    if name.starts_with("cask:") {
+        return name;
+    }
+    if name.contains('/') {
+        // A tap's cask named in full, when the tap has no formula so named.
+        if let Some((tap, item)) = nb_io::tap::TapName::split_full_name(&name)
+            && !tap.is_official()
+            && let Ok(source) = installer.tap_source()
+            && source.taps.find_formula(&tap, &item).is_none()
+            && source.taps.find_cask(&tap, &item).is_some()
+        {
+            return format!("cask:{name}");
+        }
         return name;
     }
     match installer.formula(&name).await {
@@ -53,14 +65,26 @@ pub async fn resolve_install_name(installer: &Installer, name: String) -> String
 }
 
 /// The same for something already installed: the formula, or else the cask.
+/// A full name (`user/repo/name`) is the one installed from that tap.
 pub fn resolve_installed_name(installer: &Installer, name: String) -> String {
-    let cask = format!("cask:{name}");
-    if name.starts_with("cask:") || installer.is_installed(&name) || !installer.is_installed(&cask)
-    {
-        name
-    } else {
-        cask
+    let installed = |name: &str| {
+        installer
+            .get_installed_by_full_name(name)
+            .map(|keg| keg.name)
+    };
+    // `--formula` asked for the formula only.
+    if let Some(formula) = name.strip_prefix("formula:") {
+        return installed(formula).unwrap_or_else(|| formula.to_string());
     }
+    if let Some(found) = installed(&name) {
+        return found;
+    }
+    if !name.starts_with("cask:")
+        && let Some(found) = installed(&format!("cask:{name}"))
+    {
+        return found;
+    }
+    name
 }
 
 pub fn format_formula_suggestions(requested: &str, suggestions: &[String]) -> Option<String> {

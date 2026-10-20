@@ -164,6 +164,15 @@ pub enum Commands {
         formulas: Vec<String>,
         #[arg(long, help = "Uninstall all installed packages")]
         all: bool,
+        #[arg(
+            long,
+            visible_alias = "formulae",
+            conflicts_with = "cask",
+            help = "Treat the names as formulae"
+        )]
+        formula: bool,
+        #[arg(long, visible_alias = "casks", help = "Treat the names as casks")]
+        cask: bool,
         #[arg(long, help = "Also remove the casks' user data (zap stanza)")]
         zap: bool,
         #[arg(

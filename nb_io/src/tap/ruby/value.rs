@@ -247,6 +247,100 @@ impl Value {
     }
 }
 
+/// A method of `Cask::DSL::Version` on `version`, or `None` for one it
+/// does not have.
+pub fn cask_version_method(version: &str, name: &str, args: &super::eval::Args) -> Option<Value> {
+    let latest = version == "latest";
+    // `version { ... }`: an empty or `:latest` version stays as it is.
+    let derived = |f: &dyn Fn(&str) -> String| {
+        Value::Version(if version.is_empty() || latest {
+            version.to_string()
+        } else {
+            f(version)
+        })
+    };
+    // `MAJOR_MINOR_PATCH_REGEX`: `^([^.,:]+)(?:.([^.,:]+)(?:.([^.,:]+))?)?`,
+    // where the separators match any character.
+    let parts = |v: &str| -> [String; 3] {
+        let mut out: [String; 3] = Default::default();
+        let mut rest = v;
+        for (i, slot) in out.iter_mut().enumerate() {
+            if i > 0 {
+                let mut chars = rest.chars();
+                if chars.next().is_none() {
+                    break;
+                }
+                rest = chars.as_str();
+            }
+            let end = rest.find(['.', ',', ':']).unwrap_or(rest.len());
+            if end == 0 {
+                break;
+            }
+            *slot = rest[..end].to_string();
+            rest = &rest[end..];
+        }
+        out
+    };
+    let join = |items: &[&String]| {
+        items
+            .iter()
+            .filter(|s| !s.is_empty())
+            .map(|s| s.as_str())
+            .collect::<Vec<_>>()
+            .join(".")
+    };
+    const DIVIDERS: [(char, &str); 3] = [('.', "dots"), ('-', "hyphens"), ('_', "underscores")];
+    Some(match name {
+        "major" => derived(&|v| parts(v)[0].clone()),
+        "minor" => derived(&|v| parts(v)[1].clone()),
+        "patch" => derived(&|v| parts(v)[2].clone()),
+        "major_minor" => derived(&|v| {
+            let p = parts(v);
+            join(&[&p[0], &p[1]])
+        }),
+        "major_minor_patch" => derived(&|v| {
+            let p = parts(v);
+            join(&[&p[0], &p[1], &p[2]])
+        }),
+        "minor_patch" => derived(&|v| {
+            let p = parts(v);
+            join(&[&p[1], &p[2]])
+        }),
+        "csv" => Value::Array(
+            version
+                .split(',')
+                .map(|s| Value::Version(s.to_string()))
+                .collect(),
+        ),
+        "before_comma" => derived(&|v| v.split(',').next().unwrap_or_default().to_string()),
+        "after_comma" => derived(&|v| {
+            v.split_once(',')
+                .map(|(_, b)| b)
+                .unwrap_or_default()
+                .to_string()
+        }),
+        "no_dividers" => derived(&|v| v.replace(['.', '-', '_'], "")),
+        "chomp" => {
+            let suffix = args.first().map(Value::to_s);
+            derived(&|v| match &suffix {
+                Some(s) => v.strip_suffix(s.as_str()).unwrap_or(v).to_string(),
+                None => v.strip_suffix('\n').unwrap_or(v).to_string(),
+            })
+        }
+        "latest?" => Value::Bool(latest),
+        _ => {
+            if let Some(word) = name.strip_prefix("no_") {
+                let (divider, _) = DIVIDERS.iter().find(|(_, w)| *w == word)?;
+                return Some(derived(&|v| v.replace(*divider, "")));
+            }
+            let (from, to) = name.split_once("_to_")?;
+            let (from, _) = DIVIDERS.iter().find(|(_, w)| *w == from)?;
+            let (to, _) = DIVIDERS.iter().find(|(_, w)| *w == to)?;
+            derived(&|v| v.replace(*from, &to.to_string()))
+        }
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

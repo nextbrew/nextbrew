@@ -298,7 +298,25 @@ pub fn resolve_cask(token: &str, cask: &Value) -> Result<ResolvedCask, Error> {
             message: "failed to parse cask JSON: missing artifacts array".to_string(),
         })?;
 
-    let binaries = parse_artifacts(artifacts, "binary")?;
+    // A binary given a path in the prefix as its target (a completion in
+    // `share`, headers in `include`) is linked there, not into `bin`. One
+    // outside the prefix goes into `bin` (spec, chapter 4).
+    let mut binaries = Vec::new();
+    let mut linked_binaries = Vec::new();
+    for (binary, path_target) in parse_artifacts(artifacts, "binary")?
+        .into_iter()
+        .zip(binary_path_targets(artifacts))
+    {
+        match path_target {
+            Some(target) => linked_binaries.push(PlacedArtifact {
+                kind: "binary".to_string(),
+                source: binary.source,
+                target,
+                linked: true,
+            }),
+            None => binaries.push(binary),
+        }
+    }
     // A suite is a folder of apps, moved into the Applications folder the
     // same way. One given a path as its target goes where that says.
     let mut apps = Vec::new();
@@ -344,6 +362,7 @@ pub fn resolve_cask(token: &str, cask: &Value) -> Result<ResolvedCask, Error> {
     }
     let mut placed = moved_apps;
     placed.extend(parse_placed(token, artifacts)?);
+    placed.extend(linked_binaries);
     let wrappers = parse_wrappers(token, artifacts)?;
     let generated_scripts = parse_generated_scripts(token, artifacts)?;
     let completions = parse_completions(artifacts);
@@ -574,6 +593,27 @@ fn parse_artifacts(artifacts: &[Value], kind: &str) -> Result<Vec<CaskArtifact>,
         }
     }
     Ok(parsed)
+}
+
+/// For each `binary` stanza, in [`parse_artifacts`]'s order, its target when
+/// that is a path in the prefix other than `bin` (`Binary#resolve_target`
+/// takes a relative one in `bin`).
+fn binary_path_targets(artifacts: &[Value]) -> Vec<Option<String>> {
+    path_targets(artifacts, "binary")
+        .into_iter()
+        .map(|target| {
+            let target = target?;
+            let target = match target.strip_prefix("$APPDIR/") {
+                Some(rel) => format!("$HOMEBREW_PREFIX/bin/{rel}"),
+                None => target,
+            };
+            let rel = target.strip_prefix("$HOMEBREW_PREFIX/")?;
+            let in_bin = rel
+                .strip_prefix("bin/")
+                .is_some_and(|name| !name.contains('/'));
+            (!in_bin).then_some(target)
+        })
+        .collect()
 }
 
 /// For each `kind` stanza, in [`parse_artifacts`]'s order, its target when
@@ -828,6 +868,41 @@ mod tests {
         assert_eq!(resolved.binaries.len(), 2);
         assert_eq!(resolved.binaries[0].target, "tool");
         assert_eq!(resolved.binaries[1].target, "tool-two");
+    }
+
+    #[test]
+    fn a_binary_with_a_path_target_is_linked_there() {
+        // aerospace's completions, and alacritty's terminfo entries.
+        let cask = serde_json::json!({
+            "token": "test",
+            "version": "1.0.0",
+            "url": "https://example.com/test.zip",
+            "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "artifacts": [
+                {"binary": ["bin/test"], "target": "$HOMEBREW_PREFIX/bin/test"},
+                {"binary": ["bin/test2", {"target": "$HOMEBREW_PREFIX/bin/test2"}]},
+                {"binary": ["zsh/_test", {"target": "$HOMEBREW_PREFIX/share/zsh/site-functions/_test"}]},
+                {"binary": ["61/test", {"target": "~/.terminfo/61/x"}]},
+            ]
+        });
+
+        let resolved = resolve_cask("test", &cask).unwrap();
+        let names: Vec<_> = resolved
+            .binaries
+            .iter()
+            .map(|b| b.target.as_str())
+            .collect();
+        // Outside the prefix, into `bin` (spec, chapter 4).
+        assert_eq!(names, ["test", "test2", "x"]);
+        assert_eq!(
+            resolved.placed,
+            [PlacedArtifact {
+                kind: "binary".into(),
+                source: "zsh/_test".into(),
+                target: "$HOMEBREW_PREFIX/share/zsh/site-functions/_test".into(),
+                linked: true,
+            }]
+        );
     }
 
     #[test]

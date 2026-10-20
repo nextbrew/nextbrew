@@ -181,18 +181,31 @@ pub(super) fn save_cask_json(keg: &Path, json: &Value) -> Result<(), Error> {
         .map_err(Error::store("failed to save cask.json"))
 }
 
+/// The cask read again once its download is staged in the directory given,
+/// as Homebrew reads a tap's cask again then; `None` when it need not be.
+pub(super) type Refresh<'a> = &'a dyn Fn(&Path) -> Result<Option<(ResolvedCask, Value)>, Error>;
+
 /// Unpack `blob` into the staged directory and install the cask from it.
 pub(super) fn stage_cask(
     blob: &Path,
     cask: &ResolvedCask,
     json: &Value,
     ctx: &PostInstallContext,
+    refresh: Option<Refresh>,
 ) -> Result<(), Error> {
     let dirs = ctx.cask.as_ref().expect("cask context");
     let _ = fs::remove_dir_all(&dirs.staged);
     fs::create_dir_all(&dirs.staged).map_err(Error::store("failed to create staged dir"))?;
     unpack(blob, &dirs.staged, cask)?;
     quarantine::propagate(blob, &dirs.staged)?;
+    let refreshed = match refresh {
+        Some(refresh) => refresh(&dirs.staged)?,
+        None => None,
+    };
+    let (cask, json) = match &refreshed {
+        Some((cask, json)) => (cask, json),
+        None => (cask, json),
+    };
     save_cask_json(&ctx.keg, json)?;
 
     let home = home_dir()?;
@@ -873,7 +886,7 @@ mod tests {
         let (cask, json) = app_cask(root);
         let ctx = context(root);
 
-        stage_cask(&blob, &cask, &json, &ctx).unwrap();
+        stage_cask(&blob, &cask, &json, &ctx, None).unwrap();
 
         let app = root.join("Applications/Foo.app");
         assert!(app.join("Contents/MacOS/foo").is_file());
@@ -941,7 +954,7 @@ mod tests {
         let cask = resolve_cask("foo", &json).unwrap();
         let ctx = context(root);
 
-        stage_cask(&blob, &cask, &json, &ctx).unwrap();
+        stage_cask(&blob, &cask, &json, &ctx, None).unwrap();
 
         let moved = ctx.keg.join("share/sdk");
         assert!(moved.join("bin/dart").is_file());
@@ -990,7 +1003,7 @@ mod tests {
         ]))
         .unwrap();
 
-        let err = stage_cask(&blob, &cask, &json, &context(root))
+        let err = stage_cask(&blob, &cask, &json, &context(root), None)
             .unwrap_err()
             .to_string();
         assert!(err.contains("preflight something_new"), "got: {err}");
@@ -1006,7 +1019,7 @@ mod tests {
         let ctx = context(root);
         fs::create_dir_all(root.join("Applications/Foo.app")).unwrap();
 
-        let err = stage_cask(&blob, &cask, &json, &ctx)
+        let err = stage_cask(&blob, &cask, &json, &ctx, None)
             .unwrap_err()
             .to_string();
         assert!(err.contains("already exists"), "got: {err}");

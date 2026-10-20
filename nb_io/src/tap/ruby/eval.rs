@@ -130,6 +130,9 @@ pub struct Eval<'pr> {
     /// Methods the file defines (`def php_version`), callable without
     /// arguments from what is evaluated.
     pub defs: HashMap<String, ruby_prism::DefNode<'pr>>,
+    /// Whether `version` is a cask's (`Cask::DSL::Version`), whose methods
+    /// differ from a formula's.
+    pub cask_versions: bool,
 }
 
 fn name_of(id: ruby_prism::ConstantId<'_>) -> String {
@@ -144,6 +147,7 @@ impl<'pr> Eval<'pr> {
             locals: HashMap::new(),
             constants: HashMap::new(),
             defs: HashMap::new(),
+            cask_versions: false,
         }
     }
 
@@ -215,6 +219,15 @@ impl<'pr> Eval<'pr> {
             .and_then(|p| p.as_block_parameters_node())
             .and_then(|p| p.parameters())
         {
+            // A block of several parameters given one array takes its items.
+            let spread;
+            let values = match values {
+                [Value::Array(items)] if params.requireds().iter().count() > 1 => {
+                    spread = items.clone();
+                    spread.as_slice()
+                }
+                _ => values,
+            };
             for (i, param) in params.requireds().iter().enumerate() {
                 if let Some(param) = param.as_required_parameter_node() {
                     let name = name_of(param.name());
@@ -594,6 +607,12 @@ impl<'pr> Eval<'pr> {
         use Value::*;
         let arg = args.first();
         let platform = self.platform;
+        if self.cask_versions
+            && let Version(v) = receiver
+            && let Some(value) = super::value::cask_version_method(v, name, args)
+        {
+            return Ok(Some(value));
+        }
         let value = match (receiver, name) {
             // The system.
             (Module(m), "mac?") if m == "OS" => Bool(platform.macos.is_some()),
@@ -617,6 +636,13 @@ impl<'pr> Eval<'pr> {
             (Module(m), "[]") if m == "ENV" => {
                 let key = arg.map(Value::to_s).unwrap_or_default();
                 std::env::var(key).map(Str).unwrap_or(Nil)
+            }
+            (Module(m), "fetch") if m == "ENV" => {
+                let key = arg.map(Value::to_s).unwrap_or_default();
+                match std::env::var(key) {
+                    Ok(value) => Str(value),
+                    Err(_) => args.positional.get(1).cloned().unwrap_or(Nil),
+                }
             }
             // Comparisons.
             (_, "==") => Bool(values_equal(receiver, arg.unwrap_or(&Nil))),
@@ -698,6 +724,7 @@ impl<'pr> Eval<'pr> {
             (Str(s), "strip") => Str(s.trim().to_string()),
             (Str(s), "chomp") => Str(s.strip_suffix('\n').unwrap_or(s).to_string()),
             (Str(s), "empty?") => Bool(s.is_empty()),
+            (Str(s) | Version(s), "length" | "size") => Int(s.chars().count() as i64),
             (Str(s), "delete_prefix") => Str(s
                 .strip_prefix(&arg.map(Value::to_s).unwrap_or_default())
                 .unwrap_or(s)
@@ -710,7 +737,31 @@ impl<'pr> Eval<'pr> {
                 let sep = arg.map(Value::to_s).unwrap_or_else(|| " ".to_string());
                 Array(s.split(sep.as_str()).map(|p| Str(p.to_string())).collect())
             }
-            (Str(s), "tr") => {
+            (Str(s) | Version(s), "ljust" | "rjust") => {
+                let width = match arg {
+                    Some(Int(n)) => *n as usize,
+                    _ => return Ok(None),
+                };
+                let pad: Vec<char> = args
+                    .positional
+                    .get(1)
+                    .map(Value::to_s)
+                    .unwrap_or_else(|| " ".to_string())
+                    .chars()
+                    .collect();
+                let len = s.chars().count();
+                if pad.is_empty() || len >= width {
+                    Str(s.clone())
+                } else {
+                    let fill: String = pad.iter().cycle().take(width - len).collect();
+                    Str(if name == "ljust" {
+                        format!("{s}{fill}")
+                    } else {
+                        format!("{fill}{s}")
+                    })
+                }
+            }
+            (Str(s) | Version(s), "tr") => {
                 let from: Vec<char> = arg.map(Value::to_s).unwrap_or_default().chars().collect();
                 let to: Vec<char> = args
                     .positional
@@ -727,7 +778,7 @@ impl<'pr> Eval<'pr> {
                     })
                     .collect())
             }
-            (Str(s), "sub" | "gsub")
+            (Str(s) | Version(s), "sub" | "gsub")
                 if args.positional.len() == 2 && matches!(args.positional[0], Regexp(..)) =>
             {
                 let Some(pattern) = args.positional[0].to_regex() else {
@@ -742,7 +793,7 @@ impl<'pr> Eval<'pr> {
                     pattern.replace_all(s, to.as_str()).into_owned()
                 })
             }
-            (Str(s), "sub" | "gsub") if args.positional.len() == 2 => {
+            (Str(s) | Version(s), "sub" | "gsub") if args.positional.len() == 2 => {
                 let from = args.positional[0].to_s();
                 let to = args.positional[1].to_s();
                 Str(if name == "sub" {
@@ -754,6 +805,15 @@ impl<'pr> Eval<'pr> {
             // Arrays and hashes.
             (Array(items), "first") => items.first().cloned().unwrap_or(Nil),
             (Array(items), "last") => items.last().cloned().unwrap_or(Nil),
+            // Active Support's.
+            (Array(items), "second" | "third" | "fourth" | "fifth") => {
+                let index = ["second", "third", "fourth", "fifth"]
+                    .iter()
+                    .position(|n| *n == name)
+                    .unwrap_or(0)
+                    + 1;
+                items.get(index).cloned().unwrap_or(Nil)
+            }
             (Array(items), "empty?") => Bool(items.is_empty()),
             (Array(items), "any?") if block.is_none() => Bool(!items.is_empty()),
             (Array(items), "length" | "size" | "count") if block.is_none() => {
@@ -797,6 +857,14 @@ impl<'pr> Eval<'pr> {
                 let end = if *exclusive { *last } else { *last + 1 };
                 Array((*first..end).map(Int).collect())
             }
+            // `each_with_index` without a block, as `map` then sees it.
+            (Array(items), "each_with_index") if block.is_none() => Array(
+                items
+                    .iter()
+                    .enumerate()
+                    .map(|(i, item)| Array(vec![item.clone(), Int(i as i64)]))
+                    .collect(),
+            ),
             (Array(items), "each" | "map" | "select" | "reject" | "each_with_index")
                 if block.is_some() =>
             {

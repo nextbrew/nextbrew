@@ -180,13 +180,13 @@ impl Installer {
         }
     }
 
-    /// Install one cask and, first, what it depends on. The caller holds
-    /// the install lock.
+    /// Install one cask and, first, what it depends on; its install name
+    /// (`cask:token`). The caller holds the install lock.
     pub(super) async fn install_single_cask(
         &mut self,
         token: &str,
         link: bool,
-    ) -> Result<(), Error> {
+    ) -> Result<String, Error> {
         self.install_cask_in_chain(token, link, &mut Vec::new())
             .await
     }
@@ -219,25 +219,24 @@ impl Installer {
     /// [`Self::install_single_cask`] for a cask that `chain` depends on.
     pub(super) async fn install_cask_in_chain(
         &mut self,
-        token: &str,
+        name: &str,
         link: bool,
         chain: &mut Vec<String>,
-    ) -> Result<(), Error> {
-        // Only homebrew/cask comes from the API; other taps are Phase 3.
-        let token = token.strip_prefix("homebrew/cask/").unwrap_or(token);
-        if let Some((tap, _)) = token.rsplit_once('/') {
-            return Err(Error::InvalidArgument {
-                message: format!(
-                    "cask '{token}' is from the '{tap}' tap; nextbrew installs homebrew/cask casks only"
-                ),
-            });
-        }
-        let cask_json = for_current_platform(&self.api_client.get_cask(token).await?);
+    ) -> Result<String, Error> {
+        // `user/repo/token` is read from that tap; the cask is installed
+        // under its token, as Homebrew's Caskroom has it.
+        let cask_json = for_current_platform(&self.api_client.get_cask(name).await?);
+        let token = cask_json["token"]
+            .as_str()
+            .unwrap_or_else(|| name.rsplit('/').next().unwrap_or(name))
+            .to_string();
+        let token = token.as_str();
         check_deprecate_disable(&cask_json)?;
         check_requirements(&cask_json)?;
         self.check_conflicts(&cask_json)?;
         let mut cask = resolve_cask(token, &cask_json)?;
         let config = self.cask_config.clone();
+        configure(&mut cask, &config);
         if cask.no_check && config.require_sha {
             return Err(Error::InvalidArgument {
                 message: format!(
@@ -245,21 +244,16 @@ impl Installer {
                 ),
             });
         }
-        for placed in &mut cask.placed {
-            placed.target = config.retarget(&placed.kind, &placed.target);
-        }
-        if config.no_binaries {
-            cask.binaries.clear();
-        }
-
+        let install_name = cask.install_name.clone();
         let blob_path = self
             .downloader
             .download_single(cask_download(&cask, &cask_json), None)
             .await?;
         if !cask.no_check {
-            return self
-                .install_downloaded_cask(cask, &cask_json, &blob_path, link, chain)
-                .await;
+            self.install_downloaded_cask(cask, &cask_json, &blob_path, link, chain)
+                .await?;
+            self.record_cask_tap(&install_name, &cask_json)?;
+            return Ok(install_name);
         }
         // An unverified download is kept by what it is, and fetched afresh
         // next time, whether this install works or not.
@@ -273,7 +267,49 @@ impl Installer {
             Err(e) => Err(e),
         };
         self.downloader.remove_blob(&key);
-        result
+        result?;
+        self.record_cask_tap(&install_name, &cask_json)?;
+        Ok(install_name)
+    }
+
+    /// A tap's cask read again with its download staged in `staged`, as
+    /// Homebrew does before it installs the artifacts, so what the cask finds
+    /// there (`Dir[...]`) is installed; `None` for one from the API.
+    fn refresh_tap_cask(
+        &self,
+        cask: &crate::installer::cask::ResolvedCask,
+        json: &serde_json::Value,
+        staged: &Path,
+    ) -> Result<Option<(crate::installer::cask::ResolvedCask, serde_json::Value)>, Error> {
+        let (Some(tap), Some(source)) = (third_party_tap(json), self.api_client.taps()) else {
+            return Ok(None);
+        };
+        let json = for_current_platform(&source.cask_staged(&tap, &cask.token, Some(staged))?);
+        let mut fresh = resolve_cask(&cask.token, &json)?;
+        configure(&mut fresh, &self.cask_config);
+        // What was downloaded and checked stays as it was.
+        fresh.url = cask.url.clone();
+        fresh.sha256 = cask.sha256.clone();
+        fresh.no_check = cask.no_check;
+        Ok(Some((fresh, json)))
+    }
+
+    /// Record the third-party tap an installed cask came from (or that it
+    /// came from homebrew/cask), so it is read from there again.
+    fn record_cask_tap(&self, install_name: &str, json: &serde_json::Value) -> Result<(), Error> {
+        let tap = json["tap"]
+            .as_str()
+            .filter(|tap| !matches!(*tap, "homebrew/cask" | ""));
+        self.db.set_tap(install_name, tap)?;
+        if let Some(source) = self.api_client.taps()
+            && let Ok(mut installed) = source.installed.write()
+        {
+            match tap.and_then(|t| crate::tap::TapName::parse(t).ok()) {
+                Some(tap) => installed.insert(install_name.to_string(), tap),
+                None => installed.remove(install_name),
+            };
+        }
+        Ok(())
     }
 
     async fn install_downloaded_cask(
@@ -300,7 +336,9 @@ impl Installer {
             link,
         );
 
-        if !cask.apps.is_empty()
+        // A tap's cask is staged whole, to be read again from what it holds.
+        if third_party_tap(cask_json).is_some()
+            || !cask.apps.is_empty()
             || !cask.hooks.is_empty()
             || !cask.installers.is_empty()
             || !cask.placed.is_empty()
@@ -314,7 +352,8 @@ impl Installer {
                 None => app_dir()?,
             };
             let ctx = self.cask_context(&cask, &keg_path, appdir);
-            stage_cask(blob_path, &cask, cask_json, &ctx)?;
+            let refresh = |staged: &Path| self.refresh_tap_cask(&cask, cask_json, staged);
+            stage_cask(blob_path, &cask, cask_json, &ctx, Some(&refresh))?;
         } else if crate::extraction::is_archive(blob_path)? {
             // Cask archives are staged file by file; nothing to prepare.
             // v2: entries carry the download's quarantine.
@@ -353,6 +392,27 @@ impl Installer {
 
         cleanup.disarm();
         Ok(())
+    }
+}
+
+/// The third-party tap a cask's JSON says it is from.
+fn third_party_tap(json: &serde_json::Value) -> Option<crate::tap::TapName> {
+    json["tap"]
+        .as_str()
+        .filter(|tap| *tap != "homebrew/cask")
+        .and_then(|tap| crate::tap::TapName::parse(tap).ok())
+}
+
+/// The install options in `config` that change a cask's artifacts.
+fn configure(
+    cask: &mut crate::installer::cask::ResolvedCask,
+    config: &crate::installer::cask_config::CaskConfig,
+) {
+    for placed in &mut cask.placed {
+        placed.target = config.retarget(&placed.kind, &placed.target);
+    }
+    if config.no_binaries {
+        cask.binaries.clear();
     }
 }
 

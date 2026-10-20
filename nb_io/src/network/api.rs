@@ -201,6 +201,60 @@ impl TapSource {
         })
     }
 
+    /// The cask `token` of `tap`, read from its file, as the cask API's
+    /// JSON for it.
+    pub fn cask(&self, tap: &crate::tap::TapName, token: &str) -> Result<serde_json::Value, Error> {
+        self.cask_staged(tap, token, None)
+    }
+
+    /// [`Self::cask`] read again once its download is staged in `staged`,
+    /// as Homebrew reads a cask again before it installs its artifacts.
+    pub fn cask_staged(
+        &self,
+        tap: &crate::tap::TapName,
+        token: &str,
+        staged: Option<&std::path::Path>,
+    ) -> Result<serde_json::Value, Error> {
+        let full = format!("{tap}/{token}");
+        if !self.taps.is_installed(tap) {
+            return Err(Error::InvalidArgument {
+                message: format!(
+                    "No available cask with the name \"{full}\".\nThis command requires the tap {tap}.\nIf you trust this tap, tap it explicitly and then try again:\n  nb tap {tap}"
+                ),
+            });
+        }
+        let Some((resolved, file)) = self.taps.find_cask(tap, token) else {
+            return Err(Error::MissingFormula {
+                name: format!("cask:{full}"),
+            });
+        };
+        let remote = self.taps.remote(tap);
+        self.trust.require(
+            crate::tap::trust::TrustKind::Cask,
+            tap,
+            &resolved,
+            remote.as_deref(),
+        )?;
+        let source = std::fs::read(&file).map_err(Error::file("failed to read the cask"))?;
+        let read = crate::tap::ruby::read_cask(&source, &resolved, tap, self.platform, staged)
+            .map_err(|e| Error::InvalidArgument {
+                message: format!(
+                    "cask '{tap}/{resolved}' is not supported: {} (line {})",
+                    e.message, e.line
+                ),
+            })?;
+        Ok(read.json)
+    }
+
+    /// The installed taps with a cask `token`.
+    pub fn taps_with_cask(&self, token: &str) -> Vec<crate::tap::TapName> {
+        self.taps
+            .installed()
+            .into_iter()
+            .filter(|tap| !tap.is_core() && self.taps.find_cask(tap, token).is_some())
+            .collect()
+    }
+
     /// The installed taps with a formula `name`, as `FromNameLoader`
     /// searches them for a name homebrew/core does not have.
     pub fn taps_with(&self, name: &str) -> Vec<crate::tap::TapName> {
@@ -825,7 +879,54 @@ impl ApiClient {
         Ok(candidates)
     }
 
+    /// A cask's JSON: from the API, or read from a tap's file for a cask
+    /// named in full (`user/repo/token`), installed from a tap, or that only
+    /// a tap has.
     pub async fn get_cask(&self, token: &str) -> Result<serde_json::Value, Error> {
+        let token = token.strip_prefix("homebrew/cask/").unwrap_or(token);
+        if let Some((tap, short)) = crate::tap::TapName::split_full_name(token) {
+            return match &self.taps {
+                Some(taps) => taps.cask(&tap, &short),
+                None => Err(Error::UnsupportedTap {
+                    name: token.to_string(),
+                }),
+            };
+        }
+        if let Some(taps) = &self.taps {
+            let installed = taps
+                .installed
+                .read()
+                .ok()
+                .and_then(|map| map.get(&format!("cask:{token}")).cloned());
+            if let Some(tap) = installed {
+                return taps.cask(&tap, token);
+            }
+        }
+        match self.get_core_cask(token).await {
+            Err(Error::MissingFormula { .. }) if self.taps.is_some() => {
+                let taps = self.taps.as_ref().unwrap();
+                match taps.taps_with_cask(token).as_slice() {
+                    [] => Err(Error::MissingFormula {
+                        name: format!("cask:{token}"),
+                    }),
+                    [tap] => taps.cask(tap, token),
+                    many => Err(Error::InvalidArgument {
+                        message: format!(
+                            "Casks found in multiple taps:\n{}\n\nPlease use the fully-qualified name (e.g. {}/{token}) to refer to a specific cask.",
+                            many.iter()
+                                .map(|tap| format!("       * {tap}/{token}"))
+                                .collect::<Vec<_>>()
+                                .join("\n"),
+                            many[0]
+                        ),
+                    }),
+                }
+            }
+            other => other,
+        }
+    }
+
+    async fn get_core_cask(&self, token: &str) -> Result<serde_json::Value, Error> {
         let url = format!("{}/{}.json", self.cask_base_url, token);
         let response = self
             .client
@@ -1143,6 +1244,54 @@ mod tests {
 
         assert_eq!(first.first().map(String::as_str), Some("python"));
         assert_eq!(second.first().map(String::as_str), Some("python"));
+    }
+
+    #[tokio::test]
+    async fn casks_of_other_taps_are_read_from_their_files() {
+        let mock_server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .respond_with(ResponseTemplate::new(404))
+            .mount(&mock_server)
+            .await;
+        let tmp = tempdir().unwrap();
+        let tap = crate::tap::TapName::parse("someone/tools").unwrap();
+        let taps = crate::tap::Taps::new(tmp.path());
+        let casks = taps.path(&tap).join("Casks");
+        std::fs::create_dir_all(&casks).unwrap();
+        std::fs::write(
+            casks.join("thing.rb"),
+            "cask \"thing\" do\n  version \"1.0\"\n  sha256 :no_check\n  url \"https://example.com/thing.zip\"\n  binary \"thing\"\nend\n",
+        )
+        .unwrap();
+        let trust = crate::tap::trust::TrustStore::at(tmp.path().join("trust.json"));
+        trust
+            .trust(crate::tap::trust::TrustKind::Tap, "someone/tools")
+            .unwrap();
+        let source = TapSource {
+            taps,
+            trust,
+            platform: crate::tap::ruby::Platform {
+                macos: Some((26, 0)),
+                arm: true,
+            },
+            installed: Default::default(),
+        };
+        let client = ApiClient::with_base_url(format!("{}/formula", mock_server.uri()))
+            .unwrap()
+            .with_cask_base_url(format!("{}/cask", mock_server.uri()))
+            .with_taps(source);
+
+        let cask = client.get_cask("someone/tools/thing").await.unwrap();
+        assert_eq!(cask["token"], "thing");
+        assert_eq!(cask["tap"], "someone/tools");
+        assert_eq!(cask["sha256"], "no_check");
+        // A name only a tap has is found there.
+        let cask = client.get_cask("thing").await.unwrap();
+        assert_eq!(cask["full_token"], "someone/tools/thing");
+        assert!(matches!(
+            client.get_cask("missing").await,
+            Err(Error::MissingFormula { .. })
+        ));
     }
 
     #[tokio::test]

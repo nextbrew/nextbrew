@@ -236,29 +236,7 @@ impl FormulaDsl {
     }
 
     fn on_system(&mut self, name: &str, args: &Args) -> Option<bool> {
-        let platform = self.platform;
-        match name {
-            "on_macos" => Some(platform.macos.is_some()),
-            "on_linux" => Some(platform.macos.is_none()),
-            "on_arm" => Some(platform.arm),
-            "on_intel" => Some(!platform.arm),
-            "on_system" => {
-                let linux = platform.macos.is_none();
-                let mac = args.keyword("macos").map(Value::to_s).is_some_and(|spec| {
-                    let (codename, condition) = match spec.split_once("_or_") {
-                        Some((c, rest)) => (c.to_string(), Some(format!("or_{rest}"))),
-                        None => (spec.clone(), None),
-                    };
-                    on_macos_version(&platform, &codename, condition.as_deref()).unwrap_or(false)
-                });
-                Some(linux && args.positional.iter().any(|a| a.to_s() == "linux") || mac)
-            }
-            _ => {
-                let codename = name.strip_prefix("on_")?;
-                let condition = args.first().map(Value::to_s);
-                on_macos_version(&platform, codename, condition.as_deref())
-            }
-        }
+        on_system(self.platform, name, args)
     }
 
     fn depends_on(&mut self, args: &Args, line: usize) -> Result<()> {
@@ -822,6 +800,33 @@ impl<'pr> Scope<'pr> for FormulaDsl {
     }
 }
 
+/// Whether the `on_macos` / `on_arm` / `on_sonoma :or_newer` block `name`
+/// applies to `platform`; `None` for a name that is not one.
+pub(super) fn on_system(platform: Platform, name: &str, args: &Args) -> Option<bool> {
+    match name {
+        "on_macos" => Some(platform.macos.is_some()),
+        "on_linux" => Some(platform.macos.is_none()),
+        "on_arm" => Some(platform.arm),
+        "on_intel" => Some(!platform.arm),
+        "on_system" => {
+            let linux = platform.macos.is_none();
+            let mac = args.keyword("macos").map(Value::to_s).is_some_and(|spec| {
+                let (codename, condition) = match spec.split_once("_or_") {
+                    Some((c, rest)) => (c.to_string(), Some(format!("or_{rest}"))),
+                    None => (spec.clone(), None),
+                };
+                on_macos_version(&platform, &codename, condition.as_deref()).unwrap_or(false)
+            });
+            Some(linux && args.positional.iter().any(|a| a.to_s() == "linux") || mac)
+        }
+        _ => {
+            let codename = name.strip_prefix("on_")?;
+            let condition = args.first().map(Value::to_s);
+            on_macos_version(&platform, codename, condition.as_deref())
+        }
+    }
+}
+
 /// `Pathname` methods that only build paths.
 pub fn path_method(receiver: &Value, name: &str, args: &Args) -> Option<Value> {
     let Value::Path(path) = receiver else {
@@ -973,7 +978,7 @@ struct ServiceDsl<'f> {
     out: Map<String, Json>,
 }
 
-fn to_json(value: &Value) -> Json {
+pub(super) fn to_json(value: &Value) -> Json {
     match value {
         Value::Nil => Json::Null,
         Value::Bool(b) => json!(b),

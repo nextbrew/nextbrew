@@ -1,4 +1,4 @@
-mod cask;
+pub(crate) mod cask;
 pub mod cask_config;
 pub mod homebrew;
 pub mod install;
