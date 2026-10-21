@@ -14,6 +14,7 @@
 mod ca_bundle;
 mod clang;
 mod paths;
+mod runtimes;
 pub(crate) use paths::ruby_glob;
 mod steps;
 mod template;

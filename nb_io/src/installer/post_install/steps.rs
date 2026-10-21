@@ -18,7 +18,7 @@ use tracing::{debug, warn};
 use super::ca_bundle::CaBundle;
 use super::paths::{self, expand_glob, resolve};
 use super::template::expand;
-use super::{PostInstallContext, StepError, clang};
+use super::{PostInstallContext, StepError, clang, runtimes};
 use crate::installer::sudo;
 
 /// Lines of command output kept for an error message.
@@ -224,6 +224,8 @@ pub(super) fn run_step(
             }
         }
         StepAction::ConfigureGlibcRuntime => configure_glibc_runtime(ctx)?,
+        StepAction::ConfigurePhp => runtimes::configure_php(ctx)?,
+        StepAction::BootstrapCpython => runtimes::bootstrap_cpython(ctx)?,
         StepAction::InitDataDir {
             path,
             using,
@@ -526,7 +528,7 @@ fn copy(
 }
 
 /// Copy a tree, keeping modes and recreating symlinks as symlinks.
-fn copy_tree(source: &Path, destination: &Path) -> Result<(), StepError> {
+pub(super) fn copy_tree(source: &Path, destination: &Path) -> Result<(), StepError> {
     let metadata = fs::symlink_metadata(source)
         .map_err(StepError::io(format!("reading {}", source.display())))?;
     let failed = |what: &str| StepError::io(format!("{what} {}", source.display()));
@@ -546,7 +548,7 @@ fn copy_tree(source: &Path, destination: &Path) -> Result<(), StepError> {
 }
 
 /// `rm -rf` for one path: files, symlinks and directories; missing is fine.
-fn remove_any(path: &Path) -> Result<(), StepError> {
+pub(super) fn remove_any(path: &Path) -> Result<(), StepError> {
     let Ok(metadata) = fs::symlink_metadata(path) else {
         return Ok(());
     };
@@ -673,7 +675,7 @@ fn relative_path(source: &Path, base: &Path) -> PathBuf {
 
 /// Homebrew's `install_symlink`: a relative link at `link`, pointing at
 /// `source` from the real location of `link`'s directory.
-fn install_symlink(source: &Path, link: &Path) -> Result<(), StepError> {
+pub(super) fn install_symlink(source: &Path, link: &Path) -> Result<(), StepError> {
     let dir = link.parent().unwrap_or(Path::new("/"));
     fs::create_dir_all(dir).map_err(StepError::io("creating directory"))?;
     let dir = dir
@@ -1132,17 +1134,17 @@ fn run_formula_tool(
             tool.display()
         )));
     }
-    run_tool(ctx, &tool, args, |_| {})
+    run_tool(ctx, &tool, args, |_| {}).map(drop)
 }
 
 /// Run `tool` in the post-install environment, adjusted by `env`, failing
-/// with the tail of its stderr.
-fn run_tool(
+/// with the tail of its stderr. Returns its stdout.
+pub(super) fn run_tool(
     ctx: &PostInstallContext,
     tool: &Path,
     args: &[OsString],
     env: impl FnOnce(&mut Command),
-) -> Result<(), StepError> {
+) -> Result<Vec<u8>, StepError> {
     let home = isolated_home(ctx)?;
     let mut cmd = Command::new(tool);
     cmd.args(args).envs(command_env(ctx, home.as_ref()));
@@ -1151,7 +1153,7 @@ fn run_tool(
         .output()
         .map_err(StepError::io(format!("running {}", tool.display())))?;
     if output.status.success() {
-        Ok(())
+        Ok(output.stdout)
     } else {
         Err(StepError::Failed(format!(
             "`{}` failed with {}\n{}",
@@ -1266,7 +1268,7 @@ fn init_data_dir(
         DataDirInit::PostgresqlInitdb => {
             let locale = format!("--locale={}", locale.unwrap_or("en_US.UTF-8"));
             let args = [locale.into(), "-E".into(), "UTF-8".into(), datadir.clone()];
-            run_tool(ctx, &bin.join("initdb"), &args, |_| {})
+            run_tool(ctx, &bin.join("initdb"), &args, |_| {})?
         }
         DataDirInit::MysqlInitialize => run_tool(
             ctx,
@@ -1275,7 +1277,7 @@ fn init_data_dir(
             |cmd| {
                 cmd.env_remove("TMPDIR");
             },
-        ),
+        )?,
         DataDirInit::MariadbInstallDb => run_tool(
             ctx,
             &bin.join("mysql_install_db"),
@@ -1283,8 +1285,9 @@ fn init_data_dir(
             |cmd| {
                 cmd.env_remove("TMPDIR");
             },
-        ),
-    }
+        )?,
+    };
+    Ok(())
 }
 
 #[cfg(test)]
