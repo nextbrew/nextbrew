@@ -414,6 +414,121 @@ impl ServiceSpec {
         );
         to_xml(&Dict(dict))
     }
+
+    /// `Homebrew::Service#to_systemd_unit` for `formula`.
+    pub fn to_systemd_unit(&self, formula: &str) -> String {
+        let present = |path: &Option<String>| {
+            path.as_deref()
+                .filter(|path| !path.is_empty())
+                .map(|path| self.places.expand(path))
+        };
+        let command: Vec<String> = self.command.iter().map(|arg| systemd_quote(arg)).collect();
+        let mut options = vec![
+            format!(
+                "Type={}",
+                if self.launch_only_once {
+                    "oneshot"
+                } else {
+                    "simple"
+                }
+            ),
+            format!("ExecStart={}", command.join(" ")),
+        ];
+        let keep_alive = |key: &str| self.keep_alive.get(key).is_some_and(truthy);
+        if keep_alive("always") || keep_alive("crashed") {
+            // Homebrew's on-failure, so `systemctl stop` stays stopped.
+            options.push("Restart=on-failure".into());
+        } else if keep_alive("successful_exit") {
+            options.push("Restart=on-success".into());
+        }
+        let mut add = |key: &str, value: Option<String>| {
+            if let Some(value) = value {
+                options.push(format!("{key}={value}"));
+            }
+        };
+        add("RestartSec", self.restart_delay.map(|n| n.to_string()));
+        add("TimeoutStopSec", self.stop_timeout.map(|n| n.to_string()));
+        add("Nice", self.nice.map(|n| n.to_string()));
+        add("WorkingDirectory", present(&self.working_dir));
+        add("RootDirectory", present(&self.root_dir));
+        add(
+            "StandardInput",
+            present(&self.input_path).map(|p| format!("file:{p}")),
+        );
+        add(
+            "StandardOutput",
+            present(&self.log_path).map(|p| format!("append:{p}")),
+        );
+        add(
+            "StandardError",
+            present(&self.error_log_path).map(|p| format!("append:{p}")),
+        );
+        for (key, value) in &self.environment_variables {
+            options.push(format!("Environment=\"{key}={value}\""));
+        }
+        format!(
+            "[Unit]\nDescription=Homebrew generated unit for {formula}\n\n\
+             [Install]\nWantedBy=default.target\n\n[Service]\n{}\n",
+            options.join("\n")
+        )
+    }
+
+    /// `Homebrew::Service#to_systemd_timer` for `formula`, whose service
+    /// unit is `unit`.
+    pub fn to_systemd_timer(&self, formula: &str, unit: &str) -> String {
+        let mut options = Vec::new();
+        if self.run_type == "cron" {
+            options.push("Persistent=true".to_string());
+        }
+        if self.run_type == "interval" {
+            options.push(format!(
+                "OnUnitActiveSec={}",
+                self.interval.map(|n| n.to_string()).unwrap_or_default()
+            ));
+        }
+        if self.run_type == "cron" {
+            let field = |key: &str| self.cron.iter().find(|(name, _)| *name == key)?.1;
+            let two = |key: &str| field(key).map_or("*".to_string(), |n| format!("{n:02}"));
+            let any = |key: &str| field(key).map_or("*".to_string(), |n| n.to_string());
+            const DAYS: [&str; 7] = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
+            let weekday = field("Weekday")
+                .filter(|n| (0..=7).contains(n))
+                .map_or(String::new(), |n| format!("{} ", DAYS[(n % 7) as usize]));
+            options.push(format!(
+                "OnCalendar={weekday}*-{}-{} {}:{}:00",
+                any("Month"),
+                any("Day"),
+                two("Hour"),
+                two("Minute")
+            ));
+        }
+        format!(
+            "[Unit]\nDescription=Homebrew generated timer for {formula}\n\n\
+             [Install]\nWantedBy=timers.target\n\n[Timer]\nUnit={unit}.service\n{}\n",
+            options.join("\n")
+        )
+    }
+}
+
+/// `Utils::Service.systemd_quote`.
+fn systemd_quote(arg: &str) -> String {
+    let mut out = String::from("\"");
+    for c in arg.chars() {
+        match c {
+            '\u{7}' => out.push_str("\\a"),
+            '\u{8}' => out.push_str("\\b"),
+            '\u{c}' => out.push_str("\\f"),
+            '\n' => out.push_str("\\n"),
+            '\r' => out.push_str("\\r"),
+            '\t' => out.push_str("\\t"),
+            '\u{b}' => out.push_str("\\v"),
+            '\\' => out.push_str("\\\\"),
+            '"' => out.push_str("\\\""),
+            c => out.push(c),
+        }
+    }
+    out.push('"');
+    out
 }
 
 /// Ruby truthiness after `presence`: `false`, `nil` and empty values don't count.
@@ -839,6 +954,34 @@ mod tests {
         for (name, service, expected) in cases {
             assert_eq!(plist_of(service, name), expected, "{name}");
         }
+    }
+
+    // Expected text follows Homebrew's to_systemd_unit/to_systemd_timer templates.
+    #[test]
+    fn systemd_units_match_homebrew() {
+        let spec = |json: &str| {
+            ServiceSpec::from_api(&serde_json::from_str(json).unwrap(), &places())
+                .unwrap()
+                .unwrap()
+        };
+        let redis = spec(
+            r#"{"run": ["$HOMEBREW_PREFIX/opt/redis/bin/redis-server", "a \"b\""], "run_type": "immediate", "keep_alive": {"always": true}, "working_dir": "$HOMEBREW_PREFIX/var", "log_path": "$HOMEBREW_PREFIX/var/log/redis.log", "environment_variables": {"LANG": "C"}}"#,
+        );
+        assert_eq!(
+            redis.to_systemd_unit("redis"),
+            "[Unit]\nDescription=Homebrew generated unit for redis\n\n\
+             [Install]\nWantedBy=default.target\n\n[Service]\nType=simple\n\
+             ExecStart=\"/opt/homebrew/opt/redis/bin/redis-server\" \"a \\\"b\\\"\"\n\
+             Restart=on-failure\nWorkingDirectory=/opt/homebrew/var\n\
+             StandardOutput=append:/opt/homebrew/var/log/redis.log\nEnvironment=\"LANG=C\"\n"
+        );
+        let backup = spec(r#"{"run": "/bin/backup", "run_type": "cron", "cron": "5 4 * * 1"}"#);
+        assert_eq!(
+            backup.to_systemd_timer("backup", "dev.nextbrew.backup"),
+            "[Unit]\nDescription=Homebrew generated timer for backup\n\n\
+             [Install]\nWantedBy=timers.target\n\n[Timer]\n\
+             Unit=dev.nextbrew.backup.service\nPersistent=true\nOnCalendar=Mon *-*-* 04:05:00\n"
+        );
     }
 
     #[test]
