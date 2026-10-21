@@ -126,6 +126,13 @@ fn report(formulae: &[Value], casks: &[Value]) -> Report {
         if json["disabled"].as_bool() == Some(true) {
             continue;
         }
+        // Homebrew refuses these before reading the download ("This cask
+        // requires macOS."), as nb's install does; off macOS their null
+        // `url` and `sha256` are not a parser gap.
+        // ponytail: so the ubuntu report does not check their macOS data.
+        if cfg!(not(target_os = "macos")) && !json["depends_on"]["macos"].is_null() {
+            continue;
+        }
         match nb_io::installer::resolve_cask(token, json) {
             Ok(cask) => {
                 let hooks = &cask.hooks;
@@ -215,11 +222,11 @@ mod tests {
         })];
         let casks = [json!({
             "token": "bar", "url": "https://example.com/bar.zip", "sha256": "no_check",
-            "version": "1", "artifacts": [{"app_image": ["Bar.AppImage"]}]
+            "version": "1", "artifacts": [{"brand_new_artifact": ["Bar"]}]
         })];
         let now = report(&formulae, &casks);
         assert!(now.step_types.contains("brand_new"));
-        assert!(now.cask_artifacts.contains("app_image"));
+        assert!(now.cask_artifacts.contains("brand_new_artifact"));
         assert_eq!(
             *now.unsupported
                 .get("formula_step:brand_new")
@@ -229,7 +236,7 @@ mod tests {
         assert!(
             now.unsupported
                 .keys()
-                .any(|k| k.contains("<token> has a 'app_image' artifact"))
+                .any(|k| k.contains("<token> has a 'brand_new_artifact' artifact"))
         );
 
         assert!(diff(&now, &now).is_empty());

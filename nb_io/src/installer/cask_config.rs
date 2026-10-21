@@ -34,6 +34,7 @@ pub const DEFAULT_DIRS: &[(&str, &str)] = &[
 
 /// The directory each moved artifact kind goes into by default.
 const KIND_DIRS: &[(&str, &str)] = &[
+    ("app_image", "appimagedir"),
     ("colorpicker", "colorpickerdir"),
     ("prefpane", "prefpanedir"),
     ("qlplugin", "qlplugindir"),

@@ -70,6 +70,7 @@ pub struct ResolvedCask {
 /// Artifacts moved into place, in Homebrew's install order.
 const MOVED_KINDS: &[&str] = &[
     "artifact",
+    "app_image",
     "colorpicker",
     "prefpane",
     "qlplugin",
@@ -954,13 +955,12 @@ mod tests {
 
     #[test]
     fn an_artifact_nextbrew_cannot_place_is_refused_by_name() {
-        // koreader's Linux AppImage.
         let cask = cask_with(serde_json::json!([
-            { "app_image": ["k.AppImage"], "target": "/$HOME/Applications/k.AppImage" },
+            { "brand_new_artifact": ["k"] },
             { "zap": [{ "trash": ["~/.config/x/"] }] }
         ]));
         let msg = resolve_cask("x", &cask).unwrap_err().to_string();
-        assert!(msg.contains("'app_image'"), "got: {msg}");
+        assert!(msg.contains("'brand_new_artifact'"), "got: {msg}");
     }
 
     #[test]

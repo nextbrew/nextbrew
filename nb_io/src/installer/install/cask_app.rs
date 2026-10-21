@@ -96,12 +96,13 @@ fn downloaded_pkg_name(cask: &ResolvedCask) -> Option<&str> {
 }
 
 /// `/Applications` like Homebrew, or `~/Applications` when the user cannot
-/// write there.
+/// write there. On Linux, Homebrew's `~/.config/apps`.
 pub(super) fn app_dir() -> Result<PathBuf, Error> {
     if !cfg!(target_os = "macos") {
-        return Err(Error::InvalidArgument {
-            message: "app, DMG and hook casks are only supported on macOS".to_string(),
-        });
+        let home = std::env::var_os("HOME").ok_or_else(|| Error::InvalidArgument {
+            message: "HOME is not set".to_string(),
+        })?;
+        return Ok(PathBuf::from(home).join(".config/apps"));
     }
 
     let system = PathBuf::from("/Applications");
@@ -554,6 +555,21 @@ fn unpack(blob: &Path, dest: &Path, cask: &ResolvedCask) -> Result<(), Error> {
                 .arg("-k")
                 .arg(blob)
                 .arg(dest))
+        } else if &leading_magic(blob)? == b"\x7fELF" {
+            // `UnpackStrategy::Uncompressed`: an AppImage, say, staged under
+            // its download's name.
+            // ponytail: only ELF files; other unrecognised downloads still
+            // go to tar, unlike Homebrew's catch-all.
+            let name = cask
+                .url
+                .split(['?', '#'])
+                .next()
+                .and_then(|url| url.rsplit('/').next())
+                .filter(|name| !name.is_empty())
+                .unwrap_or(&cask.token);
+            fs::copy(blob, dest.join(name))
+                .map(drop)
+                .map_err(Error::store("failed to stage download"))
         } else {
             run(Command::new("tar").arg("-xf").arg(blob).arg("-C").arg(dest))
         };

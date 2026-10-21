@@ -98,6 +98,10 @@ pub(super) fn place_moved(places: &Places, cask: &ResolvedCask) -> Result<(), Er
         if artifact.kind == "app" {
             super::cask_app::fix_app_permissions(&destination, places.home)?;
         }
+        // `AppImage#install_phase`: `chmod +x` unless it already is.
+        if artifact.kind == "app_image" {
+            make_executable(&destination)?;
+        }
         if let Some(marker) = marker {
             symlink(&destination, &marker)
                 .map_err(Error::store("failed to record a placed artifact"))?;
@@ -321,6 +325,20 @@ fn move_into_place(
     } else {
         run(sudo::command("/bin/mv").arg("--").arg(source).arg(target))
     }
+}
+
+fn make_executable(path: &Path) -> Result<(), Error> {
+    let mode = fs::metadata(path)
+        .map_err(Error::store("failed to read AppImage"))?
+        .permissions()
+        .mode();
+    if mode & 0o100 != 0 {
+        return Ok(());
+    }
+    if fs::set_permissions(path, fs::Permissions::from_mode(mode | 0o111)).is_err() {
+        run(sudo::command("/bin/chmod").arg("+x").arg(path))?;
+    }
+    Ok(())
 }
 
 fn remove_path(path: &Path) -> Result<(), Error> {
@@ -644,6 +662,28 @@ mod tests {
 
         remove_placed(&f.keg).unwrap();
         assert!(!font.exists());
+    }
+
+    #[test]
+    fn app_images_move_to_their_target_executable() {
+        let f = Fixture::new();
+        fs::write(f.staged.join("A-1.0-x86_64.AppImage"), "elf").unwrap();
+        let cask = cask(vec![placed(
+            "app_image",
+            "A-1.0-x86_64.AppImage",
+            "/$HOME/Applications/A.AppImage",
+            false,
+        )]);
+
+        place_moved(&f.places(), &cask).unwrap();
+        let image = f.home.join("Applications/A.AppImage");
+        assert_eq!(
+            fs::metadata(&image).unwrap().permissions().mode() & 0o111,
+            0o111
+        );
+
+        remove_placed(&f.keg).unwrap();
+        assert!(!image.exists());
     }
 
     #[test]
