@@ -22,8 +22,10 @@ use super::cask_app::run;
 use crate::installer::cask::{CommandWrapper, GeneratedCompletion, PlacedArtifact, ResolvedCask};
 use crate::installer::sudo;
 
-/// Markers for artifacts placed outside the keg: `<n>` links to the target.
+/// Markers for artifacts placed outside the keg: `<n>` links to the target,
+/// `<n>`[`LINK_MARKER`] to a symlink made there.
 const PLACED_DIR: &str = "Placed";
+const LINK_MARKER: &str = "-link";
 /// Where command wrapper scripts are written, as in Homebrew.
 const WRAPPERS_DIR: &str = ".homebrew-command-wrappers";
 /// The prefix directories a keg is linked into.
@@ -125,16 +127,17 @@ pub(super) fn place_wrappers(places: &Places, cask: &ResolvedCask) -> Result<(),
 }
 
 /// Link the man pages, shell completions and binaries with a path in the
-/// prefix as their target, then generate the rest.
+/// prefix or the home folder as their target, then generate the rest.
 pub(super) fn place_linked(places: &Places, cask: &ResolvedCask) -> Result<(), Error> {
     for artifact in cask.placed.iter().filter(|a| a.linked) {
         let source = source_path(places, cask, artifact)?;
         let target = PathBuf::from(places.expand(cask, &artifact.target));
         let (destination, in_keg) = places.destination(&target);
-        if !in_keg {
+        let in_home = !in_keg && target.starts_with(places.home);
+        if !in_keg && !in_home {
             return Err(Error::InvalidArgument {
                 message: format!(
-                    "cask '{}' links its {} to '{}', outside the prefix",
+                    "cask '{}' links its {} to '{}', outside the prefix and the home folder",
                     cask.token,
                     artifact.kind,
                     target.display()
@@ -150,6 +153,10 @@ pub(super) fn place_linked(places: &Places, cask: &ResolvedCask) -> Result<(), E
             permissions.set_mode(permissions.mode() | 0o111);
             fs::set_permissions(&source, permissions)
                 .map_err(Error::store("failed to make a binary executable"))?;
+        }
+        if in_home {
+            link_into_place(places.keg, &source, &destination, cask)?;
+            continue;
         }
         fs::create_dir_all(destination.parent().expect("link dir"))
             .map_err(Error::store("failed to create link directory"))?;
@@ -174,8 +181,13 @@ pub(super) fn remove_placed(keg: &Path) -> Result<(), Error> {
         let Ok(target) = fs::read_link(&marker) else {
             continue;
         };
-        if target.symlink_metadata().is_ok() {
-            remove_path(&target)?;
+        // `Symlinked#unlink`: a link only while it is still one, so a file
+        // put there since is left alone.
+        let linked = marker.to_string_lossy().ends_with(LINK_MARKER);
+        match target.symlink_metadata() {
+            Ok(meta) if linked && !meta.file_type().is_symlink() => {}
+            Ok(_) => remove_path(&target)?,
+            Err(_) => {}
         }
         let _ = fs::remove_file(&marker);
     }
@@ -218,7 +230,62 @@ fn next_marker(keg: &Path) -> Result<PathBuf, Error> {
 }
 
 fn marker_index(marker: &Path) -> Option<usize> {
-    marker.file_name()?.to_str()?.parse().ok()
+    let name = marker.file_name()?.to_str()?;
+    name.strip_suffix(LINK_MARKER).unwrap_or(name).parse().ok()
+}
+
+/// Whether `keg` has a marker for `target`: it placed what is there.
+fn placed_by(keg: &Path, target: &Path) -> bool {
+    fs::read_dir(keg.join(PLACED_DIR))
+        .into_iter()
+        .flatten()
+        .flatten()
+        .any(|e| fs::read_link(e.path()).ok().as_deref() == Some(target))
+}
+
+fn already_exists(target: &Path, cask: &ResolvedCask) -> Error {
+    Error::InvalidArgument {
+        message: format!(
+            "'{}' already exists; remove it before installing cask '{}'",
+            target.display(),
+            cask.token
+        ),
+    }
+}
+
+/// `Symlinked#link` outside the keg: link `target` to `source`, with a
+/// marker in `keg` to take it away on uninstall. A link already there is
+/// replaced when it leads nowhere, to `source`, or was placed by this keg;
+/// anything else is left for the user, as Homebrew does.
+fn link_into_place(
+    keg: &Path,
+    source: &Path,
+    target: &Path,
+    cask: &ResolvedCask,
+) -> Result<(), Error> {
+    let placed = placed_by(keg, target);
+    if let Ok(meta) = target.symlink_metadata() {
+        let ours = meta.file_type().is_symlink()
+            && (placed
+                || target.metadata().is_err()
+                || fs::canonicalize(target).ok() == fs::canonicalize(source).ok());
+        if !ours {
+            return Err(already_exists(target, cask));
+        }
+        remove_path(target)?;
+    }
+    fs::create_dir_all(target.parent().expect("absolute target"))
+        .map_err(Error::store("failed to create link directory"))?;
+    symlink(source, target).map_err(Error::store("failed to link a cask artifact"))?;
+    if !placed {
+        let marker = next_marker(keg)?;
+        let marker = marker.with_file_name(format!(
+            "{}{LINK_MARKER}",
+            marker.file_name().expect("marker").to_string_lossy()
+        ));
+        symlink(target, marker).map_err(Error::store("failed to record a placed artifact"))?;
+    }
+    Ok(())
 }
 
 /// Move `source` to `target`. A `target` already there is replaced only
@@ -232,19 +299,12 @@ fn move_into_place(
 ) -> Result<(), Error> {
     if target.symlink_metadata().is_ok() {
         let ours = marker.is_none()
-            || std::iter::successors(marker.and_then(Path::parent), |_| None)
-                .flat_map(fs::read_dir)
-                .flatten()
-                .flatten()
-                .any(|e| fs::read_link(e.path()).ok().as_deref() == Some(target));
+            || marker
+                .and_then(Path::parent)
+                .and_then(Path::parent)
+                .is_some_and(|keg| placed_by(keg, target));
         if !ours {
-            return Err(Error::InvalidArgument {
-                message: format!(
-                    "'{}' already exists; remove it before installing cask '{}'",
-                    target.display(),
-                    cask.token
-                ),
-            });
+            return Err(already_exists(target, cask));
         }
         remove_path(target)?;
     }
@@ -604,6 +664,69 @@ mod tests {
 
         assert!(err.to_string().contains("already exists"), "{err}");
         assert_eq!(fs::read_to_string(&font).unwrap(), "theirs");
+    }
+
+    #[test]
+    fn a_binary_with_a_home_target_is_linked_there_and_unlinked_on_uninstall() {
+        // alacritty's terminfo entry.
+        let f = Fixture::new();
+        fs::create_dir_all(f.appdir.join("A.app/61")).unwrap();
+        fs::write(f.appdir.join("A.app/61/a"), "terminfo").unwrap();
+        let cask = cask(vec![placed(
+            "binary",
+            "$APPDIR/A.app/61/a",
+            "/$HOME/.terminfo/61/a",
+            true,
+        )]);
+
+        place_linked(&f.places(), &cask).unwrap();
+
+        let link = f.home.join(".terminfo/61/a");
+        assert_eq!(fs::read_link(&link).unwrap(), f.appdir.join("A.app/61/a"));
+        assert!(!f.keg.join("bin").exists(), "not into bin");
+        // Placing it again keeps one marker.
+        place_linked(&f.places(), &cask).unwrap();
+        assert_eq!(fs::read_dir(f.keg.join(PLACED_DIR)).unwrap().count(), 1);
+
+        remove_placed(&f.keg).unwrap();
+        assert!(link.symlink_metadata().is_err());
+        assert!(f.appdir.join("A.app/61/a").exists(), "the source stays");
+    }
+
+    #[test]
+    fn a_file_put_over_a_home_link_is_not_removed_on_uninstall() {
+        let f = Fixture::new();
+        fs::write(f.staged.join("a"), "ours").unwrap();
+        let cask = cask(vec![placed("binary", "a", "/$HOME/.terminfo/61/a", true)]);
+        place_linked(&f.places(), &cask).unwrap();
+        let link = f.home.join(".terminfo/61/a");
+        fs::remove_file(&link).unwrap();
+        fs::write(&link, "theirs").unwrap();
+
+        remove_placed(&f.keg).unwrap();
+
+        assert_eq!(fs::read_to_string(&link).unwrap(), "theirs");
+        assert!(
+            !f.keg
+                .join(PLACED_DIR)
+                .join(format!("0{LINK_MARKER}"))
+                .exists()
+        );
+    }
+
+    #[test]
+    fn a_home_target_someone_else_put_there_is_left_alone() {
+        let f = Fixture::new();
+        fs::write(f.staged.join("a"), "ours").unwrap();
+        let file = f.home.join(".terminfo/61/a");
+        fs::create_dir_all(file.parent().unwrap()).unwrap();
+        fs::write(&file, "theirs").unwrap();
+        let cask = cask(vec![placed("binary", "a", "/$HOME/.terminfo/61/a", true)]);
+
+        let err = place_linked(&f.places(), &cask).unwrap_err();
+
+        assert!(err.to_string().contains("already exists"), "{err}");
+        assert_eq!(fs::read_to_string(&file).unwrap(), "theirs");
     }
 
     #[test]

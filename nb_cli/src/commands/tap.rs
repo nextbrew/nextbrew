@@ -109,14 +109,16 @@ pub async fn untap(
     failed.map_or(Ok(()), Err)
 }
 
-/// The kind `--tap`, `--formula` or `--cask` asks for.
-pub fn trust_kind(tap: bool, formula: bool, cask: bool) -> Option<TrustKind> {
+/// The kind `--tap`, `--formula`, `--cask` or `--command` asks for.
+pub fn trust_kind(tap: bool, formula: bool, cask: bool, command: bool) -> Option<TrustKind> {
     if tap {
         Some(TrustKind::Tap)
     } else if formula {
         Some(TrustKind::Formula)
     } else if cask {
         Some(TrustKind::Cask)
+    } else if command {
+        Some(TrustKind::Command)
     } else {
         None
     }
@@ -136,7 +138,12 @@ pub fn trust(
     action: TrustAction,
 ) -> Result<(), nb_core::Error> {
     let source = installer.tap_source()?;
-    let kinds = [TrustKind::Tap, TrustKind::Formula, TrustKind::Cask];
+    let kinds = [
+        TrustKind::Tap,
+        TrustKind::Formula,
+        TrustKind::Cask,
+        TrustKind::Command,
+    ];
     if names.is_empty() {
         let verb = match action {
             TrustAction::Trust => "Trusted",
@@ -153,6 +160,7 @@ pub fn trust(
                 TrustKind::Tap => "taps",
                 TrustKind::Formula => "formulae",
                 TrustKind::Cask => "casks",
+                TrustKind::Command => "commands",
             };
             println!("{verb} {label}:");
             for entry in entries {
@@ -204,7 +212,7 @@ pub fn trust(
                 // Untrusting a tap forgets what of it was trusted.
                 if kind == TrustKind::Tap {
                     let prefix = format!("{}/", target.to_lowercase());
-                    for item_kind in [TrustKind::Formula, TrustKind::Cask] {
+                    for item_kind in [TrustKind::Formula, TrustKind::Cask, TrustKind::Command] {
                         for entry in source.trust.entries(item_kind) {
                             if entry.starts_with(&prefix) {
                                 removed |= source.trust.untrust(item_kind, &entry)?;
@@ -256,6 +264,11 @@ fn trust_target(
     let remote = source.taps.remote(&tap);
     let formula = source.taps.find_formula(&tap, &item).map(|(n, _)| n);
     let cask = source.taps.find_cask(&tap, &item).map(|(n, _)| n);
+    let command = source
+        .taps
+        .command_files(&tap)
+        .contains_key(&item)
+        .then(|| item.clone());
     let pick = |kind: TrustKind, found: Option<String>| {
         let item = found.unwrap_or(item.to_lowercase());
         let full = format!("{tap}/{item}");
@@ -265,16 +278,36 @@ fn trust_target(
         let entry = nb_io::tap::trust::TrustStore::item_trust_name(&tap, &item, remote.as_deref());
         (kind, entry)
     };
-    match (kind, formula, cask) {
-        (Some(TrustKind::Formula), f, _) => Ok(pick(TrustKind::Formula, f)),
-        (Some(TrustKind::Cask), _, c) => Ok(pick(TrustKind::Cask, c)),
-        (_, Some(f), None) => Ok(pick(TrustKind::Formula, Some(f))),
-        (_, None, Some(c)) => Ok(pick(TrustKind::Cask, Some(c))),
-        (_, None, None) => Err(nb_core::Error::InvalidArgument {
+    if let Some(kind) = kind {
+        let found = match kind {
+            TrustKind::Formula => formula,
+            TrustKind::Cask => cask,
+            _ => command,
+        };
+        return Ok(pick(kind, found));
+    }
+    // `infer_target`: the one kind of that name in the tap (or, untrusting,
+    // already trusted).
+    let full = format!("{tap}/{}", item.to_lowercase());
+    let mut candidates: Vec<(TrustKind, Option<String>)> = Vec::new();
+    for (kind, found) in [
+        (TrustKind::Formula, formula),
+        (TrustKind::Cask, cask),
+        (TrustKind::Command, command),
+    ] {
+        if found.is_some() || (include_existing && source.trust.entries(kind).contains(&full)) {
+            candidates.push((kind, found));
+        }
+    }
+    match candidates.as_slice() {
+        [(kind, found)] => Ok(pick(*kind, found.clone())),
+        [] => Err(nb_core::Error::InvalidArgument {
             message: format!("No formula, cask or command found for {name}."),
         }),
         _ => Err(nb_core::Error::InvalidArgument {
-            message: format!("Ambiguous trust target {name}. Use `--formula` or `--cask`."),
+            message: format!(
+                "Ambiguous trust target {name}. Use `--formula`, `--cask` or `--command`."
+            ),
         }),
     }
 }
@@ -286,16 +319,35 @@ pub async fn prepare_full_names(
     names: &[String],
 ) -> Result<(), nb_core::Error> {
     for name in names {
-        let bare = name.strip_prefix("cask:").unwrap_or(name);
-        let bare = bare.strip_prefix("formula:").unwrap_or(bare);
-        let Some((tap, item)) = TapName::split_full_name(bare) else {
+        if let Some((tap, _)) = split_full_name(name) {
+            ensure_tapped(installer, &tap, None).await?;
+        }
+    }
+    trust_full_names(installer, names)
+}
+
+/// A third-party tap's formula or cask named in full, without the `cask:`
+/// or `formula:` mark.
+fn split_full_name(name: &str) -> Option<(TapName, String)> {
+    let bare = name.strip_prefix("cask:").unwrap_or(name);
+    let bare = bare.strip_prefix("formula:").unwrap_or(bare);
+    TapName::split_full_name(bare).filter(|(tap, _)| !tap.is_official())
+}
+
+/// `Homebrew::Trust.trust_fully_qualified_items!`, which `brew install`,
+/// `upgrade` and `reinstall` run first: trust each formula or cask named
+/// in full from a tap that is there (a `cask:` name only a cask), saying
+/// so the first time.
+pub fn trust_full_names(
+    installer: &nb_io::Installer,
+    names: &[String],
+) -> Result<(), nb_core::Error> {
+    for name in names {
+        let Some((tap, item)) = split_full_name(name) else {
             continue;
         };
-        if tap.is_official() {
-            continue;
-        }
-        ensure_tapped(installer, &tap, None).await?;
-        let taps = &installer.tap_source()?.taps;
+        let source = installer.tap_source()?;
+        let taps = &source.taps;
         let found = if name.starts_with("cask:") {
             taps.find_cask(&tap, &item)
                 .map(|(n, _)| (TrustKind::Cask, n))
@@ -307,8 +359,7 @@ pub async fn prepare_full_names(
                         .map(|(n, _)| (TrustKind::Cask, n))
                 })
         };
-        let source = installer.tap_source()?;
-        let remote = source.taps.remote(&tap);
+        let remote = taps.remote(&tap);
         if let Some((kind, resolved)) = found
             && source.trust.trust(
                 kind,

@@ -7,7 +7,7 @@ use tokio::fs;
 use tokio::io::{AsyncBufReadExt, AsyncRead, BufReader};
 use tokio::process::Command;
 
-use super::environment::build_env;
+use super::environment::{build_env, logs_dir};
 use super::source::download_and_extract_source;
 
 const SHIM_RUBY: &str = include_str!("shim.rb");
@@ -48,7 +48,25 @@ impl BuildExecutor {
             .await
             .map_err(Error::file("failed to create cellar directory"))?;
 
-        let mut env = build_env(plan, &self.prefix);
+        // A home of the build's own, as `Formula#stage` makes one.
+        let home = source_root.join(".brew_home");
+        fs::create_dir_all(&home)
+            .await
+            .map_err(Error::file("failed to create the build's home"))?;
+        let _ = fs::write(home.join(".gitignore"), "*").await;
+        let _ = fs::write(
+            home.join(".bazelrc"),
+            format!("startup --output_user_root={}/_bazel", home.display()),
+        )
+        .await;
+
+        // The formula's logs, each build's alone.
+        let logs = logs_dir(&plan.formula_name);
+        let _ = fs::remove_dir_all(&logs).await;
+        let failed = work_dir.join("build-failed");
+
+        let mut env = build_env(plan, &self.prefix, &source_root, &logs);
+        env.insert("NEXTBREW_BUILD_FAILED".into(), failed.display().to_string());
         env.insert(
             "NEXTBREW_FORMULA_FILE".into(),
             formula_rb_path.display().to_string(),
@@ -58,7 +76,18 @@ impl BuildExecutor {
         env.insert("NEXTBREW_INSTALLED_DEPS".into(), deps_json);
 
         let ruby = find_ruby().await?;
-        run_build(&ruby, &shim_path, &source_root, &env).await?;
+        if run_build(&ruby, &shim_path, &source_root, &env)
+            .await?
+            .is_some()
+        {
+            // A failed command has shown its log; anything else, its error.
+            self.cleanup_work_dir(&work_dir).await;
+            return Err(Error::BuildFailed {
+                name: plan.formula_name.clone(),
+                version: plan.version.clone(),
+                report: None,
+            });
+        }
 
         self.cleanup_work_dir(&work_dir).await;
         Ok(())
@@ -83,14 +112,23 @@ pub struct DepInfo {
     pub cellar_path: String,
 }
 
+/// The `ruby` on the user's `PATH`, else the system's, by its full path as
+/// the build's `PATH` is not the user's.
 async fn find_ruby() -> Result<PathBuf, Error> {
-    for candidate in ["ruby", "/usr/bin/ruby"] {
-        let result = Command::new(candidate).arg("--version").output().await;
+    let on_path = std::env::var_os("PATH")
+        .map(|path| {
+            std::env::split_paths(&path)
+                .map(|dir| dir.join("ruby"))
+                .find(|ruby| ruby.is_file())
+        })
+        .unwrap_or_default();
+    for candidate in on_path.into_iter().chain([PathBuf::from("/usr/bin/ruby")]) {
+        let result = Command::new(&candidate).arg("--version").output().await;
 
         if let Ok(output) = result
             && output.status.success()
         {
-            return Ok(PathBuf::from(candidate));
+            return Ok(candidate);
         }
     }
 
@@ -99,15 +137,18 @@ async fn find_ruby() -> Result<PathBuf, Error> {
     })
 }
 
+/// Run the build, showing what it says. If it failed, which it has said
+/// why, the last lines it wrote to standard error.
 async fn run_build(
     ruby: &Path,
     shim_path: &Path,
     source_root: &Path,
     env: &HashMap<String, String>,
-) -> Result<(), Error> {
+) -> Result<Option<Vec<String>>, Error> {
     let mut child = Command::new(ruby)
         .arg(shim_path)
         .current_dir(source_root)
+        .env_clear()
         .envs(env)
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -121,15 +162,15 @@ async fn run_build(
         message: "failed to capture ruby shim stderr".to_string(),
     })?;
 
-    let stdout_task = tokio::spawn(stream_output_and_capture_tail(stdout, false));
-    let stderr_task = tokio::spawn(stream_output_and_capture_tail(stderr, true));
+    let stdout_task = tokio::spawn(stream_output(stdout, false));
+    let stderr_task = tokio::spawn(stream_output(stderr, true));
 
     let status = child
         .wait()
         .await
         .map_err(Error::exec("failed waiting for ruby shim"))?;
 
-    let stdout_tail = stdout_task
+    stdout_task
         .await
         .map_err(Error::exec("failed to join stdout task"))?
         .map_err(Error::exec("failed reading stdout"))?;
@@ -138,47 +179,28 @@ async fn run_build(
         .map_err(Error::exec("failed to join stderr task"))?
         .map_err(Error::exec("failed reading stderr"))?;
 
-    if !status.success() {
-        let mut msg = format!("source build failed (exit code: {:?})", status.code());
-        let tail = if !stderr_tail.is_empty() {
-            stderr_tail
-        } else {
-            stdout_tail
-        };
-        if !tail.is_empty() {
-            msg.push('\n');
-            msg.push_str(&tail.join("\n"));
-        }
-        return Err(Error::ExecutionError { message: msg });
-    }
-
-    Ok(())
+    Ok((!status.success()).then_some(stderr_tail))
 }
 
-async fn stream_output_and_capture_tail<R>(
-    reader: R,
-    stderr: bool,
-) -> Result<Vec<String>, std::io::Error>
+/// Show what `reader` says, keeping its last lines.
+async fn stream_output<R>(reader: R, stderr: bool) -> Result<Vec<String>, std::io::Error>
 where
     R: AsyncRead + Unpin,
 {
     const TAIL_LINES: usize = 40;
     let mut tail = VecDeque::with_capacity(TAIL_LINES);
     let mut lines = BufReader::new(reader).lines();
-
     while let Some(line) = lines.next_line().await? {
         if stderr {
             eprintln!("{line}");
         } else {
             println!("{line}");
         }
-
         if tail.len() == TAIL_LINES {
             tail.pop_front();
         }
         tail.push_back(line);
     }
-
     Ok(tail.into_iter().collect())
 }
 
@@ -217,20 +239,14 @@ end
         let cellar = prefix.join("Cellar");
         std::fs::create_dir_all(&cellar).unwrap();
 
-        let mut env = HashMap::new();
-        env.insert("NEXTBREW_PREFIX".to_string(), prefix.display().to_string());
-        env.insert("NEXTBREW_CELLAR".to_string(), cellar.display().to_string());
-        env.insert("NEXTBREW_FORMULA_NAME".to_string(), "foo".to_string());
-        env.insert("NEXTBREW_FORMULA_VERSION".to_string(), "1.0.0".to_string());
-        env.insert(
-            "NEXTBREW_FORMULA_FILE".to_string(),
-            formula_path.display().to_string(),
-        );
-        env.insert("NEXTBREW_INSTALLED_DEPS".to_string(), "{}".to_string());
+        let env = shim_env(&prefix, &cellar, &formula_path);
 
-        run_build(&ruby, &shim_path, &source_root, &env)
-            .await
-            .unwrap();
+        assert_eq!(
+            run_build(&ruby, &shim_path, &source_root, &env)
+                .await
+                .unwrap(),
+            None
+        );
 
         assert!(
             prefix
@@ -243,8 +259,36 @@ end
         );
     }
 
+    /// What the executor gives the shim, for a build of foo 1.0.0.
+    fn shim_env(prefix: &Path, cellar: &Path, formula_path: &Path) -> HashMap<String, String> {
+        let tmp = formula_path.parent().unwrap();
+        let mut env = HashMap::new();
+        env.insert(
+            "PATH".to_string(),
+            "/usr/bin:/bin:/usr/sbin:/sbin".to_string(),
+        );
+        env.insert("NEXTBREW_PREFIX".to_string(), prefix.display().to_string());
+        env.insert("NEXTBREW_CELLAR".to_string(), cellar.display().to_string());
+        env.insert("NEXTBREW_FORMULA_NAME".to_string(), "foo".to_string());
+        env.insert("NEXTBREW_FORMULA_VERSION".to_string(), "1.0.0".to_string());
+        env.insert(
+            "NEXTBREW_FORMULA_FILE".to_string(),
+            formula_path.display().to_string(),
+        );
+        env.insert("NEXTBREW_INSTALLED_DEPS".to_string(), "{}".to_string());
+        env.insert(
+            "NEXTBREW_LOGS".to_string(),
+            tmp.join("logs").display().to_string(),
+        );
+        env.insert(
+            "NEXTBREW_BUILD_FAILED".to_string(),
+            tmp.join("build-failed").display().to_string(),
+        );
+        env
+    }
+
     #[tokio::test]
-    async fn run_build_includes_stderr_tail_in_error() {
+    async fn a_failed_command_shows_its_log_and_stops_the_build() {
         let Some(ruby) = find_ruby().await.ok() else {
             return;
         };
@@ -273,24 +317,27 @@ end
         let cellar = prefix.join("Cellar");
         std::fs::create_dir_all(&cellar).unwrap();
 
-        let mut env = HashMap::new();
-        env.insert("NEXTBREW_PREFIX".to_string(), prefix.display().to_string());
-        env.insert("NEXTBREW_CELLAR".to_string(), cellar.display().to_string());
-        env.insert("NEXTBREW_FORMULA_NAME".to_string(), "foo".to_string());
-        env.insert("NEXTBREW_FORMULA_VERSION".to_string(), "1.0.0".to_string());
-        env.insert(
-            "NEXTBREW_FORMULA_FILE".to_string(),
-            formula_path.display().to_string(),
-        );
-        env.insert("NEXTBREW_INSTALLED_DEPS".to_string(), "{}".to_string());
+        let env = shim_env(&prefix, &cellar, &formula_path);
 
-        let err = run_build(&ruby, &shim_path, &source_root, &env)
+        let failed = run_build(&ruby, &shim_path, &source_root, &env)
             .await
-            .unwrap_err();
-
-        let message = err.to_string();
-        assert!(message.contains("source build failed"));
-        assert!(message.contains("boom-from-stderr"));
+            .unwrap();
+        // The command's output went to its log, not to the terminal.
+        assert_eq!(failed, Some(Vec::new()));
+        assert!(tmp.path().join("build-failed").exists());
+        let log = std::fs::read_to_string(tmp.path().join("logs/01.sh.log")).unwrap();
+        let lines: Vec<&str> = log.lines().collect();
+        assert_eq!(
+            lines[1..],
+            [
+                "",
+                "sh",
+                "-c",
+                "echo boom-from-stderr 1>&2; exit 7",
+                "",
+                "boom-from-stderr"
+            ]
+        );
     }
 
     fn sha256_hex_file(path: &Path) -> String {
@@ -328,18 +375,14 @@ end
         let cellar = prefix.join("Cellar");
         std::fs::create_dir_all(&cellar).unwrap();
 
-        let mut env = HashMap::new();
-        env.insert("NEXTBREW_PREFIX".to_string(), prefix.display().to_string());
-        env.insert("NEXTBREW_CELLAR".to_string(), cellar.display().to_string());
-        env.insert("NEXTBREW_FORMULA_NAME".to_string(), "foo".to_string());
-        env.insert("NEXTBREW_FORMULA_VERSION".to_string(), "1.0.0".to_string());
-        env.insert(
-            "NEXTBREW_FORMULA_FILE".to_string(),
-            formula_path.display().to_string(),
-        );
-        env.insert("NEXTBREW_INSTALLED_DEPS".to_string(), "{}".to_string());
+        let env = shim_env(prefix, &cellar, &formula_path);
 
-        run_build(ruby, &shim_path, source_root, &env).await
+        match run_build(ruby, &shim_path, source_root, &env).await? {
+            None => Ok(()),
+            Some(tail) => Err(Error::ExecutionError {
+                message: tail.join("\n"),
+            }),
+        }
     }
 
     /// A keg built in `source` by `install`, as `(file, contents)` sorted.

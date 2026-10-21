@@ -159,14 +159,6 @@ impl Installer {
     pub async fn suggest_formulas(&self, query: &str, limit: usize) -> Result<Vec<String>, Error> {
         self.api_client.suggest_formulas(query, limit).await
     }
-
-    pub async fn search_formulas(&self, query: &str) -> Result<Vec<String>, Error> {
-        self.api_client.search_formulas(query).await
-    }
-
-    pub async fn search_casks(&self, query: &str) -> Result<Vec<String>, Error> {
-        self.api_client.search_casks(query).await
-    }
 }
 
 #[cfg(test)]

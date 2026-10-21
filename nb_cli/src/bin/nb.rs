@@ -12,7 +12,8 @@ use nb_io::create_installer;
 
 #[tokio::main]
 async fn main() {
-    let cli = Cli::parse();
+    // An unknown command may be a tap's (`brew <name>`).
+    let cli = Cli::try_parse().unwrap_or_else(|e| commands::external::dispatch(e));
     logging::init(cli.verbose, cli.quiet);
 
     if let Err(e) = run(cli).await {
@@ -101,6 +102,7 @@ async fn run(cli: Cli) -> Result<(), nb_core::Error> {
                     }
                 })
                 .collect();
+            commands::tap::trust_full_names(&installer, &formulas)?;
             commands::reinstall::execute(&mut installer, formulas, build_from_source, zap, &mut ui)
                 .await
         }
@@ -165,7 +167,11 @@ async fn run(cli: Cli) -> Result<(), nb_core::Error> {
                 one,
             },
         ),
-        Commands::Info { formula } => commands::info::execute(&mut installer, formula),
+        Commands::Info {
+            formula,
+            formula_only,
+            cask,
+        } => commands::info::execute(&mut installer, formula, formula_only, cask).await,
         Commands::Gc => commands::gc::execute(&mut installer),
         Commands::Update => commands::update::execute(&mut installer).await,
         Commands::Outdated { json } => {
@@ -178,6 +184,7 @@ async fn run(cli: Cli) -> Result<(), nb_core::Error> {
             cask_options,
         } => {
             installer.set_cask_config(cask_config(&cask_options)?);
+            commands::tap::trust_full_names(&installer, &formulas)?;
             commands::upgrade::execute(
                 &mut installer,
                 formulas,
@@ -217,8 +224,21 @@ async fn run(cli: Cli) -> Result<(), nb_core::Error> {
             force,
             overwrite,
             dry_run,
-        } => commands::link::link(&mut installer, formulas, force, overwrite, dry_run).await,
-        Commands::Unlink { formulas } => commands::link::unlink(&mut installer, formulas),
+            formula,
+            cask,
+        } => {
+            let options = commands::link::LinkOptions {
+                force,
+                overwrite,
+                dry_run,
+            };
+            commands::link::link(&mut installer, formulas, options, formula, cask).await
+        }
+        Commands::Unlink {
+            formulas,
+            formula,
+            cask,
+        } => commands::link::unlink(&mut installer, formulas, formula, cask).await,
         Commands::Pin { formulas } => commands::pin::execute(&installer, formulas, true),
         Commands::Unpin { formulas } => commands::pin::execute(&installer, formulas, false),
         Commands::Tap {
@@ -246,10 +266,11 @@ async fn run(cli: Cli) -> Result<(), nb_core::Error> {
             tap,
             formula,
             cask,
+            command,
         } => commands::tap::trust(
             &installer,
             names,
-            commands::tap::trust_kind(tap, formula, cask),
+            commands::tap::trust_kind(tap, formula, cask, command),
             commands::tap::TrustAction::Trust,
         ),
         Commands::Untrust {
@@ -257,10 +278,11 @@ async fn run(cli: Cli) -> Result<(), nb_core::Error> {
             tap,
             formula,
             cask,
+            command,
         } => commands::tap::trust(
             &installer,
             names,
-            commands::tap::trust_kind(tap, formula, cask),
+            commands::tap::trust_kind(tap, formula, cask, command),
             commands::tap::TrustAction::Untrust,
         ),
         Commands::Services { command } => {

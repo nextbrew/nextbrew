@@ -5,6 +5,7 @@ pub mod bundle_ext;
 pub mod completion;
 pub mod deps;
 pub mod doctor;
+pub mod external;
 pub mod gc;
 pub mod info;
 pub mod init;

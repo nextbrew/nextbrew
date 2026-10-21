@@ -135,11 +135,27 @@ pub async fn suggest_missing_formula_matches(
     false
 }
 
+/// `BuildError#dump`: after a failed build's log, where to report it.
+pub fn report_build_failure(error: &nb_core::Error) {
+    if let nb_core::Error::BuildFailed {
+        report: Some(report),
+        ..
+    } = error
+    {
+        println!();
+        println!("{report}");
+        println!();
+    }
+}
+
 pub fn suggest_homebrew(formula: &str, error: &nb_core::Error) {
-    // Homebrew refuses these too.
+    // Homebrew refuses these too, and a failed build has said where to
+    // report it.
     if matches!(
         error,
-        nb_core::Error::UnsatisfiedRequirements { .. } | nb_core::Error::NoBottleAvailable { .. }
+        nb_core::Error::UnsatisfiedRequirements { .. }
+            | nb_core::Error::NoBottleAvailable { .. }
+            | nb_core::Error::BuildFailed { .. }
     ) {
         return;
     }

@@ -18,6 +18,8 @@ pub enum TrustKind {
     Tap,
     Formula,
     Cask,
+    /// A tap's external command (`cmd/brew-<name>`).
+    Command,
 }
 
 impl TrustKind {
@@ -26,6 +28,7 @@ impl TrustKind {
             TrustKind::Tap => "trustedtaps",
             TrustKind::Formula => "trustedformulae",
             TrustKind::Cask => "trustedcasks",
+            TrustKind::Command => "trustedcommands",
         }
     }
 
@@ -34,6 +37,7 @@ impl TrustKind {
             TrustKind::Tap => "tap",
             TrustKind::Formula => "formula",
             TrustKind::Cask => "cask",
+            TrustKind::Command => "command",
         }
     }
 }
@@ -97,6 +101,23 @@ impl TrustStore {
         entries.sort();
         self.write(&store)?;
         Ok(true)
+    }
+
+    /// `Homebrew::Trust.replace!`: trust exactly `entries`, forgetting
+    /// everything else.
+    pub fn replace(&self, entries: &[(TrustKind, String)]) -> Result<(), Error> {
+        let mut store: BTreeMap<String, Vec<String>> = BTreeMap::new();
+        for (kind, name) in entries {
+            let names = store.entry(kind.key().to_string()).or_default();
+            let name = name.to_lowercase();
+            if !names.contains(&name) {
+                names.push(name);
+            }
+        }
+        for names in store.values_mut() {
+            names.sort();
+        }
+        self.write(&store)
     }
 
     /// Forget `name`; false if it was not there.
@@ -217,6 +238,26 @@ mod tests {
             "x",
             None
         ));
+    }
+
+    #[test]
+    fn replacing_forgets_the_rest() {
+        let tmp = tempfile::tempdir().unwrap();
+        let store = TrustStore::at(tmp.path().join("trust.json"));
+        store.trust(TrustKind::Tap, "me/old").unwrap();
+        store.trust(TrustKind::Formula, "me/old/x").unwrap();
+        store
+            .replace(&[
+                (TrustKind::Formula, "Me/New/B".to_string()),
+                (TrustKind::Formula, "me/new/a".to_string()),
+                (TrustKind::Formula, "me/new/a".to_string()),
+            ])
+            .unwrap();
+        assert!(store.entries(TrustKind::Tap).is_empty());
+        assert_eq!(
+            store.entries(TrustKind::Formula),
+            vec!["me/new/a".to_string(), "me/new/b".to_string()]
+        );
     }
 
     #[test]

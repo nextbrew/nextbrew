@@ -1,12 +1,14 @@
 //! `nb bundle`: `brew bundle` over a Brewfile read without Ruby (see
-//! [`crate::brewfile`]). Entries nextbrew cannot install (other taps,
-//! `flatpak`, `winget`, build `args`) count as failures and say why, as a
-//! failed install does in Homebrew; none are skipped silently.
+//! [`crate::brewfile`]). Entries nextbrew cannot install (`flatpak`,
+//! `winget`, build `args`) count as failures and say why, as a failed
+//! install does in Homebrew; none are skipped silently.
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 use console::style;
+use nb_io::tap::TapName;
+use nb_io::tap::trust::{TrustKind, TrustStore};
 
 use super::bundle_exec;
 use super::bundle_ext::{self, Ext, Installed};
@@ -15,7 +17,8 @@ use crate::brewfile::{self, Entry, Kind, Value};
 use crate::cli::{BundleCommands, ServicesCommands};
 use crate::ui::StdUi;
 
-/// The taps whose packages nextbrew reads from the API.
+/// The taps whose packages nextbrew reads from the API, there without
+/// tapping.
 const BUILT_IN_TAPS: &[&str] = &["homebrew/core", "homebrew/cask"];
 
 /// Official taps Homebrew has emptied; tapping them fails with this.
@@ -194,21 +197,16 @@ pub async fn execute(
             };
             let formulae = selected(formula, no_formula, "HOMEBREW_BUNDLE_CLEANUP_NO_BREW");
             let casks = selected(cask, no_cask, "HOMEBREW_BUNDLE_CLEANUP_NO_CASK");
-            // nextbrew has no taps to untap.
-            let _ = selected(tap, no_tap, "HOMEBREW_BUNDLE_CLEANUP_NO_TAP");
+            let taps = selected(tap, no_tap, "HOMEBREW_BUNDLE_CLEANUP_NO_TAP");
             let extensions = selected_extensions(&extensions, "CLEANUP", selected);
             let path = brewfile_path(file.as_deref(), global)?;
-            cleanup(
-                installer,
-                &path,
-                force,
-                zap,
+            let types = CleanupTypes {
                 formulae,
                 casks,
-                &extensions,
-                ui,
-            )
-            .await
+                taps,
+                extensions,
+            };
+            cleanup(installer, &path, force, zap, &types, ui).await
         }
         BundleCommands::Dump {
             file,
@@ -231,14 +229,13 @@ pub async fn execute(
                 !off && std::env::var_os(env).is_none() && (asked || no_type_args)
             };
             let options = DumpOptions {
+                taps: selected(tap, no_tap, "HOMEBREW_BUNDLE_DUMP_NO_TAP"),
                 formulae: selected(formula, no_formula, "HOMEBREW_BUNDLE_DUMP_NO_BREW"),
                 casks: selected(cask, no_cask, "HOMEBREW_BUNDLE_DUMP_NO_CASK"),
                 extensions: selected_extensions(&extensions, "DUMP", selected),
                 describe: !no_describe && std::env::var_os("HOMEBREW_BUNDLE_NO_DESCRIBE").is_none(),
                 no_restart,
             };
-            // nextbrew has no taps to dump.
-            let _ = selected(tap, no_tap, "HOMEBREW_BUNDLE_DUMP_NO_TAP");
             let path = match file.as_deref() {
                 Some(file) if file == Path::new("-") => PathBuf::from("/dev/stdout"),
                 file => brewfile_path(file, global)?,
@@ -502,6 +499,17 @@ async fn add(
     brewfile::parse(&content).map_err(|e| nb_core::Error::ExecutionError {
         message: e.to_string(),
     })?;
+    // `brew bundle add user/repo/name` taps and trusts it first.
+    if matches!(directive, "brew" | "cask") {
+        let full: Vec<String> = names
+            .iter()
+            .map(|name| match directive {
+                "cask" => format!("cask:{name}"),
+                _ => name.clone(),
+            })
+            .collect();
+        super::tap::prepare_full_names(installer, &full).await?;
+    }
     let mut lines = Vec::new();
     for name in names {
         let desc = match directive {
@@ -669,10 +677,144 @@ fn full_name(entry: &Entry) -> Option<String> {
         .map(str::to_string)
 }
 
-/// The tap a `user/repo/name` entry is from, unless it is a built-in one.
-fn foreign_tap(name: &str) -> Option<String> {
-    let (tap, _) = name.rsplit_once('/')?;
-    (!BUILT_IN_TAPS.contains(&tap)).then(|| tap.to_string())
+/// The third-party tap a `brew` or `cask` entry names in full, and the
+/// name in it.
+fn entry_tap(entry: &Entry) -> Option<(TapName, String)> {
+    let name = match entry.kind {
+        Kind::Brew => entry.name.clone(),
+        Kind::Cask => full_name(entry)?,
+        _ => return None,
+    };
+    TapName::split_full_name(&name).filter(|(tap, _)| !tap.is_official())
+}
+
+/// What `nb install` is given for a `brew` or `cask` entry: a tap's in
+/// full.
+fn install_name(entry: &Entry) -> String {
+    match (entry.kind, entry_tap(entry)) {
+        (Kind::Cask, Some((tap, item))) => format!("cask:{tap}/{item}"),
+        (Kind::Cask, None) => format!("cask:{}", entry.name),
+        _ => entry.name.clone(),
+    }
+}
+
+/// What a `brew` or `cask` entry is installed as: a formula by its name,
+/// whichever tap it came from (Homebrew's rack), a cask by its token.
+fn installed_name(entry: &Entry) -> String {
+    match entry.kind {
+        Kind::Cask => format!("cask:{}", entry.name),
+        _ => entry
+            .name
+            .rsplit('/')
+            .next()
+            .unwrap_or(&entry.name)
+            .to_string(),
+    }
+}
+
+/// The keys a tap's `trusted:` hash may have.
+const TRUSTED_ITEM_KEYS: &[&str] = &[
+    "formula", "formulae", "cask", "casks", "command", "commands",
+];
+
+/// `Bundle::Trust.entries`: what the Brewfile's `trusted:` options trust,
+/// named as `brew trust` names them: a tap (by its `clone_target` when
+/// that is a custom remote), the formulae, casks and commands its hash
+/// lists, and
+/// formulae and casks named in full.
+fn trust_entries(entries: &[Entry]) -> Result<Vec<(TrustKind, String)>, nb_core::Error> {
+    let clone_target = |entry: &Entry| {
+        entry
+            .option("clone_target")
+            .and_then(Value::as_str)
+            .filter(|remote| !remote.is_empty())
+            .map(str::to_string)
+    };
+    let remotes: Vec<(String, String)> = entries
+        .iter()
+        .filter(|entry| entry.kind == Kind::Tap)
+        .filter_map(|entry| Some((entry.name.clone(), clone_target(entry)?)))
+        .collect();
+    let mut trusted = Vec::new();
+    for entry in entries {
+        let Some(option) = entry.option("trusted") else {
+            continue;
+        };
+        match (entry.kind, option) {
+            (Kind::Tap, Value::Bool(true)) => {
+                let tap = TapName::parse(&entry.name)?;
+                let remote = clone_target(entry);
+                trusted.push((
+                    TrustKind::Tap,
+                    tap.reference(remote.as_deref()).to_lowercase(),
+                ));
+            }
+            (Kind::Tap, Value::Hash(items)) => {
+                let unsupported: Vec<&str> = items
+                    .iter()
+                    .map(|(key, _)| key.as_str())
+                    .filter(|key| !TRUSTED_ITEM_KEYS.contains(key))
+                    .collect();
+                if !unsupported.is_empty() {
+                    return Err(usage(&format!(
+                        "Unsupported trusted keys: {}",
+                        unsupported.join(", ")
+                    )));
+                }
+                let tap = TapName::parse(&entry.name)?;
+                let remote = clone_target(entry);
+                for (key, value) in items {
+                    let kind = match key.as_str() {
+                        "formula" | "formulae" => TrustKind::Formula,
+                        "cask" | "casks" => TrustKind::Cask,
+                        _ => TrustKind::Command,
+                    };
+                    let values = match value {
+                        Value::Array(values) => values.clone(),
+                        Value::Nil => Vec::new(),
+                        value => vec![value.clone()],
+                    };
+                    for value in values {
+                        let item = match value {
+                            Value::Str(item) | Value::Sym(item) => item,
+                            Value::Int(item) => item.to_string(),
+                            _ => continue,
+                        };
+                        let item = item.rsplit('/').next().unwrap_or_default();
+                        if !item.is_empty() {
+                            trusted.push((
+                                kind,
+                                TrustStore::item_trust_name(&tap, item, remote.as_deref()),
+                            ));
+                        }
+                    }
+                }
+            }
+            (Kind::Brew | Kind::Cask, Value::Bool(true)) => {
+                let Some((tap, item)) = entry_tap(entry) else {
+                    continue;
+                };
+                let remote = remotes
+                    .iter()
+                    .find(|(name, _)| *name == tap.name())
+                    .map(|(_, remote)| remote.as_str());
+                let kind = if entry.kind == Kind::Brew {
+                    TrustKind::Formula
+                } else {
+                    TrustKind::Cask
+                };
+                trusted.push((kind, TrustStore::item_trust_name(&tap, &item, remote)));
+            }
+            _ => {}
+        }
+    }
+    let mut unique = Vec::new();
+    for entry in trusted {
+        if !unique.contains(&entry) {
+            unique.push(entry);
+        }
+    }
+    Ok(unique)
 }
 
 fn say_verb(verb: &str, name: &str) {
@@ -704,34 +846,18 @@ fn unsupported(entry: &Entry) -> Option<String> {
             "Error: {} was deprecated. This tap is now empty and all its contents were either deleted or migrated.",
             entry.name
         )),
-        Kind::Tap if !BUILT_IN_TAPS.contains(&entry.name.as_str()) => Some(format!(
-            "nextbrew installs from homebrew/core and homebrew/cask only; tap `{}` with brew",
-            entry.name
-        )),
         Kind::Tap => None,
-        Kind::Brew => {
-            if let Some(tap) = foreign_tap(&entry.name) {
-                return Some(format!(
-                    "formula from the '{tap}' tap; install it with brew"
-                ));
-            }
-            match entry.option("args") {
-                Some(Value::Array(args)) if !args.is_empty() => Some(format!(
-                    "build options ({}) need a build from source, which nextbrew does not do",
-                    args.iter()
-                        .map(ToString::to_string)
-                        .collect::<Vec<_>>()
-                        .join(", ")
-                )),
-                _ => None,
-            }
-        }
-        Kind::Cask => {
-            if let Some(tap) = full_name(entry).and_then(|name| foreign_tap(&name)) {
-                return Some(format!("cask from the '{tap}' tap; install it with brew"));
-            }
-            cask_config(entry).err().map(|e| e.to_string())
-        }
+        Kind::Brew => match entry.option("args") {
+            Some(Value::Array(args)) if !args.is_empty() => Some(format!(
+                "build options ({}) need a build from source, which nextbrew does not do",
+                args.iter()
+                    .map(ToString::to_string)
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            )),
+            _ => None,
+        },
+        Kind::Cask => cask_config(entry).err().map(|e| e.to_string()),
         Kind::Extension(_) if Ext::of(entry).is_some() => None,
         Kind::Extension(kind) => Some(format!("nextbrew does not install `{kind}` entries")),
     }
@@ -762,6 +888,7 @@ fn cask_config(entry: &Entry) -> Result<nb_io::CaskConfig, nb_core::Error> {
 struct Plan {
     entry: Entry,
     install_name: String,
+    installed_name: String,
     installed: bool,
     upgradable: bool,
 }
@@ -800,27 +927,103 @@ impl Plan {
     }
 }
 
+/// The rest of `homebrew_batchable?`: whether the formula or cask loads
+/// before anything is installed. One named in full needs its tap there,
+/// trusted, and without the other kind of package of that name; one named
+/// shortly must be Homebrew's own.
+async fn loadable(installer: &nb_io::Installer, entry: &Entry) -> bool {
+    let Some((tap, item)) = entry_tap(entry) else {
+        return match entry.kind {
+            Kind::Brew => installer
+                .formula(&entry.name)
+                .await
+                .is_ok_and(|formula| formula.third_party_tap().is_none()),
+            _ => installer.cask(&entry.name).await.is_ok(),
+        };
+    };
+    let Ok(source) = installer.tap_source() else {
+        return false;
+    };
+    if !source.taps.is_installed(&tap) {
+        return false;
+    }
+    let remote = source.taps.remote(&tap);
+    let formula = source.taps.find_formula(&tap, &item).map(|(name, _)| name);
+    let cask = source.taps.find_cask(&tap, &item).map(|(token, _)| token);
+    match (entry.kind, formula, cask) {
+        (Kind::Brew, Some(name), None) => {
+            source
+                .trust
+                .trusted(TrustKind::Formula, &tap, &name, remote.as_deref())
+        }
+        (Kind::Cask, None, Some(token)) => {
+            source
+                .trust
+                .trusted(TrustKind::Cask, &tap, &token, remote.as_deref())
+        }
+        _ => false,
+    }
+}
+
+/// Whether the tap of a `tap` entry is there.
+fn tapped(installer: &nb_io::Installer, name: &str) -> bool {
+    BUILT_IN_TAPS.contains(&name)
+        || TapName::parse(name).is_ok_and(|tap| {
+            installer
+                .tap_source()
+                .is_ok_and(|source| source.taps.is_installed(&tap))
+        })
+}
+
+/// `brew tap` for a `tap` entry (`clone_target` its remote), saying why it
+/// failed as brew's own error would.
+async fn tap_entry(installer: &nb_io::Installer, entry: &Entry) -> bool {
+    let tapped = async {
+        let tap = TapName::parse(&entry.name)?;
+        nb_io::tap::Taps::check_tappable(&tap, false)?;
+        let remote = entry.option("clone_target").and_then(Value::as_str);
+        super::tap::ensure_tapped(installer, &tap, remote).await
+    };
+    match tapped.await {
+        Ok(()) => true,
+        Err(e) => {
+            eprintln!("{} {e}", style("Error:").red().bold());
+            false
+        }
+    }
+}
+
+/// Before `nb install` of a tap's formulae or casks named in full: tap and
+/// trust them, as `brew install` does.
+async fn prepare_full_names(installer: &nb_io::Installer, names: &[String]) -> bool {
+    match super::tap::prepare_full_names(installer, names).await {
+        Ok(()) => true,
+        Err(e) => {
+            eprintln!("{} {e}", style("Error:").red().bold());
+            false
+        }
+    }
+}
+
 async fn plan_entry(
     installer: &nb_io::Installer,
     entry: Entry,
     options: &InstallOptions,
 ) -> Result<Plan, nb_core::Error> {
-    let install_name = match entry.kind {
-        Kind::Cask => format!("cask:{}", entry.name),
-        _ => entry.name.clone(),
-    };
-    let installed = installer.is_installed(&install_name);
+    let install_name = install_name(&entry);
+    let installed_name = installed_name(&entry);
+    let installed = installer.is_installed(&installed_name);
     let no_upgrade = options.no_upgrade
         && !(entry.kind == Kind::Brew && options.upgrade_formulae.contains(&entry.name));
     let pinned = installer
-        .get_installed(&install_name)
+        .get_installed(&installed_name)
         .is_some_and(|keg| keg.pinned);
     let greedy = entry.option("greedy").is_some_and(Value::truthy);
     let upgradable = installed
         && !no_upgrade
         && !pinned
         && installer
-            .is_outdated_greedy(&install_name, greedy)
+            .is_outdated_greedy(&installed_name, greedy)
             .await
             .ok()
             .flatten()
@@ -828,6 +1031,7 @@ async fn plan_entry(
     Ok(Plan {
         entry,
         install_name,
+        installed_name,
         installed,
         upgradable,
     })
@@ -865,23 +1069,50 @@ async fn install_from_file(
     let mut success = 0;
     let mut failure = 0;
 
+    // What the Brewfile trusts, before anything of a tap is read.
+    let trusted = trust_entries(&entries)?;
+    if !trusted.is_empty() {
+        let store = &installer.tap_source()?.trust;
+        for (kind, name) in &trusted {
+            store.trust(*kind, name)?;
+        }
+    }
+
     // Taps first, then what nextbrew cannot install, then the rest.
     let (taps, others): (Vec<Entry>, Vec<Entry>) = entries
         .into_iter()
         .partition(|entry| entry.kind == Kind::Tap);
+    let tap_names: Vec<String> = taps.iter().map(|tap| tap.name.clone()).collect();
     for tap in taps {
-        match unsupported(&tap) {
-            None => {
-                if !options.quiet {
-                    println!("Using {}", tap.name);
-                }
-                success += 1;
+        if let Some(reason) = unsupported(&tap) {
+            say_verb("Tapping", &tap.name);
+            say_failed("Tapping", &tap.name, Some(&reason));
+            failure += 1;
+            continue;
+        }
+        let tapped = tapped(installer, &tap.name);
+        if tapped {
+            if !options.quiet {
+                println!("Using {}", tap.name);
             }
-            Some(reason) => {
-                say_verb("Tapping", &tap.name);
-                say_failed("Tapping", &tap.name, Some(&reason));
+            success += 1;
+        } else {
+            say_verb("Tapping", &tap.name);
+            if tap_entry(installer, &tap).await {
+                success += 1;
+            } else {
+                say_failed("Tapping", &tap.name, None);
                 failure += 1;
             }
+        }
+    }
+    // `ensure_entry_taps_installed!`: the taps formulae and casks are named
+    // in full from, unless a `tap` entry was for one.
+    for entry in &others {
+        if let Some((tap, _)) = entry_tap(entry)
+            && !tap_names.contains(&tap.name())
+        {
+            super::tap::ensure_tapped(installer, &tap, None).await?;
         }
     }
     // Formulae and casks, and other package managers' entries, in the
@@ -911,7 +1142,7 @@ async fn install_from_file(
         .iter()
         .filter_map(|item| match item {
             Pending::Homebrew(plan) if plan.entry.kind == Kind::Brew => {
-                Some(plan.install_name.clone())
+                Some(plan.installed_name.clone())
             }
             _ => None,
         })
@@ -923,7 +1154,11 @@ async fn install_from_file(
     let mut remaining = Vec::new();
     for item in pending {
         match item {
-            Pending::Homebrew(plan) if plan.batchable() => batch.push(plan),
+            Pending::Homebrew(plan)
+                if plan.batchable() && loadable(installer, &plan.entry).await =>
+            {
+                batch.push(plan)
+            }
             Pending::Extension(ext, entry) if ext.batched() => {
                 match extension_batches.iter_mut().find(|(e, _)| *e == ext) {
                     Some((_, group)) => group.push(entry),
@@ -941,7 +1176,7 @@ async fn install_from_file(
         if plan.actionable() {
             say_verb(plan.verb(), &plan.entry.name);
             if plan.installed {
-                to_upgrade.push(plan.install_name.clone());
+                to_upgrade.push(plan.installed_name.clone());
             } else {
                 to_install.push(plan.install_name.clone());
             }
@@ -949,17 +1184,23 @@ async fn install_from_file(
             println!("Using {}", plan.entry.name);
         }
     }
-    if !to_install.is_empty() {
+    if !to_install.is_empty() && prepare_full_names(installer, &to_install).await {
         let _ = install::execute(installer, to_install, false, false, ui).await;
     }
     if !to_upgrade.is_empty() {
+        let full_names: Vec<String> = batch
+            .iter()
+            .filter(|plan| plan.actionable() && plan.installed)
+            .map(|plan| plan.install_name.clone())
+            .collect();
+        let _ = super::tap::trust_full_names(installer, &full_names);
         let _ = upgrade::execute(installer, to_upgrade, false, false, ui).await;
     }
     for plan in &batch {
-        let done = installer.is_installed(&plan.install_name)
+        let done = installer.is_installed(&plan.installed_name)
             && (!plan.upgradable
                 || installer
-                    .is_outdated_greedy(&plan.install_name, false)
+                    .is_outdated_greedy(&plan.installed_name, false)
                     .await
                     .ok()
                     .flatten()
@@ -995,6 +1236,14 @@ async fn install_from_file(
             say_verb(plan.verb(), &plan.entry.name);
         } else if !options.quiet {
             println!("Using {}", plan.entry.name);
+        }
+        // `Brew#install_change_state!` taps a formula's tap first, and a
+        // failure there ends the whole run.
+        if actionable
+            && plan.entry.kind == Kind::Brew
+            && let Some((tap, _)) = entry_tap(&plan.entry)
+        {
+            super::tap::ensure_tapped(installer, &tap, None).await?;
         }
         let ok = match plan.entry.kind {
             Kind::Brew => install_formula(installer, &plan, actionable, options, ui).await,
@@ -1120,6 +1369,7 @@ async fn install_formula(
 ) -> bool {
     let entry = &plan.entry;
     let name = &entry.name;
+    let installed = &plan.installed_name;
     let link = entry.option("link");
     let restart_service = entry.option("restart_service").filter(|v| v.truthy());
     let start_service = entry
@@ -1164,17 +1414,29 @@ async fn install_formula(
             }
         }
         let result = if plan.installed {
-            upgrade::execute(installer, vec![name.clone()], false, false, ui).await
+            let _ =
+                super::tap::trust_full_names(installer, std::slice::from_ref(&plan.install_name));
+            upgrade::execute(installer, vec![installed.clone()], false, false, ui).await
         } else {
+            if !prepare_full_names(installer, std::slice::from_ref(&plan.install_name)).await {
+                return false;
+            }
             let no_link = matches!(link, Some(Value::Bool(false)));
-            install::execute(installer, vec![name.clone()], no_link, false, ui).await
+            install::execute(
+                installer,
+                vec![plan.install_name.clone()],
+                no_link,
+                false,
+                ui,
+            )
+            .await
         };
-        if result.is_err() || !installer.is_installed(name) {
+        if result.is_err() || !installer.is_installed(installed) {
             return false;
         }
         changed = true;
     }
-    if !installer.is_installed(name) {
+    if !installer.is_installed(installed) {
         return false;
     }
 
@@ -1186,17 +1448,17 @@ async fn install_formula(
             .map(PathBuf::from)
             .unwrap_or_default(),
     )
-    .find(&nb_io::services::label(name))
+    .find(&nb_io::services::label(installed))
     .running();
     let service = if restart_service.is_some() && (always || changed) {
         Some(ServicesCommands::Restart {
-            formulas: vec![name.clone()],
+            formulas: vec![installed.clone()],
             all: false,
             file: None,
         })
     } else if start_service.is_some() && !started {
         Some(ServicesCommands::Start {
-            formulas: vec![name.clone()],
+            formulas: vec![installed.clone()],
             all: false,
             file: None,
         })
@@ -1210,18 +1472,18 @@ async fn install_formula(
     }
 
     // Link state: `link:` true/`:overwrite`, false, or whatever is usual.
-    let keg_only = installer.is_keg_only(name).await.unwrap_or(false);
+    let keg_only = installer.is_keg_only(installed).await.unwrap_or(false);
     let want_linked = match link {
         Some(Value::Bool(true)) => true,
         Some(Value::Sym(s)) if s == "overwrite" => true,
         Some(Value::Bool(false)) => false,
         _ => !keg_only,
     };
-    match installer.is_linked(name) {
+    match installer.is_linked(installed) {
         Ok(linked) if want_linked && !linked => {
-            ok &= installer.link(name, keg_only, false).await.is_ok()
+            ok &= installer.link(installed, keg_only, false).await.is_ok()
         }
-        Ok(linked) if !want_linked && linked => ok &= installer.unlink(name).is_ok(),
+        Ok(linked) if !want_linked && linked => ok &= installer.unlink(installed).is_ok(),
         Ok(_) => {}
         Err(_) => ok = false,
     }
@@ -1231,7 +1493,7 @@ async fn install_formula(
     }
     if ok
         && let Some(Value::Str(file)) = entry.option("version_file")
-        && let Some(keg) = installer.get_installed(name)
+        && let Some(keg) = installer.get_installed(installed)
     {
         let version = keg
             .version
@@ -1259,16 +1521,29 @@ async fn install_cask(
         };
         installer.set_cask_config(config);
         let result = if plan.installed {
-            upgrade::execute(installer, vec![plan.install_name.clone()], false, false, ui).await
-        } else {
+            let _ =
+                super::tap::trust_full_names(installer, std::slice::from_ref(&plan.install_name));
+            upgrade::execute(
+                installer,
+                vec![plan.installed_name.clone()],
+                false,
+                false,
+                ui,
+            )
+            .await
+        } else if prepare_full_names(installer, std::slice::from_ref(&plan.install_name)).await {
             install::execute(installer, vec![plan.install_name.clone()], false, false, ui).await
+        } else {
+            Err(nb_core::Error::ExecutionError {
+                message: format!("cannot install {}", plan.install_name),
+            })
         };
         installer.set_cask_config(nb_io::CaskConfig::from_env().unwrap_or_default());
         if result.is_err() {
             return false;
         }
     }
-    if !installer.is_installed(&plan.install_name) {
+    if !installer.is_installed(&plan.installed_name) {
         return false;
     }
     !actionable || run_postinstall(&plan.entry.name, plan.entry.option("postinstall"))
@@ -1318,7 +1593,8 @@ async fn check(
     let mut errors = Vec::new();
 
     for tap in of(Kind::Tap) {
-        if !BUILT_IN_TAPS.contains(&tap.name.as_str()) {
+        let tapped = tapped(installer, &tap.name);
+        if !tapped {
             errors.push(format!("Tap {} needs to be tapped.", tap.name));
         }
     }
@@ -1367,8 +1643,9 @@ async fn check(
         }
         // `link_status_to_check`: what `link:` asks for, or else the usual
         // state (keg-only formulae unlinked, the rest linked).
-        let keg_only = installer.is_keg_only(&formula.name).await.unwrap_or(false);
-        let linked = installer.is_linked(&formula.name).unwrap_or(false);
+        let installed = installed_name(formula);
+        let keg_only = installer.is_keg_only(&installed).await.unwrap_or(false);
+        let linked = installer.is_linked(&installed).unwrap_or(false);
         let wanted = match formula.option("link") {
             Some(Value::Bool(true)) => Some(true),
             Some(Value::Sym(s)) if s == "overwrite" => Some(true),
@@ -1400,7 +1677,7 @@ async fn check(
             .is_some_and(Value::truthy);
         if wants_start
             && !launchd
-                .find(&nb_io::services::label(&formula.name))
+                .find(&nb_io::services::label(&installed_name(formula)))
                 .running()
         {
             errors.push(format!("Service {} needs to be started.", formula.name));
@@ -1425,20 +1702,31 @@ async fn check(
     std::process::exit(1);
 }
 
+/// What `nb bundle cleanup` cleans up.
+struct CleanupTypes {
+    formulae: bool,
+    casks: bool,
+    taps: bool,
+    extensions: Vec<Ext>,
+}
+
 /// `brew bundle cleanup`: what is installed but neither listed nor needed
 /// by what is listed. Without `--force` it is only shown, after asking on a
 /// terminal whether to go ahead.
-#[allow(clippy::too_many_arguments)]
 async fn cleanup(
     installer: &mut nb_io::Installer,
     path: &Path,
     force: bool,
     zap: bool,
-    formulae: bool,
-    casks: bool,
-    extensions: &[Ext],
+    types: &CleanupTypes,
     ui: &mut StdUi,
 ) -> Result<(), nb_core::Error> {
+    let CleanupTypes {
+        formulae,
+        casks,
+        taps,
+        ref extensions,
+    } = *types;
     let entries = read_brewfile(path)?;
     let kept_casks: Vec<String> = entries
         .iter()
@@ -1460,10 +1748,10 @@ async fn cleanup(
     };
 
     let mut formulae_to_remove = Vec::new();
-    if formulae {
-        // Listed formulae (aliases and old names resolved), the formulae the
-        // listed casks depend on, and everything those need.
-        let mut kept: Vec<String> = Vec::new();
+    // Listed formulae (aliases and old names resolved), the formulae the
+    // listed casks depend on, and everything those need.
+    let mut kept: Vec<String> = Vec::new();
+    if formulae || taps {
         let mut roots: Vec<String> = entries
             .iter()
             .filter(|entry| entry.kind == Kind::Brew)
@@ -1482,21 +1770,52 @@ async fn cleanup(
             }
         }
         for root in roots {
-            let name = installer
-                .formula(&root)
-                .await
-                .map(|f| f.name)
-                .unwrap_or(root);
+            let name = match installer.formula(&root).await {
+                Ok(formula) => formula.name,
+                Err(_) => root.rsplit('/').next().unwrap_or(&root).to_string(),
+            };
             if let Ok(deps) = installer.dependencies(&name, false).await {
                 kept.extend(deps);
             }
             kept.push(name);
         }
+    }
+    if formulae {
         for name in dump_order(installer).await? {
             if !kept.contains(&name) {
                 formulae_to_remove.push(name);
             }
         }
+    }
+    // `taps_to_untap`: taps neither listed, nor named by a listed formula or
+    // cask, nor the source of a formula kept.
+    let mut taps_to_remove: Vec<String> = Vec::new();
+    if taps && let Ok(source) = installer.tap_source() {
+        let mut kept_taps: Vec<String> = entries
+            .iter()
+            .filter_map(|entry| match entry.kind {
+                Kind::Tap => Some(entry.name.clone()),
+                _ => entry_tap(entry).map(|(tap, _)| tap.name()),
+            })
+            .collect();
+        for name in &kept {
+            let tap = match installer.get_installed(name) {
+                Some(keg) => keg.tap,
+                None => installer
+                    .formula(name)
+                    .await
+                    .ok()
+                    .and_then(|formula| formula.third_party_tap().map(str::to_string)),
+            };
+            kept_taps.extend(tap);
+        }
+        taps_to_remove = source
+            .taps
+            .installed()
+            .into_iter()
+            .map(|tap| tap.name())
+            .filter(|tap| !kept_taps.contains(tap) && tap != "homebrew/core")
+            .collect();
     }
 
     let extension_items: Vec<(Ext, Vec<(String, String)>)> = bundle_ext::HANDLED
@@ -1510,10 +1829,16 @@ async fn cleanup(
         .collect();
 
     if force {
+        // The Brewfile's trust is all that stays trusted.
+        installer
+            .tap_source()?
+            .trust
+            .replace(&trust_entries(&entries)?)?;
         let requested: Vec<String> = entries
             .iter()
-            .filter(|entry| entry.kind == Kind::Brew && installer.is_installed(&entry.name))
-            .map(|entry| entry.name.clone())
+            .filter(|entry| entry.kind == Kind::Brew)
+            .map(installed_name)
+            .filter(|name| installer.is_installed(name))
             .collect();
         installer.mark_on_request(&requested)?;
         if !casks_to_remove.is_empty() {
@@ -1538,6 +1863,9 @@ async fn cleanup(
             let n = formulae_to_remove.len();
             println!("Uninstalled {n} formula{}", if n == 1 { "" } else { "e" });
         }
+        if !taps_to_remove.is_empty() {
+            let _ = super::tap::untap(installer, taps_to_remove, false, ui).await;
+        }
         for (ext, items) in &extension_items {
             if let Some(exe) = ext.executable(installer.prefix()) {
                 bundle_ext::cleanup(*ext, &exe, items);
@@ -1550,6 +1878,7 @@ async fn cleanup(
     for (heading, names) in [
         ("Would uninstall casks:", &casks_to_remove),
         ("Would uninstall formulae:", &formulae_to_remove),
+        ("Would untap:", &taps_to_remove),
     ] {
         if !names.is_empty() {
             println!("{heading}");
@@ -1570,10 +1899,7 @@ async fn cleanup(
         return Ok(());
     }
     if confirm("cleanup") {
-        return Box::pin(cleanup(
-            installer, path, true, zap, formulae, casks, extensions, ui,
-        ))
-        .await;
+        return Box::pin(cleanup(installer, path, true, zap, types, ui)).await;
     }
     println!("Run `nb bundle cleanup --force` to make these changes.");
     std::process::exit(1);
@@ -1609,7 +1935,11 @@ async fn dump_order(installer: &nb_io::Installer) -> Result<Vec<String>, nb_core
         .filter(|keg| !keg.name.starts_with("cask:"))
         .map(|keg| keg.name)
         .collect();
-    names.sort_by(|a, b| (a.contains('/'), a).cmp(&(b.contains('/'), b)));
+    // By full name, the taps' after Homebrew's own.
+    names.sort_by_cached_key(|name| {
+        let full = installer.installed_full_name(name);
+        (full.contains('/'), full)
+    });
     let mut graph = std::collections::HashMap::new();
     for name in &names {
         let mut deps: Vec<String> = installer
@@ -1651,6 +1981,7 @@ fn capitalize(word: &str) -> String {
 }
 
 struct DumpOptions {
+    taps: bool,
     formulae: bool,
     casks: bool,
     extensions: Vec<Ext>,
@@ -1677,13 +2008,27 @@ async fn dump_to_file(
     })
 }
 
-/// `Dumper.build_brewfile`: formulae asked for, then casks, each section
-/// separated by a newline.
+/// `Dumper.build_brewfile`: taps, formulae asked for, then casks, each
+/// section separated by a newline.
 async fn build_brewfile(
     installer: &nb_io::Installer,
     options: &DumpOptions,
 ) -> Result<String, nb_core::Error> {
     let mut sections = Vec::new();
+    if options.taps {
+        let installed = installer.list_installed()?;
+        let dumped_formulae: Vec<String> = installed
+            .iter()
+            .filter(|keg| options.formulae && keg.on_request && !keg.name.starts_with("cask:"))
+            .map(|keg| installer.installed_full_name(&keg.name))
+            .collect();
+        let dumped_casks: Vec<String> = installed
+            .iter()
+            .filter_map(|keg| keg.name.strip_prefix("cask:").filter(|_| options.casks))
+            .map(|token| cask_full_name(installer, token))
+            .collect();
+        sections.push(dump_taps(installer, &dumped_formulae, &dumped_casks));
+    }
     if options.formulae {
         sections.push(dump_formulae(installer, options).await?);
     }
@@ -1698,6 +2043,90 @@ async fn build_brewfile(
     }
     let sections: Vec<String> = sections.into_iter().filter(|s| !s.is_empty()).collect();
     Ok(format!("{}\n", sections.join("\n")))
+}
+
+/// `Cask#full_name`: `user/repo/token` for a cask from a third-party tap.
+fn cask_full_name(installer: &nb_io::Installer, token: &str) -> String {
+    match installer
+        .get_installed(&format!("cask:{token}"))
+        .and_then(|keg| keg.tap)
+    {
+        Some(tap) => format!("{tap}/{token}"),
+        None => token.to_string(),
+    }
+}
+
+/// `Bundle::Tap.dump`: each tap, with its remote when that is not its
+/// GitHub repository, and what of it is trusted: the tap itself, or the
+/// formulae and casks trusted that are not dumped with `trusted: true`.
+fn dump_taps(
+    installer: &nb_io::Installer,
+    dumped_formulae: &[String],
+    dumped_casks: &[String],
+) -> String {
+    let Ok(source) = installer.tap_source() else {
+        return String::new();
+    };
+    let mut lines = Vec::new();
+    for tap in source.taps.installed() {
+        let remote = source.taps.remote(&tap).filter(|remote| !remote.is_empty());
+        let mut line = format!("tap \"{tap}\"");
+        if let Some(remote) = remote.as_deref()
+            && remote != tap.default_remote()
+        {
+            line += &format!(", \"{remote}\"");
+        }
+        let explicitly = !tap.is_official()
+            && source
+                .trust
+                .entries(TrustKind::Tap)
+                .iter()
+                .any(|reference| tap.matches_reference(reference, remote.as_deref()));
+        if explicitly {
+            line += ", trusted: true";
+        } else {
+            let mut kinds = Vec::new();
+            for (kind, key, dumped) in [
+                (TrustKind::Formula, "formulae", dumped_formulae),
+                (TrustKind::Cask, "casks", dumped_casks),
+                (TrustKind::Command, "commands", &[]),
+            ] {
+                let mut items: Vec<String> = source
+                    .trust
+                    .entries(kind)
+                    .iter()
+                    .filter_map(|entry| {
+                        let (reference, item) = entry.rsplit_once('/')?;
+                        if reference.is_empty() || item.is_empty() {
+                            return None;
+                        }
+                        if reference != tap.name()
+                            && !tap.matches_reference(reference, remote.as_deref())
+                        {
+                            return None;
+                        }
+                        if dumped.contains(&format!("{tap}/{item}")) {
+                            return None;
+                        }
+                        Some(item.to_string())
+                    })
+                    .collect();
+                items.sort();
+                items.dedup();
+                if !items.is_empty() {
+                    let items: Vec<String> = items.iter().map(|item| format!("{item:?}")).collect();
+                    kinds.push(format!("{key}: [{}]", items.join(", ")));
+                }
+            }
+            if !kinds.is_empty() {
+                line += &format!(", trusted: {{ {} }}", kinds.join(", "));
+            }
+        }
+        lines.push(line);
+    }
+    lines.sort();
+    lines.dedup();
+    lines.join("\n")
 }
 
 fn describe_lines(desc: Option<&str>) -> String {
@@ -1719,6 +2148,10 @@ async fn dump_formulae(
             .map(PathBuf::from)
             .unwrap_or_default(),
     );
+    let trusted = installer
+        .tap_source()
+        .map(|source| source.trust.entries(TrustKind::Formula))
+        .unwrap_or_default();
     let mut lines = Vec::new();
     for name in order {
         let Some(keg) = installer.get_installed(&name) else {
@@ -1733,7 +2166,8 @@ async fn dump_formulae(
         } else {
             String::new()
         };
-        line += &format!("brew \"{name}\"");
+        let full_name = installer.installed_full_name(&name);
+        line += &format!("brew \"{full_name}\"");
         if !options.no_restart
             && cfg!(target_os = "macos")
             && launchd.find(&nb_io::services::label(&name)).running()
@@ -1746,12 +2180,15 @@ async fn dump_formulae(
             Ok(false) if !keg_only => line += ", link: false",
             _ => {}
         }
+        if trusted.contains(&full_name) {
+            line += ", trusted: true";
+        }
         lines.push(line);
     }
     Ok(lines.join("\n"))
 }
 
-/// `Bundle::Cask.dump`: every installed cask, by token.
+/// `Bundle::Cask.dump`: every installed cask, by token, named in full.
 async fn dump_casks(
     installer: &nb_io::Installer,
     describe: bool,
@@ -1762,6 +2199,10 @@ async fn dump_casks(
         .filter_map(|keg| keg.name.strip_prefix("cask:").map(str::to_string))
         .collect();
     tokens.sort();
+    let trusted = installer
+        .tap_source()
+        .map(|source| source.trust.entries(TrustKind::Cask))
+        .unwrap_or_default();
     let mut lines = Vec::new();
     for token in tokens {
         let mut line = String::new();
@@ -1769,7 +2210,8 @@ async fn dump_casks(
             let json = installer.cask(&token).await.ok();
             line += &describe_lines(json.as_ref().and_then(|j| j["desc"].as_str()));
         }
-        line += &format!("cask \"{token}\"");
+        let full_name = cask_full_name(installer, &token);
+        line += &format!("cask \"{full_name}\"");
         // `explicit_s`: the directories it was installed with, home as `~`.
         let name = format!("cask:{token}");
         if let Some(keg) = installer.get_installed(&name) {
@@ -1791,6 +2233,9 @@ async fn dump_casks(
                 line += &format!(", args: {{ {} }}", args.join(", "));
             }
         }
+        if trusted.contains(&full_name) {
+            line += ", trusted: true";
+        }
         lines.push(line);
     }
     Ok(lines.join("\n"))
@@ -1806,13 +2251,18 @@ mod tests {
 
     #[test]
     fn says_why_an_entry_cannot_be_installed() {
-        assert!(unsupported(&entry("brew \"jq\"")).is_none());
-        assert!(unsupported(&entry("tap \"homebrew/cask\"")).is_none());
         for source in [
+            "brew \"jq\"",
+            "tap \"homebrew/cask\"",
             "tap \"hashicorp/tap\"",
             "brew \"hashicorp/tap/terraform\"",
-            "brew \"x\", args: [\"HEAD\"]",
             "cask \"microsoft/git/microsoft-git\"",
+        ] {
+            assert!(unsupported(&entry(source)).is_none(), "{source}");
+        }
+        for source in [
+            "tap \"homebrew/bundle\"",
+            "brew \"x\", args: [\"HEAD\"]",
             "cask \"firefox\", args: { language: \"ja\" }",
             "flatpak \"org.gimp.GIMP\"",
         ] {
@@ -1821,10 +2271,65 @@ mod tests {
     }
 
     #[test]
+    fn names_a_taps_packages_in_full_to_install_them() {
+        let names = |source: &str| {
+            let entry = entry(source);
+            (install_name(&entry), installed_name(&entry))
+        };
+        assert_eq!(names("brew \"jq\""), ("jq".into(), "jq".into()));
+        assert_eq!(
+            names("brew \"hashicorp/tap/terraform\""),
+            ("hashicorp/tap/terraform".into(), "terraform".into())
+        );
+        assert_eq!(
+            names("cask \"anthropics/tap/ant\""),
+            ("cask:anthropics/tap/ant".into(), "cask:ant".into())
+        );
+        assert_eq!(
+            names("cask \"firefox\""),
+            ("cask:firefox".into(), "cask:firefox".into())
+        );
+    }
+
+    #[test]
+    fn trusts_what_the_brewfile_marks_trusted() {
+        let entries = brewfile::parse(
+            "tap \"a/one\", trusted: true\n\
+             tap \"b/two\", \"https://example.com/two.git\", trusted: true\n\
+             tap \"c/three\", trusted: { formulae: [\"x\", \"c/three/y\"], cask: \"z\", commands: [\"cmd\"] }\n\
+             tap \"d/four\", \"https://example.com/four.git\"\n\
+             brew \"d/four/w\", trusted: true\n\
+             cask \"e/five/v\", trusted: true\n\
+             brew \"jq\", trusted: true\n\
+             brew \"f/six/u\"\n",
+        )
+        .unwrap();
+        assert_eq!(
+            trust_entries(&entries).unwrap(),
+            vec![
+                (TrustKind::Tap, "a/one".to_string()),
+                (TrustKind::Tap, "https://example.com/two.git".to_string()),
+                (TrustKind::Formula, "c/three/x".to_string()),
+                (TrustKind::Formula, "c/three/y".to_string()),
+                (TrustKind::Cask, "c/three/z".to_string()),
+                (TrustKind::Command, "c/three/cmd".to_string()),
+                (
+                    TrustKind::Formula,
+                    "https://example.com/four.git/w".to_string()
+                ),
+                (TrustKind::Cask, "e/five/v".to_string()),
+            ]
+        );
+        let bad = brewfile::parse("tap \"a/one\", trusted: { apps: [\"x\"] }\n").unwrap();
+        assert!(trust_entries(&bad).is_err());
+    }
+
+    #[test]
     fn only_entries_without_options_are_batched() {
         let plan = |source: &str| Plan {
             entry: entry(source),
             install_name: String::new(),
+            installed_name: String::new(),
             installed: false,
             upgradable: false,
         };

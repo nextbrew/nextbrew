@@ -344,6 +344,7 @@ pub(crate) async fn replace_packages(
             err
         ))
         .map_err(ui_error)?;
+        crate::utils::report_build_failure(err);
     }
 
     if errors.is_empty() && pending.is_none() {

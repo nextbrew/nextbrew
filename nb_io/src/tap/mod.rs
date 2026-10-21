@@ -496,6 +496,40 @@ impl Taps {
         by_name(walkdir(&self.path(tap).join("Casks")))
     }
 
+    /// `Tap#command_files`: the files in its `cmd` directory, by command
+    /// name (the file name without extension or `brew-`).
+    pub fn command_files(&self, tap: &TapName) -> BTreeMap<String, PathBuf> {
+        let mut files: Vec<PathBuf> = std::fs::read_dir(self.path(tap).join("cmd"))
+            .into_iter()
+            .flatten()
+            .filter_map(Result::ok)
+            .map(|entry| entry.path())
+            .filter(|path| path.is_file())
+            .collect();
+        files.sort();
+        let mut commands = BTreeMap::new();
+        for path in files {
+            let Some(stem) = path.file_stem().map(|s| s.to_string_lossy().into_owned()) else {
+                continue;
+            };
+            let name = stem.strip_prefix("brew-").unwrap_or(&stem).to_string();
+            commands.entry(name).or_insert(path);
+        }
+        commands
+    }
+
+    /// The `cmd` directories of the installed taps, in tap order.
+    pub fn command_dirs(&self) -> Vec<(TapName, PathBuf)> {
+        self.installed()
+            .into_iter()
+            .map(|tap| {
+                let dir = self.path(&tap).join("cmd");
+                (tap, dir)
+            })
+            .filter(|(_, dir)| dir.is_dir())
+            .collect()
+    }
+
     /// `Tap#alias_table`: alias name to formula name.
     pub fn aliases(&self, tap: &TapName) -> BTreeMap<String, String> {
         let dir = self.path(tap).join("Aliases");
@@ -526,40 +560,79 @@ impl Taps {
             .unwrap_or_default()
     }
 
-    /// The formula file for `name` in `tap`, following the tap's aliases,
-    /// then its renames, then its migrations (to another name in the same
-    /// tap), as `Formulary` does. Returns the name it resolved to.
+    /// The formula file for `name` in `tap`, and the name it resolved to,
+    /// as `Formulary.tap_formula_name_type` resolves it: the tap's alias of
+    /// that name if there is one, else its rename, else its migration, and
+    /// only then the name itself, so an alias or old name wins over a
+    /// formula so named. A migration to another tap is not in this one.
     pub fn find_formula(&self, tap: &TapName, name: &str) -> Option<(String, PathBuf)> {
-        let files = self.formula_files(tap);
         let name = name.to_lowercase();
-        let mut candidates = vec![name.clone()];
-        if let Some(target) = self.aliases(tap).get(&name) {
-            candidates.push(target.clone());
-        }
-        if let Some(target) = self.json_map(tap, "formula_renames.json").get(&name) {
-            candidates.push(target.clone());
-        }
-        if let Some(target) = self.json_map(tap, "tap_migrations.json").get(&name)
-            && !target.contains('/')
-        {
-            candidates.push(target.clone());
-        }
-        candidates
-            .into_iter()
-            .find_map(|candidate| files.get(&candidate).map(|f| (candidate, f.clone())))
+        let resolved = match self.aliases(tap).remove(&name) {
+            Some(target) => target,
+            None => self.renamed(tap, "formula_renames.json", name)?,
+        };
+        let file = self.formula_files(tap).remove(&resolved)?;
+        Some((resolved, file))
     }
 
-    /// The cask file for `token` in `tap`, following its renames.
+    /// The cask file for `token` in `tap`, and the token it resolved to:
+    /// its rename, else its migration, else the token itself, as
+    /// `CaskLoader.tap_cask_token_type` resolves it.
     pub fn find_cask(&self, tap: &TapName, token: &str) -> Option<(String, PathBuf)> {
-        let files = self.cask_files(tap);
-        let token = token.to_lowercase();
-        let mut candidates = vec![token.clone()];
-        if let Some(target) = self.json_map(tap, "cask_renames.json").get(&token) {
-            candidates.push(target.clone());
+        let resolved = self.renamed(tap, "cask_renames.json", token.to_lowercase())?;
+        let file = self.cask_files(tap).remove(&resolved)?;
+        Some((resolved, file))
+    }
+
+    /// `name` after the tap's `renames` file, else its `tap_migrations.json`
+    /// (to another name in this tap; `None` for one to another tap), else
+    /// `name`.
+    fn renamed(&self, tap: &TapName, renames: &str, name: String) -> Option<String> {
+        if let Some(target) = self.json_map(tap, renames).remove(&name) {
+            return Some(target);
         }
-        candidates
-            .into_iter()
-            .find_map(|candidate| files.get(&candidate).map(|f| (candidate, f.clone())))
+        match self.migrated(tap, &name) {
+            Some((to, moved)) if to == *tap => Some(moved),
+            Some(_) => None,
+            None => Some(name),
+        }
+    }
+
+    /// Where the tap's `tap_migrations.json` sends `name`, as
+    /// `tap_formula_name_type` reads it: `user/repo/new` to that name there,
+    /// `user/repo` to the same name there, a bare name to that name in this
+    /// tap. `None` when it stays where it is.
+    fn migrated(&self, tap: &TapName, name: &str) -> Option<(TapName, String)> {
+        let target = self.json_map(tap, "tap_migrations.json").remove(name)?;
+        let moved = match TapName::split_full_name(&target) {
+            Some((to, moved)) => (to, moved.to_lowercase()),
+            None if target.contains('/') => (TapName::parse(&target).ok()?, name.to_string()),
+            None => (tap.clone(), target.to_lowercase()),
+        };
+        (moved.0 != *tap || moved.1 != name).then_some(moved)
+    }
+
+    /// The tap, and the name there, that `tap` has migrated the formula
+    /// `name` to, unless an alias or rename of that name comes first.
+    pub fn formula_migration(&self, tap: &TapName, name: &str) -> Option<(TapName, String)> {
+        let name = name.to_lowercase();
+        if self.aliases(tap).contains_key(&name)
+            || self
+                .json_map(tap, "formula_renames.json")
+                .contains_key(&name)
+        {
+            return None;
+        }
+        self.migrated(tap, &name).filter(|(to, _)| to != tap)
+    }
+
+    /// The same for the cask `token`, unless a rename of it comes first.
+    pub fn cask_migration(&self, tap: &TapName, token: &str) -> Option<(TapName, String)> {
+        let token = token.to_lowercase();
+        if self.json_map(tap, "cask_renames.json").contains_key(&token) {
+            return None;
+        }
+        self.migrated(tap, &token).filter(|(to, _)| to != tap)
     }
 }
 
@@ -853,5 +926,61 @@ mod tests {
         assert_eq!(taps.find_formula(&tap, "fu").unwrap().0, "foo");
         assert_eq!(taps.find_formula(&tap, "old").unwrap().0, "foo");
         assert!(taps.find_formula(&tap, "bar").is_none());
+    }
+
+    #[test]
+    fn aliases_renames_and_migrations_win_over_the_name_itself() {
+        let tmp = tempfile::tempdir().unwrap();
+        let taps = Taps::new(tmp.path());
+        let tap = TapName::parse("me/tools").unwrap();
+        let dir = taps.path(&tap);
+        std::fs::create_dir_all(dir.join("Formula")).unwrap();
+        std::fs::create_dir_all(dir.join("Casks")).unwrap();
+        std::fs::create_dir_all(dir.join("Aliases")).unwrap();
+        for name in ["foo", "fu", "old", "moved", "away", "same"] {
+            std::fs::write(dir.join(format!("Formula/{name}.rb")), "").unwrap();
+        }
+        for token in ["app", "old-app", "gone"] {
+            std::fs::write(dir.join(format!("Casks/{token}.rb")), "").unwrap();
+        }
+        std::os::unix::fs::symlink("../Formula/foo.rb", dir.join("Aliases/fu")).unwrap();
+        std::fs::write(
+            dir.join("formula_renames.json"),
+            r#"{"fu": "old", "old": "foo"}"#,
+        )
+        .unwrap();
+        std::fs::write(dir.join("cask_renames.json"), r#"{"old-app": "app"}"#).unwrap();
+        std::fs::write(
+            dir.join("tap_migrations.json"),
+            r#"{"moved": "foo", "away": "other/tap", "same": "same", "gone": "homebrew/cask"}"#,
+        )
+        .unwrap();
+        let found = |name: &str| taps.find_formula(&tap, name).map(|(n, _)| n);
+        assert_eq!(
+            found("fu").as_deref(),
+            Some("foo"),
+            "the alias before the rename"
+        );
+        assert_eq!(found("old").as_deref(), Some("foo"));
+        assert_eq!(found("moved").as_deref(), Some("foo"));
+        assert_eq!(found("same").as_deref(), Some("same"));
+        assert_eq!(found("away"), None, "it is in another tap now");
+        assert_eq!(
+            taps.formula_migration(&tap, "away"),
+            Some((TapName::parse("other/tap").unwrap(), "away".to_string()))
+        );
+        assert_eq!(taps.formula_migration(&tap, "same"), None);
+        assert_eq!(
+            taps.formula_migration(&tap, "moved"),
+            None,
+            "within the tap"
+        );
+        assert_eq!(
+            taps.cask_migration(&tap, "gone"),
+            Some((TapName::parse("homebrew/cask").unwrap(), "gone".to_string()))
+        );
+        let cask = |token: &str| taps.find_cask(&tap, token).map(|(t, _)| t);
+        assert_eq!(cask("old-app").as_deref(), Some("app"));
+        assert_eq!(cask("gone"), None);
     }
 }

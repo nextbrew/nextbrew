@@ -215,10 +215,18 @@ pub enum Commands {
         #[arg(short = '1', help = "List names one per line")]
         one: bool,
     },
-    /// Show information about an installed package
+    /// Show information about an installed package, or about a cask
     Info {
-        #[arg(help = "Name of the installed package")]
+        #[arg(help = "Name of the installed package, or of a cask")]
         formula: String,
+        #[arg(
+            long = "formula",
+            visible_alias = "formulae",
+            help = "Treat the name as a formula"
+        )]
+        formula_only: bool,
+        #[arg(long, visible_alias = "casks", help = "Treat the name as a cask")]
+        cask: bool,
     },
     /// Run diagnostics and optionally repair issues
     Doctor {
@@ -312,11 +320,16 @@ pub enum Commands {
         #[arg(long, visible_alias = "casks", help = "Only list casks")]
         cask: bool,
     },
-    /// Symlink installed formulae into the prefix
+    /// Symlink installed formulae, or casks' binaries, man pages and
+    /// completions, into the prefix
     Link {
         #[arg(required = true, num_args = 1..)]
         formulas: Vec<String>,
-        #[arg(long, short = 'f', help = "Also link keg-only formulae")]
+        #[arg(
+            long,
+            short = 'f',
+            help = "Also link keg-only formulae; for casks, replace their own old links"
+        )]
         force: bool,
         #[arg(
             long,
@@ -329,11 +342,29 @@ pub enum Commands {
             help = "List files which would be linked or deleted without linking or deleting any"
         )]
         dry_run: bool,
+        #[arg(
+            long,
+            visible_alias = "formulae",
+            conflicts_with = "cask",
+            help = "Treat all names as formulae"
+        )]
+        formula: bool,
+        #[arg(long, visible_alias = "casks", help = "Treat all names as casks")]
+        cask: bool,
     },
-    /// Remove installed formulae's symlinks from the prefix
+    /// Remove installed formulae's or casks' symlinks from the prefix
     Unlink {
         #[arg(required = true, num_args = 1..)]
         formulas: Vec<String>,
+        #[arg(
+            long,
+            visible_alias = "formulae",
+            conflicts_with = "cask",
+            help = "Treat all names as formulae"
+        )]
+        formula: bool,
+        #[arg(long, visible_alias = "casks", help = "Treat all names as casks")]
+        cask: bool,
     },
     /// Keep installed formulae at their versions on upgrade
     Pin {
@@ -372,25 +403,29 @@ pub enum Commands {
         )]
         force: bool,
     },
-    /// Trust third-party taps, formulae or casks so they may be loaded
+    /// Trust third-party taps, formulae, casks or commands so they may be loaded
     Trust {
         names: Vec<String>,
-        #[arg(long, visible_alias = "taps", conflicts_with_all = ["formula", "cask"])]
+        #[arg(long, visible_alias = "taps", conflicts_with_all = ["formula", "cask", "command"])]
         tap: bool,
-        #[arg(long, visible_alias = "formulae", conflicts_with = "cask")]
+        #[arg(long, visible_alias = "formulae", conflicts_with_all = ["cask", "command"])]
         formula: bool,
-        #[arg(long, visible_alias = "casks")]
+        #[arg(long, visible_alias = "casks", conflicts_with = "command")]
         cask: bool,
+        #[arg(long, visible_alias = "commands")]
+        command: bool,
     },
-    /// Stop trusting third-party taps, formulae or casks
+    /// Stop trusting third-party taps, formulae, casks or commands
     Untrust {
         names: Vec<String>,
-        #[arg(long, visible_alias = "taps", conflicts_with_all = ["formula", "cask"])]
+        #[arg(long, visible_alias = "taps", conflicts_with_all = ["formula", "cask", "command"])]
         tap: bool,
-        #[arg(long, visible_alias = "formulae", conflicts_with = "cask")]
+        #[arg(long, visible_alias = "formulae", conflicts_with_all = ["cask", "command"])]
         formula: bool,
-        #[arg(long, visible_alias = "casks")]
+        #[arg(long, visible_alias = "casks", conflicts_with = "command")]
         cask: bool,
+        #[arg(long, visible_alias = "commands")]
+        command: bool,
     },
     /// Manage background services with launchd
     Services {

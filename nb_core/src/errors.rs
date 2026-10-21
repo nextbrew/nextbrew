@@ -67,6 +67,14 @@ pub enum Error {
     NoBottleAvailable {
         name: String,
     },
+    /// A build from source failed. What failed (the last lines of the
+    /// command's log) has been shown; `report` says where to report it, as
+    /// Homebrew's `BuildError#dump` does.
+    BuildFailed {
+        name: String,
+        version: String,
+        report: Option<String>,
+    },
 }
 
 impl fmt::Display for Error {
@@ -131,6 +139,9 @@ impl fmt::Display for Error {
                     "{}",
                     crate::formula::requirements::unsatisfied_error(messages.len())
                 )
+            }
+            Error::BuildFailed { name, version, .. } => {
+                write!(f, "{name} {version} did not build")
             }
             Error::NoBottleAvailable { name } => write!(
                 f,

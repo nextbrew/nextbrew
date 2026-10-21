@@ -299,8 +299,9 @@ pub fn resolve_cask(token: &str, cask: &Value) -> Result<ResolvedCask, Error> {
         })?;
 
     // A binary given a path in the prefix as its target (a completion in
-    // `share`, headers in `include`) is linked there, not into `bin`. One
-    // outside the prefix goes into `bin` (spec, chapter 4).
+    // `share`, headers in `include`) or in the home folder (a terminfo
+    // entry) is linked there, not into `bin`. One elsewhere goes into `bin`
+    // (spec, chapter 4).
     let mut binaries = Vec::new();
     let mut linked_binaries = Vec::new();
     for (binary, path_target) in parse_artifacts(artifacts, "binary")?
@@ -597,12 +598,15 @@ fn parse_artifacts(artifacts: &[Value], kind: &str) -> Result<Vec<CaskArtifact>,
 
 /// For each `binary` stanza, in [`parse_artifacts`]'s order, its target when
 /// that is a path in the prefix other than `bin` (`Binary#resolve_target`
-/// takes a relative one in `bin`).
+/// takes a relative one in `bin`) or in the home folder.
 fn binary_path_targets(artifacts: &[Value]) -> Vec<Option<String>> {
     path_targets(artifacts, "binary")
         .into_iter()
         .map(|target| {
             let target = target?;
+            if target.starts_with("/$HOME/") {
+                return Some(target);
+            }
             let target = match target.strip_prefix("$APPDIR/") {
                 Some(rel) => format!("$HOMEBREW_PREFIX/bin/{rel}"),
                 None => target,
@@ -882,7 +886,9 @@ mod tests {
                 {"binary": ["bin/test"], "target": "$HOMEBREW_PREFIX/bin/test"},
                 {"binary": ["bin/test2", {"target": "$HOMEBREW_PREFIX/bin/test2"}]},
                 {"binary": ["zsh/_test", {"target": "$HOMEBREW_PREFIX/share/zsh/site-functions/_test"}]},
-                {"binary": ["61/test", {"target": "~/.terminfo/61/x"}]},
+                {"binary": ["61/test", {"target": "~/.terminfo/61/x"}],
+                 "target": "/$HOME/.terminfo/61/x"},
+                {"binary": ["bin/docker", {"target": "/usr/local/bin/docker"}]},
             ]
         });
 
@@ -892,16 +898,24 @@ mod tests {
             .iter()
             .map(|b| b.target.as_str())
             .collect();
-        // Outside the prefix, into `bin` (spec, chapter 4).
-        assert_eq!(names, ["test", "test2", "x"]);
+        // Outside the prefix and the home folder, into `bin` (spec, chapter 4).
+        assert_eq!(names, ["test", "test2", "docker"]);
         assert_eq!(
             resolved.placed,
-            [PlacedArtifact {
-                kind: "binary".into(),
-                source: "zsh/_test".into(),
-                target: "$HOMEBREW_PREFIX/share/zsh/site-functions/_test".into(),
-                linked: true,
-            }]
+            [
+                PlacedArtifact {
+                    kind: "binary".into(),
+                    source: "zsh/_test".into(),
+                    target: "$HOMEBREW_PREFIX/share/zsh/site-functions/_test".into(),
+                    linked: true,
+                },
+                PlacedArtifact {
+                    kind: "binary".into(),
+                    source: "61/test".into(),
+                    target: "/$HOME/.terminfo/61/x".into(),
+                    linked: true,
+                },
+            ]
         );
     }
 

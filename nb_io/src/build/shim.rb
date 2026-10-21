@@ -51,6 +51,33 @@ INSTALLED_DEPS = JSON.parse(ENV.fetch("NEXTBREW_INSTALLED_DEPS", "{}"))
 # Where the source was unpacked, wherever the formula goes from there.
 BUILDPATH = Pathname.new(Dir.pwd)
 
+# Where each `system` call's output goes (`Formula#logs`), counted as
+# Homebrew numbers them, and how a failed one stops the build.
+module NextBrewLogs
+  class << self
+    attr_writer :count
+
+    def count
+      @count ||= 0
+    end
+
+    def dir
+      ENV.fetch("NEXTBREW_LOGS")
+    end
+
+    def verbose?
+      !ENV.fetch("HOMEBREW_VERBOSE", "").empty?
+    end
+
+    # The executor tells a failed command, already shown, from any other
+    # failure of the build.
+    def failed!
+      File.write(ENV.fetch("NEXTBREW_BUILD_FAILED"), "")
+      exit 1
+    end
+  end
+end
+
 module OS
   def self.mac?
     RUBY_PLATFORM.include?("darwin")
@@ -537,11 +564,65 @@ class Formula
     end
   end
 
-  def system(*args)
-    cmd = args.map(&:to_s).join(" ")
-    puts "==> #{cmd}"
-    result = Kernel.system(*args.map(&:to_s))
-    exit 1 unless result
+  # Homebrew's `Formula#system`: the command as a heading (without the
+  # arguments every such build passes), its output into a numbered log
+  # (shown as well with `HOMEBREW_VERBOSE`), and on a failure the log's last
+  # lines, before the build stops.
+  def system(cmd, *args)
+    pretty_args = args.dup
+    case cmd.to_s
+    when "./configure" then pretty_args -= std_configure_args
+    when "cmake" then pretty_args -= std_cmake_args
+    when "go" then pretty_args -= std_go_args
+    when "meson" then pretty_args -= std_meson_args
+    end
+    puts "==> #{cmd} #{pretty_args * " "}".strip
+    $stdout.flush
+
+    NextBrewLogs.count += 1
+    FileUtils.mkdir_p(NextBrewLogs.dir)
+    log_filename = format("%<dir>s/%<count>02d.%<base>s.log", dir: NextBrewLogs.dir,
+                          count: NextBrewLogs.count, base: File.basename(cmd.to_s).split.first)
+    File.open(log_filename, "w") do |log|
+      log.puts Time.now, "", cmd, args, ""
+      log.flush
+      env = { "HOMEBREW_CC_LOG_PATH" => log_filename }
+      argv = args.map(&:to_s)
+      status = if NextBrewLogs.verbose?
+        rd, wr = IO.pipe
+        pid = begin
+          Process.spawn(env, cmd.to_s, *argv, [:out, :err] => wr)
+        rescue SystemCallError
+          nil
+        end
+        wr.close
+        rd.each_line do |line|
+          log.puts line
+          puts line
+        end
+        rd.close
+        pid && Process.wait2(pid).last
+      else
+        pid = begin
+          Process.spawn(env, cmd.to_s, *argv, [:out, :err] => log)
+        rescue SystemCallError
+          nil
+        end
+        pid && Process.wait2(pid).last
+      end
+      log.puts "Failed to execute: #{cmd}" unless pid
+
+      unless status&.success?
+        log_lines = ENV.fetch("HOMEBREW_FAIL_LOG_LINES", "15").to_i
+        log.flush
+        unless NextBrewLogs.verbose?
+          puts "Last #{log_lines} lines from #{log_filename}:"
+          $stdout.flush
+          Kernel.system("/usr/bin/tail", "-n", log_lines.to_s, log_filename)
+        end
+        NextBrewLogs.failed!
+      end
+    end
   end
 
   def mv(*sources, **options)

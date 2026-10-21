@@ -8,6 +8,8 @@ pub use services::ServiceFormula;
 mod cask_app;
 mod cask_artifacts;
 mod cask_deps;
+mod cask_link;
+pub use cask_link::{CaskLink, CaskLinkEvent};
 mod cask_uninstall;
 mod dependents;
 mod deps;
@@ -19,6 +21,7 @@ mod post_install;
 mod quarantine;
 mod services;
 mod source;
+mod tap_search;
 mod taps;
 mod undeletable;
 mod uninstall;
@@ -521,6 +524,16 @@ impl Installer {
     /// A formula as the API describes it.
     pub async fn formula(&self, name: &str) -> Result<Formula, Error> {
         self.api_client.get_formula(name).await
+    }
+
+    /// [`Self::formula`] as the formula API's JSON for it.
+    pub async fn formula_json(&self, name: &str) -> Result<serde_json::Value, Error> {
+        self.api_client.get_formula_json(name).await
+    }
+
+    /// The names of homebrew/core's formulae.
+    pub async fn formula_names(&self) -> Result<Vec<String>, Error> {
+        self.api_client.formula_names().await
     }
 
     /// A cask's JSON as the API gives it.

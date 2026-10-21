@@ -23,6 +23,70 @@ const APPDIR: &str = "$APPDIR";
 pub struct TapCask {
     /// Shaped like the cask API's JSON.
     pub json: Json,
+    /// The deprecated DSL it calls, which Homebrew warns about as it reads
+    /// the file.
+    pub deprecations: Vec<Deprecation>,
+}
+
+/// A call `odeprecated` warns about: `Calling <method> is deprecated! Use
+/// <replacement> instead.`, made on `line` of the cask's file.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Deprecation {
+    pub method: String,
+    pub replacement: String,
+    pub line: usize,
+}
+
+impl Deprecation {
+    /// `odeprecated`'s message for a call on `line` of `file` in `tap`.
+    pub fn message(&self, tap: &TapName, file: &std::path::Path) -> String {
+        let tap_note = if tap.is_official() {
+            ""
+        } else {
+            " (not Homebrew/* repositories)"
+        };
+        format!(
+            "Calling {} is deprecated! Use {} instead.\n\
+             Please report this issue to the {}/homebrew-{} tap{tap_note}, or even better, submit a PR to fix it:\n  \
+             {}:{}\n",
+            self.method,
+            self.replacement,
+            tap.user,
+            tap.repo,
+            file.display(),
+            self.line
+        )
+    }
+}
+
+impl TapCask {
+    /// Warn about each deprecated call, read from `file` of `tap`, once per
+    /// process (`opoo_once`), as Homebrew does each time it reads it.
+    pub fn warn_deprecations(&self, tap: &TapName, file: &std::path::Path) {
+        static WARNED: std::sync::Mutex<Vec<String>> = std::sync::Mutex::new(Vec::new());
+        for deprecation in &self.deprecations {
+            let message = deprecation.message(tap, file);
+            let Ok(mut warned) = WARNED.lock() else {
+                return;
+            };
+            if !warned.contains(&message) {
+                eprintln!("Warning: {message}");
+                warned.push(message);
+            }
+        }
+    }
+}
+
+/// `ArtifactSet#to_a`: `artifacts` (cask API JSON) sorted as Homebrew
+/// sorts a cask's artifacts each time it lists them.
+pub fn sort_artifacts(artifacts: &mut [Json]) {
+    let order = |artifact: &Json| {
+        artifact
+            .as_object()
+            .and_then(|object| object.keys().find(|key| *key != "target"))
+            .map_or(7, |kind| sort_order(kind))
+    };
+    darwin_qsort(artifacts, &|a: &Json, b: &Json| order(a).cmp(&order(b)));
 }
 
 /// The artifacts moved into place, with the directory each goes to when its
@@ -113,6 +177,7 @@ struct CaskDsl {
     arch: Option<Value>,
     os: Option<Value>,
     lifecycle: Map<String, Json>,
+    deprecations: Vec<Deprecation>,
 }
 
 /// Read `source`, the cask `token` of `tap`, for `platform`, with the
@@ -165,6 +230,7 @@ pub fn read_cask(
         arch: None,
         os: None,
         lifecycle: Map::new(),
+        deprecations: Vec::new(),
     };
     let mut found = false;
     let program = root.as_program_node().expect("a program");
@@ -186,10 +252,32 @@ pub fn read_cask(
             line: 1,
         });
     }
-    Ok(TapCask { json: dsl.finish() })
+    // `odeprecated` keeps quiet for a file that deprecates or disables
+    // something itself.
+    let quiet = [&b" deprecate! "[..], b" disable! "]
+        .iter()
+        .any(|needle| source.windows(needle.len()).any(|w| w == *needle));
+    let deprecations = if quiet {
+        Vec::new()
+    } else {
+        std::mem::take(&mut dsl.deprecations)
+    };
+    Ok(TapCask {
+        json: dsl.finish(),
+        deprecations,
+    })
 }
 
 impl CaskDsl {
+    /// `odeprecated`, kept to warn about once the file is read.
+    fn deprecate(&mut self, method: &str, replacement: &str, line: usize) {
+        self.deprecations.push(Deprecation {
+            method: method.to_string(),
+            replacement: replacement.to_string(),
+            line,
+        });
+    }
+
     fn staged_path(&self) -> String {
         format!(
             "{PREFIX}/Caskroom/{}/{}",
@@ -644,6 +732,13 @@ impl<'pr> Scope<'pr> for CaskDsl {
                 return Ok(Some(self.url.clone().map(Value::Str).unwrap_or(Value::Nil)));
             }
             "url" => {
+                if args.keyword("verified").is_some_and(Value::truthy) {
+                    self.deprecate(
+                        "the `verified` parameter in the `url` stanza",
+                        "the default URL verification behaviour",
+                        line,
+                    );
+                }
                 self.url = Some(text());
                 self.url_specs = url_specs(&args);
             }
@@ -730,7 +825,20 @@ impl<'pr> Scope<'pr> for CaskDsl {
                     self.custom_caveat(value);
                 }
             }
-            "deprecate!" | "disable!" => self.lifecycle(name, &args),
+            "deprecate!" | "disable!" => {
+                if args
+                    .keyword("replacement")
+                    .is_some_and(|v| !matches!(v, Value::Nil))
+                {
+                    let method = name.trim_end_matches('!');
+                    self.deprecate(
+                        &format!("{name}(:replacement)"),
+                        &format!("{method}!(:replacement_formula) or {method}!(:replacement_cask)"),
+                        line,
+                    );
+                }
+                self.lifecycle(name, &args)
+            }
             "staged_path" => return Ok(Some(Value::Path(self.staged_path().into()))),
             "caskroom_path" => {
                 return Ok(Some(Value::Path(
@@ -746,6 +854,7 @@ impl<'pr> Scope<'pr> for CaskDsl {
                 // have, is the `run` steps that do the same. Other Ruby runs
                 // only in Ruby: the API marks such a block as there.
                 let kind = format!("{name}_steps");
+                self.deprecate(&format!("`{name}`"), &format!("`{kind}`"), line);
                 let mut flight = FlightDsl {
                     cask: self,
                     steps: super::steps::StepsDsl::for_cask(),
@@ -1439,6 +1548,74 @@ end
         };
         assert_eq!(sort(&[0; 7]), [0, 1, 2, 3, 4, 5, 6]);
         assert_eq!(sort(&[0; 8]), [7, 1, 2, 3, 4, 5, 6, 0]);
+    }
+
+    #[test]
+    fn notes_the_deprecated_dsl_it_calls() {
+        let tap = TapName::parse("dopplerhq/cli").unwrap();
+        let source = r#"cask "doppler" do
+  version "3.77.0"
+  sha256 "aa"
+  url "https://example.com/doppler.zip", verified: "example.com/"
+  binary "doppler"
+  postflight do
+    system_command "/usr/bin/true"
+  end
+end
+"#;
+        let read = read_cask(source.as_bytes(), "doppler", &tap, MAC_ARM, None).unwrap();
+        assert_eq!(
+            read.deprecations,
+            vec![
+                Deprecation {
+                    method: "the `verified` parameter in the `url` stanza".into(),
+                    replacement: "the default URL verification behaviour".into(),
+                    line: 4,
+                },
+                Deprecation {
+                    method: "`postflight`".into(),
+                    replacement: "`postflight_steps`".into(),
+                    line: 6,
+                },
+            ]
+        );
+        assert_eq!(
+            read.deprecations[1].message(&tap, std::path::Path::new("/p/doppler.rb")),
+            "Calling `postflight` is deprecated! Use `postflight_steps` instead.\n\
+             Please report this issue to the dopplerhq/homebrew-cli tap (not Homebrew/* \
+             repositories), or even better, submit a PR to fix it:\n  /p/doppler.rb:6\n"
+        );
+
+        // A file that deprecates something itself is not warned about.
+        let quiet = source.replace(
+            "  binary",
+            "  deprecate! date: \"2020-01-01\", because: :discontinued\n  binary",
+        );
+        let read = read_cask(quiet.as_bytes(), "doppler", &tap, MAC_ARM, None).unwrap();
+        assert!(read.deprecations.is_empty());
+    }
+
+    #[test]
+    fn sorts_api_artifacts_as_homebrew_lists_them() {
+        let mut artifacts = vec![
+            json!({"zap": [{"trash": "~/x"}]}),
+            json!({"binary": ["x"], "target": "$HOMEBREW_PREFIX/bin/x"}),
+            json!({"app": ["X.app"], "target": "/Applications/X.app"}),
+            json!({"uninstall": [{"quit": "x"}]}),
+        ];
+        sort_artifacts(&mut artifacts);
+        let kinds: Vec<&str> = artifacts
+            .iter()
+            .map(|a| {
+                a.as_object()
+                    .unwrap()
+                    .keys()
+                    .find(|k| *k != "target")
+                    .unwrap()
+                    .as_str()
+            })
+            .collect();
+        assert_eq!(kinds, ["uninstall", "app", "binary", "zap"]);
     }
 
     #[test]

@@ -76,7 +76,17 @@ impl Installer {
                 // Like Homebrew, leave no keg behind from a failed build.
                 Self::cleanup_materialized(&self.cellar, formula_name, &version);
             }
-            return Err(build_err);
+            return Err(match build_err {
+                Error::BuildFailed { version, .. } => Error::BuildFailed {
+                    name: match item.formula.third_party_tap() {
+                        Some(tap) => format!("{tap}/{formula_name}"),
+                        None => formula_name.clone(),
+                    },
+                    version,
+                    report: self.build_failure_report(&item.formula),
+                },
+                other => other,
+            });
         }
 
         if let Some(backup_path) = previous_keg_backup.as_ref() {
@@ -173,6 +183,31 @@ impl Installer {
             name: formula_name.clone(),
         });
         Ok(())
+    }
+
+    /// `BuildError#dump`: where to report a failed build of a tap's
+    /// formula, its issues on GitHub unless it is fetched from elsewhere.
+    /// Homebrew sends those of its own taps to its troubleshooting page;
+    /// nextbrew's build of them is not Homebrew's, so it says nothing.
+    fn build_failure_report(&self, formula: &nb_core::Formula) -> Option<String> {
+        let tap = crate::tap::TapName::parse(formula.third_party_tap()?).ok()?;
+        if tap.is_official() {
+            return None;
+        }
+        let remote = self
+            .tap_source()
+            .ok()
+            .and_then(|source| source.taps.remote(&tap));
+        Some(if tap.uses_custom_remote(remote.as_deref()) {
+            format!(
+                "If reporting this issue please do so to (not Homebrew/* repositories):\n  {tap}"
+            )
+        } else {
+            format!(
+                "If reporting this issue please do so at (not Homebrew/* repositories):\n  {}/issues",
+                tap.default_remote()
+            )
+        })
     }
 
     fn backup_existing_source_keg(

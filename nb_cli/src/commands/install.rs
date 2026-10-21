@@ -7,7 +7,8 @@ use std::time::Instant;
 
 use crate::ui::StdUi;
 use crate::utils::{
-    normalize_formula_name, resolve_install_name, suggest_homebrew, suggest_missing_formula_matches,
+    normalize_formula_name, report_build_failure, resolve_install_name, suggest_homebrew,
+    suggest_missing_formula_matches,
 };
 
 pub async fn execute(
@@ -18,11 +19,6 @@ pub async fn execute(
     ui: &mut StdUi,
 ) -> Result<(), nb_core::Error> {
     let start = Instant::now();
-    ui.heading(format!(
-        "Installing {}...",
-        style(formulas.join(", ")).bold()
-    ))
-    .map_err(ui_error)?;
 
     let mut normalized_names = Vec::new();
     let mut cask_names = Vec::new();
@@ -42,6 +38,32 @@ pub async fn execute(
             }
         }
     }
+
+    // `Install.install_formula?`: an installed formula stays as it is, or is
+    // upgraded when outdated.
+    let mut to_upgrade = Vec::new();
+    let mut fresh = Vec::new();
+    for name in normalized_names {
+        match already_installed(installer, &name).await {
+            Installed::No => fresh.push(name),
+            Installed::Upgrade(installed) => to_upgrade.push(installed),
+            Installed::Leave => {}
+        }
+    }
+    let normalized_names = fresh;
+    if !to_upgrade.is_empty() {
+        super::upgrade::execute(installer, to_upgrade, build_from_source, no_link, ui).await?;
+    }
+    if normalized_names.is_empty() && cask_names.is_empty() {
+        return Ok(());
+    }
+    let names: Vec<&str> = normalized_names
+        .iter()
+        .chain(&cask_names)
+        .map(String::as_str)
+        .collect();
+    ui.heading(format!("Installing {}...", style(names.join(", ")).bold()))
+        .map_err(ui_error)?;
 
     let mut installed_count = 0usize;
     let mut notices = Vec::new();
@@ -91,6 +113,80 @@ pub async fn execute(
     .map_err(ui_error)?;
 
     report_post_install(ui, &notices, post_install_failures)
+}
+
+/// What `nb install` does with a formula that may be installed already.
+enum Installed {
+    No,
+    /// Upgrade it (by its installed name).
+    Upgrade(String),
+    /// It is there as it should be, which has been said.
+    Leave,
+}
+
+/// `Install.install_formula?` for `name`: the current version installed is
+/// left alone (said with a warning, and marked as asked for); an older one
+/// is upgraded, unless pinned or `$HOMEBREW_NO_INSTALL_UPGRADE` is set,
+/// which is an error that, as Homebrew's, does not fail the command.
+async fn already_installed(installer: &nb_io::Installer, name: &str) -> Installed {
+    let Some(keg) = installer.get_installed_by_full_name(name) else {
+        return Installed::No;
+    };
+    let Ok(formula) = installer.formula(name).await else {
+        return Installed::No;
+    };
+    let full_name = match formula.third_party_tap() {
+        Some(tap) => format!("{tap}/{}", formula.name),
+        None => formula.name.clone(),
+    };
+    let current = formula.effective_version();
+    let keg_only = formula.is_keg_only();
+    let linked = installer.is_linked(&keg.name).unwrap_or(false);
+    let warn = |message: String| {
+        eprintln!("{} {message}", style("Warning:").yellow().bold());
+    };
+    if keg.version == current {
+        if keg_only || linked {
+            warn(format!(
+                "{full_name} {current} is already installed and up-to-date.\n\
+                 To reinstall {current}, run:\n  nb reinstall {}",
+                formula.name
+            ));
+        } else {
+            warn(format!(
+                "{full_name} {current} is already installed, it's just not linked.\n\
+                 To link this version, run:\n  nb link {full_name}"
+            ));
+        }
+        let _ = installer.mark_on_request(std::slice::from_ref(&keg.name));
+        return Installed::Leave;
+    }
+    if !keg_only && !linked {
+        return Installed::Upgrade(keg.name);
+    }
+    let no_upgrade = std::env::var_os("HOMEBREW_NO_INSTALL_UPGRADE").is_some_and(|v| !v.is_empty());
+    if !no_upgrade && !keg.pinned {
+        println!(
+            "{} {} is already installed but outdated (so it will be upgraded).",
+            formula.name, keg.version
+        );
+        return Installed::Upgrade(keg.name);
+    }
+    let unpin = if keg.pinned {
+        format!("nb unpin {full_name} && ")
+    } else {
+        String::new()
+    };
+    let installed = if keg_only {
+        format!("{full_name} {} is already installed.", keg.version)
+    } else {
+        format!("{} {} is already installed", formula.name, keg.version)
+    };
+    eprintln!(
+        "{} {installed}\nTo upgrade to {current}, run:\n  {unpin}nb upgrade {full_name}",
+        style("Error:").red().bold()
+    );
+    Installed::Leave
 }
 
 /// Print post-install notices and failures. Every package is installed and
@@ -320,6 +416,7 @@ pub async fn execute_formula_plan(
             Err(e.clone())
         }
         Err(e) => {
+            report_build_failure(&e);
             let handled_missing = suggest_missing_formula_matches(installer, &e).await;
 
             if !handled_missing {

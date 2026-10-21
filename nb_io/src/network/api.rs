@@ -27,8 +27,9 @@ struct IndexNames<'a> {
 }
 
 /// Split the bulk API file into index entries without building a tree for
-/// its 30 MB: each formula's JSON is kept verbatim.
-fn index_entries(body: &str) -> Result<Vec<IndexEntry<'_>>, Error> {
+/// its 30 MB: each formula's JSON is kept verbatim. Old names in
+/// `not_renames` are left out of the aliases.
+fn index_entries<'a>(body: &'a str, not_renames: &[String]) -> Result<Vec<IndexEntry<'a>>, Error> {
     let raws: Vec<&RawValue> =
         serde_json::from_str(body).map_err(Error::network("failed to parse bulk formula JSON"))?;
     Ok(raws
@@ -39,10 +40,14 @@ fn index_entries(body: &str) -> Result<Vec<IndexEntry<'_>>, Error> {
             if name.is_empty() {
                 return None;
             }
+            let renames = names
+                .oldnames
+                .iter()
+                .filter(|old| !not_renames.iter().any(|not| not == old.trim()));
             let aliases = names
                 .aliases
                 .iter()
-                .chain(&names.oldnames)
+                .chain(renames)
                 .map(|alias| alias.trim().to_string())
                 .filter(|alias| !alias.is_empty() && *alias != name)
                 .collect();
@@ -170,6 +175,20 @@ impl TapSource {
 
     /// The formula `name` of `tap`, read from its file.
     pub fn formula(&self, tap: &crate::tap::TapName, name: &str) -> Result<Formula, Error> {
+        let json = self.formula_json(tap, name)?;
+        let resolved = json["name"].as_str().unwrap_or(name).to_string();
+        serde_json::from_value(json).map_err(|e| Error::UnsupportedFormula {
+            name: format!("{tap}/{resolved}"),
+            reason: e.to_string(),
+        })
+    }
+
+    /// [`Self::formula`] as the formula API's JSON for it.
+    pub fn formula_json(
+        &self,
+        tap: &crate::tap::TapName,
+        name: &str,
+    ) -> Result<serde_json::Value, Error> {
         let full = format!("{tap}/{name}");
         if !self.taps.is_installed(tap) {
             return Err(Error::InvalidArgument {
@@ -195,10 +214,7 @@ impl TapSource {
                 reason: format!("{} (line {})", e.message, e.line),
             },
         )?;
-        serde_json::from_value(read.json).map_err(|e| Error::UnsupportedFormula {
-            name: format!("{tap}/{resolved}"),
-            reason: e.to_string(),
-        })
+        Ok(read.json)
     }
 
     /// The cask `token` of `tap`, read from its file, as the cask API's
@@ -243,6 +259,7 @@ impl TapSource {
                     e.message, e.line
                 ),
             })?;
+        read.warn_deprecations(tap, &file);
         Ok(read.json)
     }
 
@@ -477,18 +494,35 @@ impl ApiClient {
         }
     }
 
-    /// Look a formula up in the index, then by alias, then on the API. A
-    /// name the index does not have may be newer than the index, so it is
-    /// still asked for; a 404 there is final.
+    /// Look a formula up in the index (an alias or old name first, as
+    /// `Formulary.tap_formula_name_type` does), then on the API. A name the
+    /// index does not have may be newer than the index, so it is still
+    /// asked for; a 404 there is final.
     pub async fn get_formula(&self, name: &str) -> Result<Formula, Error> {
         // Formulae of other taps are read from their Ruby files.
         let name = name.strip_prefix("homebrew/core/").unwrap_or(name);
         if let Some((tap, short)) = crate::tap::TapName::split_full_name(name) {
-            return match &self.taps {
-                Some(taps) => taps.formula(&tap, &short),
-                None => Err(Error::UnsupportedTap {
+            let Some(taps) = &self.taps else {
+                return Err(Error::UnsupportedTap {
                     name: name.to_string(),
+                });
+            };
+            // Migrated to another tap: read from there, as brew does.
+            return match taps.taps.formula_migration(&tap, &short) {
+                Some((to, moved))
+                    if to.is_official() && matches!(to.repo.as_str(), "core" | "homebrew") =>
+                {
+                    self.get_core_formula(&moved).await
+                }
+                Some((to, moved)) if to.is_core() => Err(Error::MissingFormula {
+                    name: format!("{to}/{moved}"),
                 }),
+                // Homebrew follows it only into a tap that is there.
+                Some((to, _)) if !taps.taps.is_installed(&to) => Err(Error::MissingFormula {
+                    name: format!("{tap}/{short}"),
+                }),
+                Some((to, moved)) => taps.formula(&to, &moved),
+                None => taps.formula(&tap, &short),
             };
         }
         // An installed formula from a tap is that one, not core's.
@@ -527,32 +561,47 @@ impl ApiClient {
     }
 
     async fn get_core_formula(&self, name: &str) -> Result<Formula, Error> {
-        let parse_body = |body: String| {
-            serde_json::from_str(&body).map_err(Error::network("failed to parse formula JSON"))
-        };
+        let body = self.get_core_formula_body(name).await?;
+        serde_json::from_str(&body).map_err(Error::network("failed to parse formula JSON"))
+    }
 
+    /// The API's JSON of homebrew/core's formula `name` (or of the one it
+    /// is an alias or old name of), as text.
+    async fn get_core_formula_body(&self, name: &str) -> Result<String, Error> {
         let mut lookup = name.to_string();
         if self.ensure_index().await
             && let Some(cache) = &self.cache
         {
-            if let Some(body) = cache.index_formula(name) {
-                return parse_body(body);
-            }
             if let Some(canonical) = cache.index_alias(name) {
-                if let Some(body) = cache.index_formula(&canonical) {
-                    return parse_body(body);
-                }
                 lookup = canonical;
+            }
+            if let Some(body) = cache.index_formula(&lookup) {
+                return Ok(body);
             }
         }
 
         match self.fetch_formula_json(&lookup).await {
-            Ok(body) => parse_body(body),
+            Ok(body) => Ok(body),
             Err(Error::MissingFormula { .. }) => Err(Error::MissingFormula {
                 name: name.to_string(),
             }),
             Err(e) => Err(e),
         }
+    }
+
+    /// [`Self::get_formula`]'s formula as its JSON: the API's for
+    /// homebrew/core's, read from its file like it for a tap's.
+    pub async fn get_formula_json(&self, name: &str) -> Result<serde_json::Value, Error> {
+        let formula = self.get_formula(name).await?;
+        if let Some(tap) = formula.third_party_tap() {
+            let tap = crate::tap::TapName::parse(tap)?;
+            let taps = self.taps.as_ref().ok_or_else(|| Error::UnsupportedTap {
+                name: format!("{tap}/{}", formula.name),
+            })?;
+            return taps.formula_json(&tap, &formula.name);
+        }
+        let body = self.get_core_formula_body(&formula.name).await?;
+        serde_json::from_str(&body).map_err(Error::network("failed to parse formula JSON"))
     }
 
     async fn fetch_formula_json(&self, name: &str) -> Result<String, Error> {
@@ -696,7 +745,7 @@ impl ApiClient {
             return Ok(bodies.iter().filter_map(|body| parse(body)).collect());
         }
         let body = self.bulk_formula_body().await?;
-        Ok(index_entries(&body)?
+        Ok(index_entries(&body, &[])?
             .iter()
             .filter_map(|entry| parse(entry.body))
             .collect())
@@ -712,7 +761,7 @@ impl ApiClient {
                 .map_err(Error::store("failed to read the formula index"));
         }
         let body = self.bulk_formula_body().await?;
-        Ok(index_entries(&body)?
+        Ok(index_entries(&body, &[])?
             .into_iter()
             .map(|entry| entry.name)
             .collect())
@@ -807,11 +856,40 @@ impl ApiClient {
             .text()
             .await
             .map_err(Error::network("failed to read bulk formula response body"))?;
+        let not_renames = self.casks_migrated_to_core().await;
         let count = cache
-            .replace_index(index_entries(&body)?, &new_meta)
+            .replace_index(index_entries(&body, &not_renames)?, &new_meta)
             .map_err(Error::store("failed to store the formula index"))?;
         debug!(count, "formula index refreshed");
         Ok(())
+    }
+
+    /// A file of the API next to the formula one (`…/api/<file>`).
+    fn api_url(&self, file: &str) -> String {
+        match self.base_url.rsplit_once('/') {
+            Some((parent, _)) => format!("{parent}/{file}"),
+            None => file.to_string(),
+        }
+    }
+
+    /// The old cask tokens homebrew/cask migrated to homebrew/core. The
+    /// formulae they went to list them among their `oldnames`, but they are
+    /// not in homebrew/core's `formula_renames`, so brew does not resolve
+    /// them to the formula (it says where they went instead). Empty when
+    /// the list cannot be had.
+    async fn casks_migrated_to_core(&self) -> Vec<String> {
+        let Ok(Some(body)) = self
+            .cached_body(&self.api_url("cask_tap_migrations.json"))
+            .await
+        else {
+            return Vec::new();
+        };
+        serde_json::from_str::<std::collections::BTreeMap<String, String>>(&body)
+            .unwrap_or_default()
+            .into_iter()
+            .filter(|(_, to)| to == "homebrew/core" || to.starts_with("homebrew/core/"))
+            .map(|(old, _)| old)
+            .collect()
     }
 
     /// How many formulas the index holds.
@@ -867,7 +945,7 @@ impl ApiClient {
             Some(cache) if self.ensure_index().await => cache
                 .index_names()
                 .map_err(Error::store("failed to read the formula index"))?,
-            _ => index_entries(&self.bulk_formula_body().await?)?
+            _ => index_entries(&self.bulk_formula_body().await?, &[])?
                 .into_iter()
                 .flat_map(|entry| std::iter::once(entry.name).chain(entry.aliases))
                 .collect(),
@@ -885,11 +963,23 @@ impl ApiClient {
     pub async fn get_cask(&self, token: &str) -> Result<serde_json::Value, Error> {
         let token = token.strip_prefix("homebrew/cask/").unwrap_or(token);
         if let Some((tap, short)) = crate::tap::TapName::split_full_name(token) {
-            return match &self.taps {
-                Some(taps) => taps.cask(&tap, &short),
-                None => Err(Error::UnsupportedTap {
+            let Some(taps) = &self.taps else {
+                return Err(Error::UnsupportedTap {
                     name: token.to_string(),
+                });
+            };
+            return match taps.taps.cask_migration(&tap, &short) {
+                Some((to, moved)) if to.is_official() && to.repo == "cask" => {
+                    self.get_renamed_core_cask(&moved).await
+                }
+                Some((to, moved)) if to.is_core() => Err(Error::MissingFormula {
+                    name: format!("cask:{to}/{moved}"),
                 }),
+                Some((to, _)) if !taps.taps.is_installed(&to) => Err(Error::MissingFormula {
+                    name: format!("cask:{tap}/{short}"),
+                }),
+                Some((to, moved)) => taps.cask(&to, &moved),
+                None => taps.cask(&tap, &short),
             };
         }
         if let Some(taps) = &self.taps {
@@ -902,7 +992,7 @@ impl ApiClient {
                 return taps.cask(&tap, token);
             }
         }
-        match self.get_core_cask(token).await {
+        match self.get_renamed_core_cask(token).await {
             Err(Error::MissingFormula { .. }) if self.taps.is_some() => {
                 let taps = self.taps.as_ref().unwrap();
                 match taps.taps_with_cask(token).as_slice() {
@@ -924,6 +1014,36 @@ impl ApiClient {
             }
             other => other,
         }
+    }
+
+    /// A homebrew/cask cask by its token, or else by an old token: one it
+    /// was renamed from, or a formula's that moved to it (its `old_tokens`,
+    /// from the bulk cask file), as `CaskLoader` follows `cask_renames` and
+    /// tap migrations. No current token is also an old one, so trying the
+    /// token first gives what brew's order (renames first) gives.
+    async fn get_renamed_core_cask(&self, token: &str) -> Result<serde_json::Value, Error> {
+        match self.get_core_cask(token).await {
+            Err(Error::MissingFormula { name }) => match self.renamed_cask(token).await {
+                Some(renamed) => self.get_core_cask(&renamed).await,
+                None => Err(Error::MissingFormula { name }),
+            },
+            other => other,
+        }
+    }
+
+    /// The cask whose `old_tokens` has `token`.
+    async fn renamed_cask(&self, token: &str) -> Option<String> {
+        #[derive(serde::Deserialize)]
+        struct Tokens {
+            token: String,
+            #[serde(default)]
+            old_tokens: Vec<String>,
+        }
+        let casks: Vec<Tokens> = serde_json::from_str(&self.cask_list_body().await.ok()?).ok()?;
+        casks
+            .into_iter()
+            .find(|cask| cask.old_tokens.iter().any(|old| old == token))
+            .map(|cask| cask.token)
     }
 
     async fn get_core_cask(&self, token: &str) -> Result<serde_json::Value, Error> {
@@ -1295,6 +1415,126 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn formulae_migrated_to_another_tap_are_read_there() {
+        let mock_server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/formula/foo.json"))
+            .respond_with(ResponseTemplate::new(200).set_body_string(FOO))
+            .mount(&mock_server)
+            .await;
+        let tmp = tempdir().unwrap();
+        let taps = crate::tap::Taps::new(tmp.path());
+        let old = crate::tap::TapName::parse("old/tools").unwrap();
+        let new = crate::tap::TapName::parse("new/tools").unwrap();
+        std::fs::create_dir_all(taps.path(&old).join("Formula")).unwrap();
+        std::fs::create_dir_all(taps.path(&new).join("Formula")).unwrap();
+        // A stale copy left in the old tap is not the one read.
+        for (tap, body) in [(&old, "stale"), (&new, "moved")] {
+            std::fs::write(
+                taps.path(tap).join("Formula/thing.rb"),
+                format!("class Thing < Formula\n  desc \"{body}\"\n  url \"https://example.com/thing-1.0.tar.gz\"\nend\n"),
+            )
+            .unwrap();
+        }
+        std::fs::write(
+            taps.path(&old).join("tap_migrations.json"),
+            r#"{"thing": "new/tools", "foo": "homebrew/core", "gone": "elsewhere/tap/gone", "app": "homebrew/cask"}"#,
+        )
+        .unwrap();
+        let trust = crate::tap::trust::TrustStore::at(tmp.path().join("trust.json"));
+        for tap in ["old/tools", "new/tools"] {
+            trust.trust(crate::tap::trust::TrustKind::Tap, tap).unwrap();
+        }
+        let source = TapSource {
+            taps,
+            trust,
+            platform: crate::tap::ruby::Platform {
+                macos: Some((26, 0)),
+                arm: true,
+            },
+            installed: Default::default(),
+        };
+        let client = ApiClient::with_base_url(format!("{}/formula", mock_server.uri()))
+            .unwrap()
+            .with_taps(source);
+
+        let thing = client.get_formula("old/tools/thing").await.unwrap();
+        assert_eq!(thing.desc.as_deref(), Some("moved"));
+        assert_eq!(thing.tap.as_deref(), Some("new/tools"));
+        assert_eq!(
+            client.get_formula("old/tools/foo").await.unwrap().name,
+            "foo"
+        );
+        assert!(matches!(
+            client.get_formula("old/tools/gone").await,
+            Err(Error::MissingFormula { name }) if name == "old/tools/gone"
+        ));
+        assert!(matches!(
+            client.get_formula("old/tools/app").await,
+            Err(Error::MissingFormula { .. })
+        ));
+    }
+
+    #[tokio::test]
+    async fn renamed_core_casks_resolve_by_their_old_tokens() {
+        let mock_server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/cask.json"))
+            .respond_with(ResponseTemplate::new(200).set_body_string(
+                r#"[{"token":"doppler-app","old_tokens":["doppler"]},{"token":"other"}]"#,
+            ))
+            .mount(&mock_server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/cask/doppler-app.json"))
+            .respond_with(ResponseTemplate::new(200).set_body_string(r#"{"token":"doppler-app"}"#))
+            .mount(&mock_server)
+            .await;
+        let client = ApiClient::with_base_url(format!("{}/formula", mock_server.uri()))
+            .unwrap()
+            .with_cask_base_url(format!("{}/cask", mock_server.uri()));
+
+        let cask = client.get_cask("doppler").await.unwrap();
+        assert_eq!(cask["token"], "doppler-app");
+        assert!(matches!(
+            client.get_cask("nothing").await,
+            Err(Error::MissingFormula { name }) if name == "cask:nothing"
+        ));
+    }
+
+    #[tokio::test]
+    async fn casks_migrated_to_core_are_not_old_names_of_formulae() {
+        let mock_server = MockServer::start().await;
+        let cli = FOO.replace("\"foo\"", "\"openshift-cli\"").replacen(
+            "{",
+            r#"{"oldnames":["openshift-client","oc-old"],"#,
+            1,
+        );
+        Mock::given(method("GET"))
+            .and(path("/formula.json"))
+            .respond_with(ResponseTemplate::new(200).set_body_string(bulk(&[&cli])))
+            .mount(&mock_server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/cask_tap_migrations.json"))
+            .respond_with(ResponseTemplate::new(200).set_body_string(
+                r#"{"openshift-client":"homebrew/core/openshift-cli","basex":"homebrew/core"}"#,
+            ))
+            .mount(&mock_server)
+            .await;
+
+        let client = indexed_client(&mock_server, ApiCache::in_memory().unwrap());
+        assert_eq!(
+            client.get_formula("oc-old").await.unwrap().name,
+            "openshift-cli"
+        );
+        assert!(matches!(
+            client.get_formula("openshift-client").await,
+            Err(Error::MissingFormula { .. })
+        ));
+    }
+
+    #[tokio::test]
     async fn suggest_formulas_returns_empty_for_tap_references() {
         let client = ApiClient::new();
         let suggestions = client
@@ -1389,7 +1629,7 @@ mod tests {
         let cache = ApiCache::in_memory().unwrap();
         cache
             .replace_index(
-                index_entries(&bulk(&[FOO])).unwrap(),
+                index_entries(&bulk(&[FOO]), &[]).unwrap(),
                 &IndexMeta {
                     etag: None,
                     last_modified: None,
@@ -1416,7 +1656,7 @@ mod tests {
         let stale = unix_now() - 24 * 3600;
         cache
             .replace_index(
-                index_entries(&bulk(&[FOO])).unwrap(),
+                index_entries(&bulk(&[FOO]), &[]).unwrap(),
                 &IndexMeta {
                     etag: Some("\"abc123\"".into()),
                     last_modified: None,
@@ -1488,6 +1728,23 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn an_alias_wins_over_a_formula_of_that_name() {
+        let mock_server = MockServer::start().await;
+        let foo = FOO.replacen("{", r#"{"aliases":["bar"],"oldnames":["baz"],"#, 1);
+        let bar = FOO.replace("\"foo\"", "\"bar\"");
+        let baz = FOO.replace("\"foo\"", "\"baz\"");
+        Mock::given(method("GET"))
+            .and(path("/formula.json"))
+            .respond_with(ResponseTemplate::new(200).set_body_string(bulk(&[&foo, &bar, &baz])))
+            .mount(&mock_server)
+            .await;
+
+        let client = indexed_client(&mock_server, ApiCache::in_memory().unwrap());
+        assert_eq!(client.get_formula("bar").await.unwrap().name, "foo");
+        assert_eq!(client.get_formula("baz").await.unwrap().name, "foo");
+    }
+
+    #[tokio::test]
     async fn a_name_missing_from_the_index_is_asked_for_once() {
         let mock_server = MockServer::start().await;
         Mock::given(method("GET"))
@@ -1543,7 +1800,8 @@ mod tests {
         let cache = ApiCache::in_memory().unwrap();
         cache
             .replace_index(
-                index_entries(&bulk(&[FOO.replace("\"foo\"", "\"cached\"").as_str()])).unwrap(),
+                index_entries(&bulk(&[FOO.replace("\"foo\"", "\"cached\"").as_str()]), &[])
+                    .unwrap(),
                 &IndexMeta {
                     etag: None,
                     last_modified: None,
@@ -1586,7 +1844,8 @@ mod tests {
     #[test]
     fn index_entries_keep_bodies_verbatim_and_skip_nameless_entries() {
         let entries = index_entries(
-            r#"[{"name":"python","aliases":["python@3.13"],"oldnames":["python3"],"x":1},{"aliases":["orphan"]},{"name":" ripgrep ","aliases":["rg","ripgrep"]}]"#,
+            r#"[{"name":"python","aliases":["python@3.13"],"oldnames":["python3","py-cask"],"x":1},{"aliases":["orphan"]},{"name":" ripgrep ","aliases":["rg","ripgrep"]}]"#,
+            &["py-cask".to_string()],
         )
         .unwrap();
 
@@ -1594,11 +1853,11 @@ mod tests {
         assert_eq!(entries[0].name, "python");
         assert_eq!(
             entries[0].body,
-            r#"{"name":"python","aliases":["python@3.13"],"oldnames":["python3"],"x":1}"#
+            r#"{"name":"python","aliases":["python@3.13"],"oldnames":["python3","py-cask"],"x":1}"#
         );
         assert_eq!(entries[0].aliases, ["python@3.13", "python3"]);
         assert_eq!(entries[1].name, "ripgrep");
         assert_eq!(entries[1].aliases, ["rg"], "a name is not its own alias");
-        assert!(index_entries("{}").is_err());
+        assert!(index_entries("{}", &[]).is_err());
     }
 }

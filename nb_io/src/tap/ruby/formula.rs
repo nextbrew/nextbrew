@@ -48,6 +48,7 @@ struct FormulaDsl {
     today: String,
     desc: Option<String>,
     homepage: Option<String>,
+    license: Option<String>,
     url: Option<(String, Args)>,
     sha256: Option<String>,
     version: Option<String>,
@@ -100,6 +101,7 @@ pub fn read_formula(
         today: chrono::Local::now().format("%Y-%m-%d").to_string(),
         desc: None,
         homepage: None,
+        license: None,
         url: None,
         sha256: None,
         version: None,
@@ -462,6 +464,7 @@ impl FormulaDsl {
             "aliases": [],
             "desc": self.desc,
             "homepage": self.homepage,
+            "license": self.license,
             "versions": {"stable": version, "head": self.head.as_ref().map(|_| "HEAD"), "bottle": !self.bottle.files.is_empty()},
             "urls": {
                 "stable": self.url.as_ref().map(|(url, args)| json!({
@@ -552,10 +555,61 @@ fn url_encode(text: &str) -> String {
     out
 }
 
+/// `SPDX.license_expression_to_string`: an SPDX expression for `license`'s
+/// argument, `any_of:` joined by `OR` and `all_of:` by `AND`, bracketed
+/// when nested.
+fn license_string(license: &Value, bracket: bool, kind: Option<&str>) -> Option<String> {
+    match license {
+        Value::Str(license) => Some(license.clone()),
+        Value::Sym(license) => Some(format!("LicenseRef-Homebrew-{}", license.replace('_', "-"))),
+        Value::Hash(pairs) => {
+            let (expressions, kind) = match pairs.as_slice() {
+                [(Value::Str(license), Value::Hash(with))] => {
+                    let with = with
+                        .iter()
+                        .find(|(key, _)| key.to_s() == "with")
+                        .map(|(_, value)| value.to_s())?;
+                    (vec![format!("{license} WITH {with}")], kind)
+                }
+                [(key, Value::Array(licenses))] => {
+                    let kind = key.to_s();
+                    let expressions = licenses
+                        .iter()
+                        .map(|license| license_string(license, true, Some(&kind)))
+                        .collect::<Option<Vec<_>>>()?;
+                    return Some(join_licenses(&expressions, Some(&kind), bracket));
+                }
+                pairs => {
+                    let expressions = pairs
+                        .iter()
+                        .map(|pair| license_string(&Value::Hash(vec![pair.clone()]), true, None))
+                        .collect::<Option<Vec<_>>>()?;
+                    return Some(join_licenses(&expressions, kind, false));
+                }
+            };
+            Some(join_licenses(&expressions, kind, bracket))
+        }
+        _ => None,
+    }
+}
+
+fn join_licenses(expressions: &[String], kind: Option<&str>, bracket: bool) -> String {
+    let operator = if kind == Some("any_of") {
+        " OR "
+    } else {
+        " AND "
+    };
+    let joined = expressions.join(operator);
+    if bracket {
+        format!("({joined})")
+    } else {
+        joined
+    }
+}
+
 /// Calls the formula class body may make that change nothing nextbrew
 /// uses.
 const IGNORED: &[&str] = &[
-    "license",
     "mirror",
     "livecheck",
     "test",
@@ -588,6 +642,17 @@ impl<'pr> Scope<'pr> for FormulaDsl {
         match name {
             "desc" => self.desc = Some(text()),
             "homepage" => self.homepage = Some(text()),
+            "license" => {
+                self.license = match (args.first(), args.keywords.first()) {
+                    (Some(license), _) => license_string(license, false, None),
+                    (None, Some((kind, licenses))) => license_string(
+                        &Value::Hash(vec![(Value::Sym(kind.clone()), licenses.clone())]),
+                        false,
+                        None,
+                    ),
+                    (None, None) => None,
+                }
+            }
             "url" => {
                 let mut args = args;
                 let url = args.positional.remove(0).to_s();
@@ -1118,6 +1183,30 @@ mod tests {
             MAC_ARM,
         )
         .unwrap()
+    }
+
+    #[test]
+    fn reads_the_license_as_spdx() {
+        let license = |line: &str| {
+            let source = format!(
+                "class Foo < Formula\n  url \"https://example.com/foo-1.0.tar.gz\"\n  {line}\nend\n"
+            );
+            read(&source).json["license"].clone()
+        };
+        assert_eq!(license("license \"MIT\""), "MIT");
+        assert_eq!(
+            license("license :public_domain"),
+            "LicenseRef-Homebrew-public-domain"
+        );
+        assert_eq!(
+            license("license any_of: [\"MIT\", \"Apache-2.0\"]"),
+            "MIT OR Apache-2.0"
+        );
+        assert_eq!(
+            license("license all_of: [\"MIT\", { any_of: [\"GPL-2.0-only\", \"BSD-3-Clause\"] }]"),
+            "MIT AND (GPL-2.0-only OR BSD-3-Clause)"
+        );
+        assert!(license("").is_null());
     }
 
     #[test]

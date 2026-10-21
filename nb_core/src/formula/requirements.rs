@@ -35,6 +35,54 @@ pub fn unsatisfied_requirements(formula: &Formula, building: bool, system: &Syst
         .collect()
 }
 
+/// Whether `requirement` (one of the formula JSON's `requirements`) is met
+/// on `system`. Requirements nextbrew does not know count as met.
+pub fn satisfied(requirement: &Value, system: &System) -> bool {
+    unmet(requirement, system).is_none()
+}
+
+/// `Requirement#display_s`: how `brew info` names a requirement.
+pub fn display(requirement: &Value) -> String {
+    let name = requirement
+        .get("name")
+        .and_then(Value::as_str)
+        .unwrap_or_default();
+    let version = match requirement.get("version") {
+        Some(Value::String(v)) => Some(v.clone()),
+        Some(Value::Array(items)) => Some(
+            items
+                .iter()
+                .filter_map(Value::as_str)
+                .collect::<Vec<_>>()
+                .join(" / "),
+        ),
+        _ => None,
+    };
+    match (name, version) {
+        ("linux", _) => "Linux".to_string(),
+        ("macos", None) | ("maximum_macos", None) => "macOS".to_string(),
+        ("macos", Some(v)) => {
+            let comparator = if matches!(requirement.get("version"), Some(Value::Array(_))) {
+                "=="
+            } else {
+                ">="
+            };
+            format!("macOS {comparator} {v}")
+        }
+        ("maximum_macos", Some(v)) => format!("macOS <= {v}"),
+        ("arch", Some(arch)) => format!("{arch} architecture"),
+        ("xcode", None) => "Xcode (on macOS)".to_string(),
+        ("xcode", Some(v)) => format!("Xcode >= {v} (on macOS)"),
+        (name, _) => {
+            let mut chars = name.chars();
+            chars
+                .next()
+                .map(|c| c.to_uppercase().chain(chars).collect())
+                .unwrap_or_default()
+        }
+    }
+}
+
 /// The error Homebrew raises once the messages are printed.
 pub fn unsatisfied_error(count: usize) -> &'static str {
     if count == 1 {
@@ -198,6 +246,29 @@ fn version_at_least(installed: &str, wanted: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn names_requirements_as_brew_info_does() {
+        let shown = |req: serde_json::Value| display(&req);
+        assert_eq!(shown(serde_json::json!({"name": "linux"})), "Linux");
+        assert_eq!(shown(serde_json::json!({"name": "macos"})), "macOS");
+        assert_eq!(
+            shown(serde_json::json!({"name": "macos", "version": "26"})),
+            "macOS >= 26"
+        );
+        assert_eq!(
+            shown(serde_json::json!({"name": "maximum_macos", "version": "13"})),
+            "macOS <= 13"
+        );
+        assert_eq!(
+            shown(serde_json::json!({"name": "arch", "version": "arm64"})),
+            "arm64 architecture"
+        );
+        assert_eq!(
+            shown(serde_json::json!({"name": "xcode", "version": "13.1"})),
+            "Xcode >= 13.1 (on macOS)"
+        );
+    }
     use serde_json::json;
 
     fn formula(requirements: Value) -> Formula {

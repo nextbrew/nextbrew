@@ -2,8 +2,9 @@ use std::io::IsTerminal;
 
 use console::style;
 
-/// `nb search`: matching formulae and casks under `brew search`'s headings,
-/// installed ones marked with a check.
+/// `nb search`: matching formulae and casks, from the installed taps too
+/// (named in full), under `brew search`'s headings, installed ones marked
+/// with a check.
 pub async fn execute(
     installer: &nb_io::Installer,
     query: String,
@@ -33,7 +34,10 @@ pub async fn execute(
             println!("{} {}", style("==>").blue().bold(), style(heading).bold());
         }
         for name in names {
-            if terminal && installer.is_installed(&format!("{prefix}{name}")) {
+            let installed = installer
+                .get_installed_by_full_name(&format!("{prefix}{name}"))
+                .is_some();
+            if terminal && installed {
                 println!("{name} {}", style("✔").green());
             } else {
                 println!("{name}");

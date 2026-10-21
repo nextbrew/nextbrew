@@ -54,6 +54,20 @@ pub async fn execute(
         return refused_casks.map_or(Ok(()), Err);
     }
 
+    // Homebrew reads a tap's cask from its file while the tap is there, so
+    // the file's deprecation warnings show here too.
+    if let Ok(source) = installer.tap_source() {
+        for name in &formulas {
+            if let Some(token) = name.strip_prefix("cask:")
+                && let Some(tap) = installer.get_installed(name).and_then(|keg| keg.tap)
+                && let Ok(tap) = nb_io::tap::TapName::parse(&tap)
+                && source.taps.is_installed(&tap)
+            {
+                let _ = source.cask(&tap, token);
+            }
+        }
+    }
+
     ui.heading(format!(
         "Uninstalling {}...",
         style(formulas.join(", ")).bold()

@@ -1,5 +1,7 @@
 use crate::ui::{PromptDefault, StdUi};
 use console::style;
+use nb_io::HomebrewPackage;
+use std::collections::{BTreeMap, BTreeSet};
 use std::process::Command;
 
 pub async fn execute(
@@ -23,57 +25,62 @@ pub async fn execute(
         return Ok(());
     }
 
+    // Those from other taps are named in full (`user/repo/name`).
+    let formulas: Vec<&HomebrewPackage> = packages
+        .formulas
+        .iter()
+        .chain(&packages.non_core_formulas)
+        .collect();
+    let casks: Vec<&HomebrewPackage> = packages
+        .casks
+        .iter()
+        .chain(&packages.non_core_casks)
+        .collect();
     let services: Vec<String> = packages
         .services
         .iter()
-        .filter(|name| packages.formulas.iter().any(|f| &f.name == *name))
+        .filter(|name| formulas.iter().any(|f| &f.name == *name))
         .cloned()
         .collect();
     ui.println(format!(
         "{} formulas and {} casks to migrate, {} services to restart",
-        style(packages.formulas.len()).green(),
-        style(packages.casks.len()).green(),
+        style(formulas.len()).green(),
+        style(casks.len()).green(),
         style(services.len()).green()
     ))
     .map_err(ui_error)?;
     ui.blank_line().map_err(ui_error)?;
 
-    let foreign: Vec<&nb_io::HomebrewPackage> = packages
-        .non_core_formulas
-        .iter()
-        .chain(&packages.non_core_casks)
-        .collect();
-    if !foreign.is_empty() {
-        ui.note("From taps nextbrew does not support; left with Homebrew:")
-            .map_err(ui_error)?;
-        for pkg in foreign {
-            ui.bullet(format!("{} ({})", pkg.name, pkg.tap))
-                .map_err(ui_error)?;
-        }
-        ui.blank_line().map_err(ui_error)?;
-    }
-
-    if packages.formulas.is_empty() && packages.casks.is_empty() {
-        ui.println("Nothing to migrate.").map_err(ui_error)?;
-        return Ok(());
-    }
-    if !packages.formulas.is_empty() {
+    if !formulas.is_empty() {
         ui.println("These formulas will be installed with nextbrew:")
             .map_err(ui_error)?;
-        for pkg in &packages.formulas {
+        for pkg in &formulas {
             let pinned = if pkg.pinned { " (pinned)" } else { "" };
-            ui.bullet(format!("{}{pinned}", pkg.name))
+            ui.bullet(format!("{}{pinned}", pkg.full_name()))
                 .map_err(ui_error)?;
         }
         ui.blank_line().map_err(ui_error)?;
     }
-    if !packages.casks.is_empty() {
+    if !casks.is_empty() {
         ui.println(
             "These casks will move from Homebrew to nextbrew (downloaded first; their data stays):",
         )
         .map_err(ui_error)?;
-        for pkg in &packages.casks {
-            ui.bullet(&pkg.name).map_err(ui_error)?;
+        for pkg in &casks {
+            ui.bullet(pkg.full_name()).map_err(ui_error)?;
+        }
+        ui.blank_line().map_err(ui_error)?;
+    }
+    let taps = other_taps(formulas.iter().chain(&casks).copied());
+    if !taps.is_empty() {
+        ui.println("These taps will be tapped with nextbrew, and what moves from them trusted:")
+            .map_err(ui_error)?;
+        for tap in &taps {
+            match packages.tap_remotes.get(*tap) {
+                Some(remote) => ui.bullet(format!("{tap} ({remote})")),
+                None => ui.bullet(*tap),
+            }
+            .map_err(ui_error)?;
         }
         ui.blank_line().map_err(ui_error)?;
     }
@@ -95,20 +102,23 @@ pub async fn execute(
         return Ok(());
     }
 
-    migrate_casks(installer, &packages.casks, ui).await?;
+    let (formulas, casks) =
+        prepare_taps(installer, &taps, formulas, casks, &packages.tap_remotes, ui).await?;
 
-    if packages.formulas.is_empty() {
+    migrate_casks(installer, &casks, ui).await?;
+
+    if formulas.is_empty() {
         return Ok(());
     }
 
     ui.blank_line().map_err(ui_error)?;
     ui.heading(format!(
         "Migrating {} formulas to nextbrew...",
-        style(packages.formulas.len()).green().bold()
+        style(formulas.len()).green().bold()
     ))
     .map_err(ui_error)?;
 
-    let formula_names: Vec<String> = packages.formulas.iter().map(|f| f.name.clone()).collect();
+    let formula_names: Vec<String> = formulas.iter().map(|f| f.full_name()).collect();
 
     let (plan, planning_failures) = installer.plan_best_effort(&formula_names, false).await;
     if !planning_failures.is_empty() {
@@ -144,7 +154,7 @@ pub async fn execute(
     ui.heading(format!(
         "Migrated {} of {} formulas to nextbrew",
         style(success_count).green().bold(),
-        packages.formulas.len()
+        formulas.len()
     ))
     .map_err(ui_error)?;
 
@@ -166,12 +176,17 @@ pub async fn execute(
         return Ok(());
     }
 
-    for pkg in packages.formulas.iter().filter(|pkg| pkg.pinned) {
-        if successfully_installed.contains(&pkg.name) {
-            installer.set_pinned(&pkg.name, true)?;
-        }
+    // nextbrew keeps them by name, as Homebrew's Cellar does.
+    let migrated: Vec<&HomebrewPackage> = formulas
+        .iter()
+        .filter(|pkg| successfully_installed.contains(&pkg.full_name()))
+        .copied()
+        .collect();
+    for pkg in migrated.iter().filter(|pkg| pkg.pinned) {
+        installer.set_pinned(&pkg.name, true)?;
     }
-    migrate_services(installer, &services, &successfully_installed, ui).await?;
+    let migrated_names: Vec<String> = migrated.iter().map(|pkg| pkg.name.clone()).collect();
+    migrate_services(installer, &services, &migrated_names, ui).await?;
 
     ui.blank_line().map_err(ui_error)?;
     if !yes
@@ -205,10 +220,9 @@ pub async fn execute(
     .map_err(ui_error)?;
 
     // Homebrew will not uninstall a pinned formula; the pin is nextbrew's now.
-    let pinned: Vec<&str> = packages
-        .formulas
+    let pinned: Vec<&str> = migrated
         .iter()
-        .filter(|pkg| pkg.pinned && successfully_installed.contains(&pkg.name))
+        .filter(|pkg| pkg.pinned)
         .map(|pkg| pkg.name.as_str())
         .collect();
     if !pinned.is_empty() {
@@ -245,7 +259,9 @@ pub async fn execute(
     {
         let stdout = String::from_utf8_lossy(&output.stdout);
         let still_installed: std::collections::HashSet<&str> = stdout.lines().collect();
-        uninstall_failed.retain(|target| still_installed.contains(target.as_str()));
+        // It lists the Cellar's names, without the tap.
+        uninstall_failed
+            .retain(|target| still_installed.contains(target.rsplit('/').next().unwrap_or(target)));
     }
 
     let uninstalled = successfully_installed.len() - uninstall_failed.len();
@@ -280,7 +296,7 @@ pub async fn execute(
 /// installs it. If that fails, Homebrew installs it again.
 async fn migrate_casks(
     installer: &mut nb_io::Installer,
-    casks: &[nb_io::HomebrewPackage],
+    casks: &[&HomebrewPackage],
     ui: &mut StdUi,
 ) -> Result<(), nb_core::Error> {
     if casks.is_empty() {
@@ -296,8 +312,9 @@ async fn migrate_casks(
     let mut kept: Vec<(String, String)> = Vec::new();
     for cask in casks {
         let token = &cask.name;
-        if let Err(e) = installer.prepare_cask(token).await {
-            kept.push((token.clone(), e.to_string()));
+        let full_name = cask.full_name();
+        if let Err(e) = installer.prepare_cask(&full_name).await {
+            kept.push((full_name, e.to_string()));
             continue;
         }
         let removed = Command::new("brew")
@@ -305,18 +322,18 @@ async fn migrate_casks(
             .status()
             .is_ok_and(|status| status.success());
         if !removed {
-            kept.push((token.clone(), "brew uninstall --cask failed".to_string()));
+            kept.push((full_name, "brew uninstall --cask failed".to_string()));
             continue;
         }
-        let name = format!("cask:{token}");
+        let name = format!("cask:{full_name}");
         let _ = crate::commands::install::execute(installer, vec![name.clone()], false, false, ui)
             .await;
-        if installer.is_installed(&name) {
+        if installer.get_installed_by_full_name(&name).is_some() {
             moved += 1;
             continue;
         }
         let restored = Command::new("brew")
-            .args(["install", "--cask", token])
+            .args(["install", "--cask", &full_name])
             .status()
             .is_ok_and(|status| status.success());
         let what = if restored {
@@ -324,7 +341,7 @@ async fn migrate_casks(
         } else {
             "nextbrew could not install it, and reinstalling with Homebrew failed too"
         };
-        kept.push((token.clone(), what.to_string()));
+        kept.push((full_name, what.to_string()));
     }
     ui.blank_line().map_err(ui_error)?;
     ui.heading(format!(
@@ -340,6 +357,76 @@ async fn migrate_casks(
         }
     }
     Ok(())
+}
+
+/// The other taps (not homebrew/core or homebrew/cask) `packages` come
+/// from, each once.
+fn other_taps<'a>(packages: impl Iterator<Item = &'a HomebrewPackage>) -> BTreeSet<&'a str> {
+    packages
+        .filter(|pkg| pkg.from_other_tap())
+        .map(|pkg| pkg.tap.as_str())
+        .collect()
+}
+
+/// Tap each of `taps` with nextbrew, from where Homebrew fetches it, then
+/// trust each formula and cask moving from them, as `nb install
+/// user/repo/name` does. Returns the formulae and casks that can go on;
+/// the rest stay with Homebrew, and why is shown.
+async fn prepare_taps<'a>(
+    installer: &mut nb_io::Installer,
+    taps: &BTreeSet<&str>,
+    formulas: Vec<&'a HomebrewPackage>,
+    casks: Vec<&'a HomebrewPackage>,
+    remotes: &BTreeMap<String, String>,
+    ui: &mut StdUi,
+) -> Result<(Vec<&'a HomebrewPackage>, Vec<&'a HomebrewPackage>), nb_core::Error> {
+    if taps.is_empty() {
+        return Ok((formulas, casks));
+    }
+    ui.blank_line().map_err(ui_error)?;
+    let mut failed_taps = BTreeMap::new();
+    for tap in taps {
+        let tapped = async {
+            let name = nb_io::tap::TapName::parse(tap)?;
+            nb_io::tap::Taps::check_tappable(&name, false)?;
+            super::tap::ensure_tapped(installer, &name, remotes.get(*tap).map(String::as_str)).await
+        }
+        .await;
+        if let Err(e) = tapped {
+            failed_taps.insert(tap.to_string(), e.to_string());
+        }
+    }
+    let mut kept: Vec<(String, String)> = Vec::new();
+    let mut ready = (Vec::new(), Vec::new());
+    for pkg in formulas.into_iter().chain(casks) {
+        if pkg.from_other_tap() {
+            if let Some(e) = failed_taps.get(&pkg.tap) {
+                kept.push((pkg.full_name(), format!("tapping {} failed: {e}", pkg.tap)));
+                continue;
+            }
+            let name = if pkg.is_cask {
+                format!("cask:{}", pkg.full_name())
+            } else {
+                pkg.full_name()
+            };
+            if let Err(e) = super::tap::prepare_full_names(installer, &[name]).await {
+                kept.push((pkg.full_name(), e.to_string()));
+                continue;
+            }
+        }
+        if pkg.is_cask {
+            ready.1.push(pkg);
+        } else {
+            ready.0.push(pkg);
+        }
+    }
+    if !kept.is_empty() {
+        ui.note("Left with Homebrew:").map_err(ui_error)?;
+        for (name, why) in kept {
+            ui.bullet(format!("{name}: {why}")).map_err(ui_error)?;
+        }
+    }
+    Ok(ready)
 }
 
 /// Restart the migrated formulae's running Homebrew services with
@@ -406,7 +493,13 @@ fn check_install_status(
     let installed_names: std::collections::HashSet<String> =
         installed_kegs.into_iter().map(|k| k.name).collect();
     for name in formula_names {
-        if !installed_names.contains(name) {
+        // One from another tap must be the one from that tap.
+        let installed = if name.contains('/') {
+            installer.get_installed_by_full_name(name).is_some()
+        } else {
+            installed_names.contains(name)
+        };
+        if !installed {
             failed_installed.push(name.clone());
         } else {
             successfully_installed.push(name.clone());

@@ -1,7 +1,8 @@
 //! What Homebrew has installed, read through its own commands, for
-//! `nb migrate`: `brew info --json=v2 --installed` and `brew services list
-//! --json`.
+//! `nb migrate`: `brew info --json=v2 --installed`, `brew tap-info --json
+//! --installed` and `brew services list --json`.
 
+use std::collections::BTreeMap;
 use std::process::Command;
 
 use nb_core::Error;
@@ -19,6 +20,23 @@ pub struct HomebrewPackage {
     pub on_request: bool,
 }
 
+impl HomebrewPackage {
+    /// From a tap other than homebrew/core and homebrew/cask.
+    pub fn from_other_tap(&self) -> bool {
+        !matches!(self.tap.as_str(), "homebrew/core" | "homebrew/cask")
+    }
+
+    /// `user/repo/name` for one from another tap, as nb is asked for it;
+    /// otherwise the name.
+    pub fn full_name(&self) -> String {
+        if self.from_other_tap() {
+            format!("{}/{}", self.tap, self.name)
+        } else {
+            self.name.clone()
+        }
+    }
+}
+
 /// What `nb migrate` can and cannot take over.
 #[derive(Debug, Default, PartialEq, Eq)]
 pub struct HomebrewMigrationPackages {
@@ -32,6 +50,9 @@ pub struct HomebrewMigrationPackages {
     pub non_core_casks: Vec<HomebrewPackage>,
     /// Formulae whose Homebrew service is started.
     pub services: Vec<String>,
+    /// The taps Homebrew fetches from somewhere other than GitHub's
+    /// `user/homebrew-repo`, and where from.
+    pub tap_remotes: BTreeMap<String, String>,
 }
 
 /// The formulae and casks in `brew info --json=v2 --installed`.
@@ -82,6 +103,21 @@ pub fn parse_started_services(json: &Value) -> Vec<String> {
         .collect()
 }
 
+/// The taps in `brew tap-info --json --installed` with a custom remote,
+/// and that remote.
+pub fn parse_custom_remotes(json: &Value) -> BTreeMap<String, String> {
+    json.as_array()
+        .into_iter()
+        .flatten()
+        .filter(|tap| tap["custom_remote"].as_bool() == Some(true))
+        .filter_map(|tap| {
+            let name = tap["name"].as_str()?;
+            let remote = tap["remote"].as_str().filter(|r| !r.is_empty())?;
+            Some((name.to_string(), remote.to_string()))
+        })
+        .collect()
+}
+
 /// Sort what Homebrew has into what nb can take over.
 pub fn categorize_packages(
     packages: Vec<HomebrewPackage>,
@@ -127,7 +163,12 @@ pub fn get_homebrew_packages() -> Result<HomebrewMigrationPackages, Error> {
     let services = brew_json(&["services", "list", "--json"])
         .map(|json| parse_started_services(&json))
         .unwrap_or_default();
-    Ok(categorize_packages(parse_installed(&installed), services))
+    let mut sorted = categorize_packages(parse_installed(&installed), services);
+    // Without it, each tap is fetched from GitHub as `nb tap` would.
+    sorted.tap_remotes = brew_json(&["tap-info", "--json", "--installed"])
+        .map(|json| parse_custom_remotes(&json))
+        .unwrap_or_default();
+    Ok(sorted)
 }
 
 #[cfg(test)]
@@ -167,5 +208,37 @@ mod tests {
         assert_eq!(names(&sorted.casks), ["font-0xproto"]);
         assert_eq!(names(&sorted.non_core_casks), ["microsoft-git"]);
         assert_eq!(sorted.services, ["redis"]);
+        assert_eq!(sorted.formulas[0].full_name(), "jq");
+        assert_eq!(
+            sorted.non_core_formulas[0].full_name(),
+            "hashicorp/tap/terraform"
+        );
+        assert_eq!(sorted.casks[0].full_name(), "font-0xproto");
+        assert_eq!(
+            sorted.non_core_casks[0].full_name(),
+            "microsoft/git/microsoft-git"
+        );
+    }
+
+    #[test]
+    fn keeps_the_remotes_of_taps_not_on_github() {
+        // Shaped like `brew tap-info --json --installed`.
+        let json: Value = serde_json::from_str(
+            r#"[
+              {"name": "hashicorp/tap", "installed": true,
+               "remote": "https://github.com/hashicorp/homebrew-tap", "custom_remote": false},
+              {"name": "me/tools", "installed": true,
+               "remote": "https://gitlab.com/me/homebrew-tools.git", "custom_remote": true}
+            ]"#,
+        )
+        .unwrap();
+        let remotes = parse_custom_remotes(&json);
+        assert_eq!(
+            remotes.into_iter().collect::<Vec<_>>(),
+            [(
+                "me/tools".to_string(),
+                "https://gitlab.com/me/homebrew-tools.git".to_string()
+            )]
+        );
     }
 }
