@@ -297,10 +297,11 @@ impl Installer {
 
     /// Select a bottle that can be poured into this prefix.
     ///
-    /// On macOS, bottles pinned to a shorter Cellar than ours (Intel bottles
-    /// built for `/usr/local`) have hardcoded paths that can't be rewritten,
-    /// so they're treated as unavailable and the formula is built from source
-    /// instead, as Homebrew does for a non-default prefix.
+    /// Bottles pinned to a shorter Cellar than ours (Intel bottles built for
+    /// `/usr/local`, Linux ones for `/home/linuxbrew/.linuxbrew`) have
+    /// hardcoded paths that can't be rewritten, so they're treated as
+    /// unavailable and the formula is built from source instead, as Homebrew
+    /// does for a non-default prefix.
     fn select_pourable_bottle(&self, formula: &Formula) -> Result<SelectedBottle, Error> {
         let bottle = select_bottle(formula)?;
         if formula.pour_bottle_only_if.as_deref() == Some("default_prefix")
@@ -314,7 +315,7 @@ impl Installer {
                 name: formula.name.clone(),
             });
         }
-        if cfg!(target_os = "macos") && !bottle.is_pourable_into(&self.prefix) {
+        if !bottle.is_pourable_into(&self.prefix) {
             warn!(
                 formula = %formula.name,
                 cellar = bottle.cellar.as_deref().unwrap_or_default(),

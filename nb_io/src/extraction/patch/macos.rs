@@ -24,7 +24,7 @@ use regex::Regex;
 use tracing::warn;
 
 use super::macho::{self, MachoError, PathKind, UnfitChange};
-use super::text;
+use super::text::{self, has_paths_under, replace_prefix_in_place};
 
 /// Whether `path` is a Mach-O file, judging by its magic number.
 pub(crate) fn is_macho(path: &Path) -> bool {
@@ -169,37 +169,6 @@ enum BinaryOutcome {
     /// The file was written and may need signing; its mode is restored once
     /// signing is done.
     Changed { writable: Writable, sign: bool },
-}
-
-/// Replace `old` with `new` wherever it starts a path in `contents`: it is
-/// followed by the end of the data, a NUL, a `/` or a `:`. A shorter `new`
-/// is padded with `/` to keep the file layout, as Homebrew does, so the rest
-/// of the path is still reachable. Returns the byte ranges that changed.
-fn replace_prefix_in_place(contents: &mut [u8], old: &[u8], new: &[u8]) -> Vec<Range<usize>> {
-    debug_assert!(new.len() <= old.len());
-    let finder = memmem::Finder::new(old);
-    let mut ranges = Vec::new();
-    let mut from = 0;
-    while let Some(found) = finder.find(&contents[from..]) {
-        let start = from + found;
-        let end = start + old.len();
-        let boundary = matches!(contents.get(end), None | Some(0) | Some(b'/') | Some(b':'));
-        if boundary {
-            contents[start..start + new.len()].copy_from_slice(new);
-            contents[start + new.len()..end].fill(b'/');
-            ranges.push(start..end);
-            from = end;
-        } else {
-            from = start + 1;
-        }
-    }
-    ranges
-}
-
-/// Whether `contents` has a path under `prefix` that could not be rewritten.
-fn has_paths_under(contents: &[u8], prefix: &[u8]) -> bool {
-    memmem::find_iter(contents, prefix)
-        .any(|start| contents.get(start + prefix.len()) == Some(&b'/'))
 }
 
 /// Rewrite `build_prefix` paths and Mach-O load paths in one binary file,
@@ -762,20 +731,6 @@ mod tests {
         let metadata = fs::metadata(&test_file).unwrap();
         assert_eq!(metadata.permissions().mode() & 0o777, 0o444);
         assert_eq!(metadata.modified().unwrap(), before);
-    }
-
-    #[test]
-    fn replace_prefix_in_place_only_matches_whole_path_components() {
-        let mut data =
-            b"/opt/homebrew/lib\0/opt/homebrewery\0/opt/homebrew:/x\0/opt/homebrew".to_vec();
-
-        let ranges = replace_prefix_in_place(&mut data, b"/opt/homebrew", b"/opt/nb");
-
-        assert_eq!(ranges.len(), 3);
-        assert_eq!(
-            data,
-            b"/opt/nb///////lib\0/opt/homebrewery\0/opt/nb//////:/x\0/opt/nb//////".to_vec()
-        );
     }
 
     #[test]

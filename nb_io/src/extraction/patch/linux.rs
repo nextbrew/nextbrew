@@ -23,6 +23,7 @@ pub fn patch_placeholders(
 ) -> Result<(), Error> {
     patch_elf_placeholders(keg_path, prefix_dir)?;
     patch_text_placeholders(keg_path, prefix_dir)?;
+    patch_binary_prefixes(keg_path, prefix_dir);
     Ok(())
 }
 
@@ -230,25 +231,24 @@ fn patch_elf_placeholders(keg_path: &Path, prefix_dir: &Path) -> Result<(), Erro
             let page_size = elf.get_page_size();
             let _ = elf.set_page_size(page_size);
 
-            // RPATH
+            // RPATH, only where there is one, as Homebrew's `change_rpath!`:
+            // adding one to a static-pie executable (glibc's ldconfig) breaks
+            // its self-relocation.
+            let mut changed = false;
             let old_rpaths = elf.get_rpath();
-            let mut new_rpaths: Vec<String> = if old_rpaths.is_empty() {
-                Vec::new()
-            } else {
-                old_rpaths
+            if !old_rpaths.is_empty() {
+                let mut new_rpaths: Vec<String> = old_rpaths
                     .iter()
                     .map(|r| rewrite_homebrew_prefixes(r, prefix_dir))
                     .filter(|r| r.starts_with(&new_prefix) || r.starts_with("$ORIGIN"))
-                    .collect()
-            };
-
-            if !new_rpaths.contains(&lib_path) {
-                new_rpaths.push(lib_path.clone());
-            }
-
-            let new_rpath_str = new_rpaths.join(":");
-            if !new_rpath_str.is_empty() {
-                let _ = elf.set_runpath(&new_rpath_str);
+                    .collect();
+                if !new_rpaths.contains(&lib_path) {
+                    new_rpaths.push(lib_path.clone());
+                }
+                if new_rpaths != old_rpaths {
+                    elf.set_runpath(new_rpaths.join(":"))?;
+                    changed = true;
+                }
             }
 
             // Interpreter
@@ -275,8 +275,14 @@ fn patch_elf_placeholders(keg_path: &Path, prefix_dir: &Path) -> Result<(), Erro
 
                 if let Some(target_path) = target_interp_path {
                     let target_str = target_path.to_string_lossy();
-                    let _ = elf.set_interpreter(&target_str);
+                    if target_str != current_interp_str {
+                        elf.set_interpreter(&target_str)?;
+                        changed = true;
+                    }
                 }
+            }
+            if !changed {
+                return Ok(());
             }
 
             // Atomic write
@@ -348,6 +354,50 @@ fn patch_text_placeholders(keg_path: &Path, prefix_dir: &Path) -> Result<(), Err
     Ok(())
 }
 
+/// Rewrite the Linux Homebrew prefix in place in binary files, static ELF
+/// executables included: bottles pinned to its Cellar hardcode it. The
+/// planner does not pour those into a longer prefix, so only a relocatable
+/// bottle's stray reference can be left behind.
+fn patch_binary_prefixes(keg_path: &Path, prefix_dir: &Path) {
+    let old = LINUX_HOMEBREW_PREFIX.as_bytes();
+    let new = prefix_dir.as_os_str().as_encoded_bytes();
+    if old == new {
+        return;
+    }
+    let files: Vec<PathBuf> = walkdir::WalkDir::new(keg_path)
+        .follow_links(false)
+        .into_iter()
+        .filter_map(|e| e.ok())
+        .filter(|e| e.file_type().is_file())
+        .map(|e| e.into_path())
+        .collect();
+    files.par_iter().for_each(|path| {
+        let result = (|| -> std::io::Result<()> {
+            if !text::is_binary(path)? {
+                return Ok(());
+            }
+            let mut content = fs::read(path)?;
+            if new.len() > old.len() {
+                if text::has_paths_under(&content, old) {
+                    warn!(
+                        path = %path.display(),
+                        "binary has paths under {LINUX_HOMEBREW_PREFIX} that do not fit in {}",
+                        prefix_dir.display()
+                    );
+                }
+                return Ok(());
+            }
+            if !text::replace_prefix_in_place(&mut content, old, new).is_empty() {
+                text::write_preserving_mode(path, &content)?;
+            }
+            Ok(())
+        })();
+        if let Err(e) = result {
+            warn!(path = %path.display(), error = %e, "failed to patch binary file");
+        }
+    });
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -376,6 +426,29 @@ mod tests {
         } else {
             None
         }
+    }
+
+    #[test]
+    #[cfg(target_os = "linux")]
+    fn binaries_get_the_prefix_in_place_when_it_fits() {
+        let tmp = TempDir::new().unwrap();
+        let keg = tmp.path().join("keg");
+        fs::create_dir_all(&keg).unwrap();
+        let data = b"\x7fELF\0/home/linuxbrew/.linuxbrew/Cellar/glibc/2.39/share/i18n\0".to_vec();
+        fs::write(keg.join("localedef"), &data).unwrap();
+
+        patch_binary_prefixes(&keg, Path::new("/opt/nb"));
+        let patched = fs::read(keg.join("localedef")).unwrap();
+        assert_eq!(patched.len(), data.len());
+        assert!(patched.starts_with(b"\x7fELF\0/opt/nb////////////////////Cellar/glibc/"));
+
+        // A longer prefix is left alone.
+        fs::write(keg.join("localedef"), &data).unwrap();
+        patch_binary_prefixes(
+            &keg,
+            Path::new("/home/someone/.local/share/nextbrew/prefix"),
+        );
+        assert_eq!(fs::read(keg.join("localedef")).unwrap(), data);
     }
 
     #[test]
