@@ -12,5 +12,4 @@ pub use formula::{
     current_platform_tag, formula_token, resolve_closure, select_bottle,
 };
 
-#[cfg(target_os = "macos")]
 pub use formula::macos_major_version;

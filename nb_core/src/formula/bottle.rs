@@ -112,6 +112,11 @@ pub fn macos_major_version() -> Option<u32> {
     })
 }
 
+#[cfg(not(target_os = "macos"))]
+pub fn macos_major_version() -> Option<u32> {
+    None
+}
+
 fn codename_for_major(major: u32) -> Option<&'static str> {
     match major {
         27 => Some("golden_gate"),
