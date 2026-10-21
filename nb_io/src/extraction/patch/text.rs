@@ -5,8 +5,10 @@ use std::io::{self, Read};
 use std::ops::Range;
 use std::os::unix::fs::PermissionsExt;
 use std::path::Path;
+use std::sync::OnceLock;
 
 use memchr::memmem;
+use regex::bytes::Regex;
 
 use super::phar;
 
@@ -44,6 +46,9 @@ pub(crate) fn rewrite_text(path: &Path, replacements: &[(&str, &str)]) -> io::Re
     if let Some(resigned) = phar::resign(&content) {
         content = resigned;
     }
+    if let Some(recounted) = recount_php_strings(&content) {
+        content = recounted;
+    }
 
     write_preserving_mode(path, &content)?;
     Ok(true)
@@ -77,6 +82,32 @@ fn replace_all(haystack: &[u8], from: &[u8], to: &[u8]) -> Option<Vec<u8>> {
     }
     out.extend_from_slice(rest);
     Some(out)
+}
+
+/// PHP's `serialize` records each string's byte length (`s:67:"..."`), and
+/// PEAR keeps its config and registry that way, sized for the Cellar the
+/// bottle was built for. Recount the strings a new prefix resized.
+// ponytail: only files that start like PEAR's (`a:` or `#PEAR_Config`), and
+// only path strings with no `"` in them; a real unserializer if more turn up.
+fn recount_php_strings(content: &[u8]) -> Option<Vec<u8>> {
+    static STRING: OnceLock<Regex> = OnceLock::new();
+    if !(content.starts_with(b"a:") || content.starts_with(b"#PEAR_Config")) {
+        return None;
+    }
+    let string = STRING.get_or_init(|| Regex::new(r#"s:(\d+):"([^"]*/[^"]*)";"#).unwrap());
+    let mut changed = false;
+    let out = string.replace_all(content, |c: &regex::bytes::Captures| {
+        let value = &c[2];
+        if std::str::from_utf8(&c[1]).ok().and_then(|n| n.parse().ok()) == Some(value.len()) {
+            return c[0].to_vec();
+        }
+        changed = true;
+        let mut s = format!("s:{}:\"", value.len()).into_bytes();
+        s.extend_from_slice(value);
+        s.extend_from_slice(b"\";");
+        s
+    });
+    changed.then(|| out.into_owned())
 }
 
 pub(crate) fn write_preserving_mode(path: &Path, content: &[u8]) -> io::Result<()> {
@@ -228,6 +259,29 @@ mod tests {
         let file = tmp.path().join("README");
         fs::write(&file, "nothing to see\n").unwrap();
         assert!(!rewrite_text_file(&file, PLACEHOLDERS).unwrap());
+    }
+
+    #[test]
+    fn recounts_pear_config_strings() {
+        let tmp = TempDir::new().unwrap();
+        let file = tmp.path().join("pear.conf");
+        let old = "/home/linuxbrew/.linuxbrew/share/pear";
+        let conf = format!(
+            "#PEAR_Config 0.9\na:2:{{s:7:\"php_dir\";s:{}:\"{}\";s:3:\"bin\";s:4:\"/x\"y\";}}",
+            old.len(),
+            old.replace("/home/linuxbrew/.linuxbrew", "@@HOMEBREW_PREFIX@@")
+        );
+        fs::write(&file, conf).unwrap();
+
+        assert!(rewrite_text_file(&file, PLACEHOLDERS).unwrap());
+        let new = "/opt/nextbrew/share/pear";
+        assert_eq!(
+            fs::read_to_string(&file).unwrap(),
+            format!(
+                "#PEAR_Config 0.9\na:2:{{s:7:\"php_dir\";s:{}:\"{new}\";s:3:\"bin\";s:4:\"/x\"y\";}}",
+                new.len()
+            )
+        );
     }
 
     #[test]
