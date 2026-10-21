@@ -84,25 +84,30 @@ impl Installer {
             Some(service) => ServiceSpec::from_api(service, &places)?,
             None => None,
         };
+        let (os, legacy, ext) = if cfg!(target_os = "macos") {
+            ("macos", "homebrew.mxcl", "plist")
+        } else {
+            ("linux", "homebrew", "service")
+        };
         let plist_name = formula
             .service
             .as_ref()
-            .and_then(|service| service["name"]["macos"].as_str())
+            .and_then(|service| service["name"][os].as_str())
             .map(str::to_string)
             .unwrap_or_else(|| format!("sh.brew.{}", formula.name));
-        // Older bottles ship the plist under Homebrew's legacy name.
-        let names = [plist_name, format!("homebrew.mxcl.{}", formula.name)];
+        // Older bottles ship the file under Homebrew's legacy name.
+        let names = [plist_name, format!("{legacy}.{}", formula.name)];
         let found = keg.as_ref().and_then(|keg| {
             names
                 .iter()
-                .map(|name| format!("{name}.plist"))
+                .map(|name| format!("{name}.{ext}"))
                 .find(|file| keg.join(file).is_file())
                 .map(|file| (keg.join(&file), file))
         });
         let opt = self.prefix.join("opt").join(formula_token(&formula.name));
         let source_file = match &found {
             Some((_, file)) => opt.join(file),
-            None => opt.join(format!("{}.plist", names[0])),
+            None => opt.join(format!("{}.{ext}", names[0])),
         };
         let keg_file = found.map(|(path, _)| path);
         Ok(ServiceFormula {

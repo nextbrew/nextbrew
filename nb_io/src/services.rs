@@ -729,6 +729,8 @@ pub struct JobStatus {
     pub found: bool,
     /// `launchctl print` output rather than `launchctl list`'s.
     printed: bool,
+    /// `systemctl status` output.
+    systemd: bool,
 }
 
 impl JobStatus {
@@ -742,12 +744,29 @@ impl JobStatus {
     }
 
     pub fn pid(&self) -> Option<i64> {
+        if self.systemd {
+            // Homebrew's `\((?!code=)`, without lookahead.
+            let found = regex::Regex::new(r"Main PID: ([0-9]*) \((code=)?")
+                .ok()?
+                .captures(&self.output)?;
+            return match found.get(2) {
+                Some(_) => None,
+                None => Some(found[1].parse().unwrap_or(0)),
+            };
+        }
         self.capture(r"pid = ([0-9]+)", r#""PID" = ([0-9]*);"#)?
             .parse()
             .ok()
     }
 
     pub fn exit_code(&self) -> Option<i64> {
+        if self.systemd {
+            let found = regex::Regex::new(r"\(code=exited, status=([0-9]*)\)|\(dead\)")
+                .ok()?
+                .captures(&self.output)?;
+            // `(dead)` is Ruby's `nil.to_i`.
+            return Some(found.get(1).map_or(0, |n| n.as_str().parse().unwrap_or(0)));
+        }
         self.capture(
             r"last exit code = ([0-9]+)",
             r#""LastExitStatus" = ([0-9]*);"#,
@@ -757,6 +776,12 @@ impl JobStatus {
     }
 
     pub fn loaded_file(&self) -> Option<String> {
+        if self.systemd {
+            // Homebrew's greedy `\((.*);` also takes `; enabled`; only the
+            // path is meant.
+            let loaded = r"Loaded: .*? \(([^;]*);";
+            return self.capture(loaded, loaded);
+        }
         if !self.printed {
             return None;
         }
@@ -774,6 +799,8 @@ pub struct Launchd {
     uid: u32,
     root: bool,
     home: PathBuf,
+    /// systemd instead of launchd, as on Linux.
+    pub systemd: bool,
 }
 
 impl Launchd {
@@ -784,6 +811,7 @@ impl Launchd {
             uid,
             root: euid == 0,
             home,
+            systemd: cfg!(target_os = "linux"),
         }
     }
 
@@ -793,11 +821,17 @@ impl Launchd {
 
     /// `/Library/LaunchDaemons`, where services that start at boot live.
     pub fn boot_path(&self) -> PathBuf {
+        if self.systemd {
+            return PathBuf::from("/usr/lib/systemd/system");
+        }
         PathBuf::from("/Library/LaunchDaemons")
     }
 
     /// `~/Library/LaunchAgents`, where services that start at login live.
     pub fn user_path(&self) -> PathBuf {
+        if self.systemd {
+            return self.home.join(".config/systemd/user");
+        }
         self.home.join("Library/LaunchAgents")
     }
 
@@ -855,6 +889,18 @@ impl Launchd {
     /// `System.launchctl_find_service`: `launchctl print` in each candidate
     /// domain, then `launchctl list`.
     pub fn find(&self, label: &str) -> JobStatus {
+        if self.systemd {
+            // Homebrew's loaded_service_names and status_output_success_type.
+            let (output, ok) = self.systemctl(&["status", &format!("{label}.service")]);
+            let found = (ok && !output.is_empty())
+                || self.systemctl(&["status", &format!("{label}.timer")]).1;
+            return JobStatus {
+                output,
+                found,
+                printed: false,
+                systemd: true,
+            };
+        }
         for domain in self.candidate_domains() {
             let (output, ok) = launchctl(&["print", &format!("{domain}/{label}")]);
             if ok && !output.is_empty() {
@@ -862,6 +908,7 @@ impl Launchd {
                     output,
                     found: true,
                     printed: true,
+                    systemd: false,
                 };
             }
         }
@@ -870,11 +917,23 @@ impl Launchd {
             found: ok && !output.is_empty(),
             output,
             printed: false,
+            systemd: false,
         }
     }
 
     /// Every job label `launchctl list` shows that nextbrew registered.
     pub fn listed_labels(&self) -> Vec<String> {
+        if self.systemd {
+            let args = ["list-units", "--type=service", "--state=running"];
+            return self
+                .systemctl(&[&args[..], &["--no-pager", "--no-legend"]].concat())
+                .0
+                .split_whitespace()
+                .filter_map(|unit| unit.strip_suffix(".service"))
+                .filter(|label| label.starts_with(LABEL_PREFIX))
+                .map(str::to_string)
+                .collect();
+        }
         launchctl(&["list"])
             .0
             .lines()
@@ -882,6 +941,23 @@ impl Launchd {
             .filter(|label| label.starts_with(LABEL_PREFIX))
             .map(str::to_string)
             .collect()
+    }
+}
+
+impl Launchd {
+    /// Run `systemctl --user` (`--system` as root), returning its trimmed
+    /// standard output and success.
+    pub fn systemctl(&self, args: &[&str]) -> (String, bool) {
+        let scope = if self.root { "--system" } else { "--user" };
+        match Command::new("systemctl").arg(scope).args(args).output() {
+            Ok(output) => (
+                String::from_utf8_lossy(&output.stdout)
+                    .trim_end()
+                    .to_string(),
+                output.status.success(),
+            ),
+            Err(_) => (String::new(), false),
+        }
     }
 }
 
@@ -954,6 +1030,29 @@ mod tests {
         for (name, service, expected) in cases {
             assert_eq!(plist_of(service, name), expected, "{name}");
         }
+    }
+
+    #[test]
+    fn systemctl_status_is_read_like_homebrew() {
+        let status = |output: &str| JobStatus {
+            output: output.to_string(),
+            found: true,
+            printed: false,
+            systemd: true,
+        };
+        let running = status(
+            "Loaded: loaded (/home/a/.config/systemd/user/dev.nextbrew.redis.service; enabled; preset: enabled)\n     Main PID: 42 (redis-server)",
+        );
+        assert_eq!(running.pid(), Some(42));
+        assert_eq!(
+            running.loaded_file().as_deref(),
+            Some("/home/a/.config/systemd/user/dev.nextbrew.redis.service")
+        );
+        let exited = status(
+            "Process: 7 ExecStart=x (code=exited, status=3)\n Main PID: 7 (code=exited, status=3)",
+        );
+        assert_eq!((exited.pid(), exited.exit_code()), (None, Some(3)));
+        assert_eq!(status("Active: inactive (dead)").exit_code(), Some(0));
     }
 
     // Expected text follows Homebrew's to_systemd_unit/to_systemd_timer templates.

@@ -1,4 +1,4 @@
-//! `nb services`: `brew services` for launchd, with its messages. Jobs are
+//! `nb services`: `brew services` for launchd and systemd, with its messages. Jobs are
 //! labelled `dev.nextbrew.<formula>`, so Homebrew's own services are never
 //! touched.
 
@@ -55,7 +55,16 @@ impl Service<'_> {
     }
 
     fn file_in(&self, dir: &Path) -> PathBuf {
-        dir.join(format!("{}.plist", self.label))
+        let ext = if self.launchd.systemd {
+            "service"
+        } else {
+            "plist"
+        };
+        dir.join(format!("{}.{ext}", self.label))
+    }
+
+    fn timer_dest(&self) -> PathBuf {
+        self.dest().with_extension("timer")
     }
 
     fn dest(&self) -> PathBuf {
@@ -124,13 +133,23 @@ impl Service<'_> {
     /// package's own file under nextbrew's label.
     fn contents(&self) -> Result<String, nb_core::Error> {
         if let Some(spec) = &self.formula.spec {
-            return Ok(spec.to_plist(&self.label));
+            return Ok(if self.launchd.systemd {
+                spec.to_systemd_unit(self.name())
+            } else {
+                spec.to_plist(&self.label)
+            });
         }
         self.formula
             .keg_file
             .as_ref()
             .and_then(|file| std::fs::read_to_string(file).ok())
-            .and_then(|contents| nb_io::services::relabel_plist(&contents, &self.label))
+            .and_then(|contents| {
+                if self.launchd.systemd {
+                    Some(contents)
+                } else {
+                    nb_io::services::relabel_plist(&contents, &self.label)
+                }
+            })
             .ok_or_else(|| {
                 usage(format!(
                     "Formula `{}` has not implemented #plist, #service or provided a locatable service file.",
@@ -179,8 +198,8 @@ pub async fn execute(
     command: Option<ServicesCommands>,
     verbose: bool,
 ) -> Result<(), nb_core::Error> {
-    if !cfg!(target_os = "macos") {
-        return Err(usage("`nb services` is supported only on macOS for now."));
+    if !cfg!(any(target_os = "macos", target_os = "linux")) {
+        return Err(usage("`nb services` is supported only on macOS and Linux."));
     }
     let launchd = Launchd::current(home()?);
     let command = command.unwrap_or(ServicesCommands::List { json: false });
@@ -371,11 +390,45 @@ fn install_service_file(service: &Service, file: Option<&Path>) -> Result<(), nb
     std::fs::set_permissions(&dest, std::fs::Permissions::from_mode(0o644)).map_err(
         nb_core::Error::file("failed to set the service file's permissions"),
     )?;
-    Ok(())
+    if !service.launchd.systemd {
+        return Ok(());
+    }
+    if let Some(spec) = service.formula.spec.as_ref().filter(|spec| spec.timed()) {
+        let timer = service.timer_dest();
+        std::fs::write(
+            &timer,
+            spec.to_systemd_timer(service.name(), &service.label),
+        )
+        .map_err(nb_core::Error::file("failed to write the timer file"))?;
+        std::fs::set_permissions(&timer, std::fs::Permissions::from_mode(0o644)).map_err(
+            nb_core::Error::file("failed to set the timer file's permissions"),
+        )?;
+    }
+    systemctl(service.launchd, &["daemon-reload"])
 }
 
+/// `System::Systemctl.run`: fail like `safe_system` does.
+fn systemctl(launchd: &Launchd, args: &[&str]) -> Result<(), nb_core::Error> {
+    if launchd.systemctl(args).1 {
+        return Ok(());
+    }
+    Err(usage(format!(
+        "Failure while executing; `systemctl {}` failed",
+        args.join(" ")
+    )))
+}
+
+/// Remove the unit files, disabling the units that are still enabled.
 fn remove_service_files(service: &Service) {
-    let _ = std::fs::remove_file(service.dest());
+    for file in [service.dest(), service.timer_dest()] {
+        if service.launchd.systemd
+            && file.exists()
+            && let Some(unit) = file.file_name().and_then(|name| name.to_str())
+        {
+            service.launchd.systemctl(&["disable", unit]);
+        }
+        let _ = std::fs::remove_file(file);
+    }
 }
 
 /// `take_root_ownership?`: a service started as root runs from paths only
@@ -414,13 +467,23 @@ fn take_root_ownership(service: &Service) -> Result<(), nb_core::Error> {
         .iter()
         .map(|path| path.display().to_string())
         .collect();
+    let owner = if service.launchd.systemd {
+        "root"
+    } else {
+        "admin"
+    };
     opoo(format!(
-        "Taking root:admin ownership of some {} paths:\n  {}\nThis will require manual removal of these paths using `sudo rm` on\nnb upgrade/reinstall/uninstall.",
+        "Taking root:{owner} ownership of some {} paths:\n  {}\nThis will require manual removal of these paths using `sudo rm` on\nnb upgrade/reinstall/uninstall.",
         service.name(),
         listed.join("\n  ")
     ));
-    let status = std::process::Command::new("/usr/sbin/chown")
-        .arg("root:admin")
+    let owner = if service.launchd.systemd {
+        "root:root"
+    } else {
+        "root:admin"
+    };
+    let status = std::process::Command::new("chown")
+        .arg(owner)
         .arg(&dest)
         .args(&paths)
         .status()
@@ -438,6 +501,9 @@ fn take_root_ownership(service: &Service) -> Result<(), nb_core::Error> {
 }
 
 fn first_program_argument(plist: &str) -> Option<String> {
+    if let Some(exec) = plist.split("\nExecStart=\"").nth(1) {
+        return exec.split('"').next().map(str::to_string);
+    }
     let key = plist
         .find("<key>ProgramArguments</key>")
         .or_else(|| plist.find("<key>Program</key>"))?;
@@ -465,10 +531,35 @@ fn load(
             service.name()
         ));
     }
+    if launchd.systemd {
+        // systemd loads units by location, so `run` registers one too.
+        if !service.dest().exists() {
+            install_service_file(service, file)?;
+        }
+    }
     if let Some(spec) = &service.formula.spec {
         for dir in spec.path_dirs() {
             let _ = std::fs::create_dir_all(dir);
         }
+    }
+    if launchd.systemd {
+        let timer = format!("{}.timer", service.label);
+        systemctl(launchd, &["start", &service.label])?;
+        if service.timed() {
+            systemctl(launchd, &["start", &timer])?;
+            if enable {
+                systemctl(launchd, &["enable", &timer])?;
+            }
+        } else if enable {
+            systemctl(launchd, &["enable", &service.label])?;
+        }
+        let done = if enable { "started" } else { "ran" };
+        ohai(format!(
+            "Successfully {done} `{}` (label: {})",
+            service.name(),
+            service.label
+        ));
+        return Ok(());
     }
     let (domain, warning) = launchd.domain_target();
     if let Some(warning) = warning
@@ -544,7 +635,7 @@ fn stop(
                 )));
             }
             let target = format!("{}/{}", launchd.domain_target().0, service.label);
-            if launchctl(&["bootout", &target]).1 {
+            if !launchd.systemd && launchctl(&["bootout", &target]).1 {
                 ohai(format!(
                     "Successfully stopped `{}` (label: {})",
                     service.name(),
@@ -562,7 +653,26 @@ fn stop(
             println!("Stopping `{}`... (might take a while)", service.name());
         }
         let label = &service.label;
+        if launchd.systemd {
+            let no_block: &[&str] = if no_wait { &["--no-block"] } else { &[] };
+            let mut units = Vec::new();
+            if service.timed() {
+                units.push(format!("{label}.timer"));
+            }
+            units.push(label.clone());
+            for unit in &units {
+                let action: &[&str] = if keep {
+                    &["stop"]
+                } else {
+                    &["disable", "--now"]
+                };
+                launchd.systemctl(&[no_block, action, &[unit.as_str()]].concat());
+            }
+        }
         for domain in launchd.candidate_domains() {
+            if launchd.systemd {
+                break;
+            }
             if !launchd.find(label).found {
                 break;
             }
@@ -589,6 +699,9 @@ fn stop(
         let still_loaded = launchd.find(label).found;
         if !keep && !still_loaded {
             remove_service_files(service);
+            if launchd.systemd {
+                launchd.systemctl(&["daemon-reload"]);
+            }
         }
         if still_loaded {
             opoo(format!(
@@ -616,7 +729,11 @@ fn kill(targets: &[Service]) {
             );
         } else {
             println!("Killing `{}`... (might take a while)", service.name());
-            launchctl(&["stop", &service.label]);
+            if service.launchd.systemd {
+                service.launchd.systemctl(&["stop", &service.label]);
+            } else {
+                launchctl(&["stop", &service.label]);
+            }
             if service.status().running() {
                 opoo(format!(
                     "Unable to kill `{}` (label: {})",
@@ -951,13 +1068,22 @@ async fn cleanup(installer: &nb_io::Installer, launchd: &Launchd) -> Result<(), 
         for entry in entries.filter_map(Result::ok) {
             let file = entry.path();
             let name = entry.file_name().to_string_lossy().into_owned();
-            let Some(stem) = name.strip_suffix(".plist") else {
+            let suffixes: &[&str] = if launchd.systemd {
+                &[".service", ".timer"]
+            } else {
+                &[".plist"]
+            };
+            let Some(stem) = suffixes.iter().find_map(|suffix| name.strip_suffix(suffix)) else {
                 continue;
             };
             if !stem.starts_with(LABEL_PREFIX) {
                 continue;
             }
-            let job = nb_io::services::plist_label(&file).unwrap_or_else(|| stem.to_string());
+            let job = if launchd.systemd {
+                stem.to_string()
+            } else {
+                nb_io::services::plist_label(&file).unwrap_or_else(|| stem.to_string())
+            };
             if running.contains(&job) || launchd.find(&job).found {
                 continue;
             }
