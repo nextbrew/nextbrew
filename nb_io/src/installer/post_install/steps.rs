@@ -1132,23 +1132,21 @@ fn run_formula_tool(
             tool.display()
         )));
     }
-    run_tool(ctx, &tool, args, &[])
+    run_tool(ctx, &tool, args, |_| {})
 }
 
-/// Run `tool` in the post-install environment without the variables in
-/// `unset`, failing with the tail of its stderr.
+/// Run `tool` in the post-install environment, adjusted by `env`, failing
+/// with the tail of its stderr.
 fn run_tool(
     ctx: &PostInstallContext,
     tool: &Path,
     args: &[OsString],
-    unset: &[&str],
+    env: impl FnOnce(&mut Command),
 ) -> Result<(), StepError> {
     let home = isolated_home(ctx)?;
     let mut cmd = Command::new(tool);
     cmd.args(args).envs(command_env(ctx, home.as_ref()));
-    for var in unset {
-        cmd.env_remove(var);
-    }
+    env(&mut cmd);
     let output = cmd
         .output()
         .map_err(StepError::io(format!("running {}", tool.display())))?;
@@ -1170,8 +1168,14 @@ fn configure_glibc_runtime(ctx: &PostInstallContext) -> Result<(), StepError> {
     let lib = ctx.base_path(PathBase::Lib, None)?.join("locale");
     fs::create_dir_all(&lib).map_err(StepError::io(format!("creating {}", lib.display())))?;
     let localedef = ctx.base_path(PathBase::Bin, None)?.join("localedef");
+    // localedef builds its default source directory in code, where a
+    // relocated bottle's prefix cannot be rewritten; name it instead. At
+    // Homebrew's prefix this is the same directory.
+    let i18n = ctx.base_path(PathBase::Share, None)?.join("i18n");
     for locale in glibc_locales(&ctx.name, std::env::vars()) {
-        run_tool(ctx, &localedef, &localedef_args(&locale), &[])?;
+        run_tool(ctx, &localedef, &localedef_args(&locale), |cmd| {
+            cmd.env("I18NPATH", &i18n);
+        })?;
     }
     for (source, target) in [
         (
@@ -1262,19 +1266,23 @@ fn init_data_dir(
         DataDirInit::PostgresqlInitdb => {
             let locale = format!("--locale={}", locale.unwrap_or("en_US.UTF-8"));
             let args = [locale.into(), "-E".into(), "UTF-8".into(), datadir.clone()];
-            run_tool(ctx, &bin.join("initdb"), &args, &[])
+            run_tool(ctx, &bin.join("initdb"), &args, |_| {})
         }
         DataDirInit::MysqlInitialize => run_tool(
             ctx,
             &bin.join("mysqld"),
             &mysql_args("--initialize-insecure")?,
-            &["TMPDIR"],
+            |cmd| {
+                cmd.env_remove("TMPDIR");
+            },
         ),
         DataDirInit::MariadbInstallDb => run_tool(
             ctx,
             &bin.join("mysql_install_db"),
             &mysql_args("--verbose")?,
-            &["TMPDIR"],
+            |cmd| {
+                cmd.env_remove("TMPDIR");
+            },
         ),
     }
 }
