@@ -254,7 +254,7 @@ fn test_info_finds_installed_formula() {
     assert_success(&output, "nb info jq");
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(
-        stdout.contains("\nInstalled\n") && !stdout.contains("Not installed"),
+        stdout.contains("==> Installed Versions") && !stdout.contains("Not installed"),
         "stdout: {stdout}"
     );
 }
