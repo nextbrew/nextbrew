@@ -100,7 +100,7 @@ pub async fn untap(
                 });
                 continue;
             }
-            super::uninstall::execute(installer, installed, false, false, false, ui).await?;
+            super::uninstall::execute(installer, installed, false, false, false, true, ui).await?;
         }
         println!("Untapping {tap}...");
         let contents = installer.untap(&tap)?;

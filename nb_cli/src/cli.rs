@@ -180,6 +180,12 @@ pub enum Commands {
             help = "Uninstall even if other installed packages depend on these"
         )]
         ignore_dependencies: bool,
+        #[arg(
+            short,
+            long,
+            help = "Uninstall pinned formulae too, and pass over names not installed"
+        )]
+        force: bool,
     },
     /// Uninstall formulae that were only installed as dependencies and are no longer needed
     Autoremove {

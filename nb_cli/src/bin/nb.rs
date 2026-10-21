@@ -113,6 +113,7 @@ async fn run(cli: Cli) -> Result<(), nb_core::Error> {
             cask,
             zap,
             ignore_dependencies,
+            force,
         } => {
             // `--cask` names casks; `--formula` keeps names from meaning one.
             let formulas: Vec<String> = formulas
@@ -133,6 +134,7 @@ async fn run(cli: Cli) -> Result<(), nb_core::Error> {
                 all,
                 zap,
                 ignore_dependencies,
+                force,
                 &mut ui,
             )
             .await;

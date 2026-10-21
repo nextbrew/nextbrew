@@ -5,13 +5,15 @@ use console::style;
 /// `nb uninstall`. Unless `ignore_dependencies`, refuses, as `brew
 /// uninstall` does, to remove a formula another installed package needs
 /// (removing nothing), or a cask another installed cask needs (removing
-/// the formulae only).
+/// the formulae only). A pinned formula is left with an error, unless
+/// `force`, which also passes over the names not installed.
 pub async fn execute(
     installer: &mut nb_io::Installer,
     formulas: Vec<String>,
     all: bool,
     zap: bool,
     ignore_dependencies: bool,
+    force: bool,
     ui: &mut StdUi,
 ) -> Result<(), nb_core::Error> {
     let named_args = formulas.clone();
@@ -32,6 +34,9 @@ pub async fn execute(
         }
         normalized
     };
+    if force {
+        formulas.retain(|name| installer.is_installed(name));
+    }
 
     let mut refused_casks = None;
     if !all && !ignore_dependencies {
@@ -49,6 +54,21 @@ pub async fn execute(
                 message: casks.message(&named_args),
             });
         }
+    }
+    // `Uninstall.uninstall_kegs`: an error, but not a failure.
+    if !force {
+        formulas.retain(|name| {
+            let pinned = !name.starts_with("cask:")
+                && installer.get_installed(name).is_some_and(|keg| keg.pinned);
+            if pinned {
+                eprintln!(
+                    "{} {} is pinned. You must unpin it to uninstall.",
+                    style("Error:").red().bold(),
+                    installer.installed_full_name(name)
+                );
+            }
+            !pinned
+        });
     }
     if formulas.is_empty() {
         return refused_casks.map_or(Ok(()), Err);

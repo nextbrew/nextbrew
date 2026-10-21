@@ -4,6 +4,8 @@ use chrono::{DateTime, Local};
 use console::style;
 use serde_json::Value;
 
+use crate::caveats::{Places, cask_caveats, formula_caveats};
+
 /// `nb info`: a formula as `brew info` shows it, or a cask as `brew info
 /// --cask` does. `cask` (`--cask`) asks for the cask, `formula`
 /// (`--formula`) for the formula; otherwise the formula is shown, unless
@@ -172,11 +174,7 @@ async fn formula_info(installer: &nb_io::Installer, json: &Value) -> String {
         pinned: keg.pinned,
         version: keg.version.clone(),
     });
-    let places = Places {
-        prefix: installer.prefix().display().to_string(),
-        appdir: "/Applications".to_string(),
-        home: std::env::var("HOME").unwrap_or_default(),
-    };
+    let places = Places::new(installer, None);
     let tty = std::io::stdout().is_terminal();
     let is_installed = |name: &str| installer.is_installed(name.rsplit('/').next().unwrap_or(name));
 
@@ -303,7 +301,8 @@ async fn formula_info(installer: &nb_io::Installer, json: &Value) -> String {
     }
     conflicts.sort();
 
-    let caveats = formula_caveats(installer, &json, &name, &full_name, keg_only, &places).await;
+    let caveats =
+        formula_caveats(installer, &json, &name, &full_name, keg_only, &places, true).await;
     let facts = FormulaFacts {
         deprecation: deprecation(&json),
         from: formula_from_url(installer, &json, tap.as_deref()),
@@ -757,185 +756,6 @@ fn github_remote_path(remote: &str, path: &str) -> String {
     format!("{remote}/{path}")
 }
 
-/// `Caveats#caveats`: the formula's own, then why it is keg-only (and how
-/// to use it so), then how to run its service.
-async fn formula_caveats(
-    installer: &nb_io::Installer,
-    json: &Value,
-    name: &str,
-    full_name: &str,
-    keg_only: bool,
-    places: &Places,
-) -> String {
-    let mut parts = Vec::new();
-    if let Some(caveats) = json["caveats"].as_str().filter(|c| !c.is_empty()) {
-        let caveats = places
-            .expand(caveats)
-            .replace("$HOMEBREW_CELLAR", &format!("{}/Cellar", places.prefix));
-        parts.push(format!(
-            "{}\n",
-            caveats.strip_suffix('\n').unwrap_or(&caveats)
-        ));
-    }
-    let keg = installer.get_installed(name);
-    let linked = keg.is_some() && installer.is_linked(name).unwrap_or(false);
-    if keg_only && !linked {
-        let keg_path = keg.map(|keg| installer.keg_path(name, &keg.version));
-        parts.push(keg_only_text(
-            name,
-            &json["keg_only_reason"],
-            Path::new(&places.prefix),
-            keg_path.as_deref(),
-        ));
-    }
-    if let Some(service) = json.get("service").filter(|s| !s.is_null()) {
-        let home = std::path::PathBuf::from(&places.home);
-        let service_places = nb_io::services::Places {
-            prefix: installer.prefix().to_path_buf(),
-            home: home.clone(),
-        };
-        if let Ok(Some(spec)) = nb_io::services::ServiceSpec::from_api(service, &service_places) {
-            let running = nb_io::services::Launchd::current(home)
-                .find(&nb_io::services::label(name))
-                .running();
-            let sudo = if spec.requires_root() { "sudo " } else { "" };
-            let mut lines = if running {
-                vec![
-                    format!("To restart {full_name} after an upgrade:"),
-                    format!("  {sudo}nb services restart {full_name}"),
-                ]
-            } else if spec.requires_root() {
-                vec![
-                    format!("To start {full_name} now and restart at startup:"),
-                    format!("  sudo nb services start {full_name}"),
-                ]
-            } else {
-                vec![
-                    format!("To start {full_name} now and restart at login:"),
-                    format!("  nb services start {full_name}"),
-                ]
-            };
-            lines.push("Or, if you don't want/need a background service you can just run:".into());
-            lines.push(format!("  {}", spec.manual_command()));
-            parts.push(format!("{}\n", lines.join("\n")));
-        }
-    }
-    parts.join("\n")
-}
-
-/// `Caveats#keg_only_text`: why it was not linked, and for an installed
-/// keg the lines that put it on `PATH` and before compilers.
-fn keg_only_text(name: &str, reason: &Value, prefix: &Path, keg: Option<&Path>) -> String {
-    let mut text = format!(
-        "{name} is keg-only, which means it was not symlinked into {},\nbecause {}.\n",
-        prefix.display(),
-        keg_only_reason(reason)
-    );
-    let Some(keg) = keg else {
-        return text;
-    };
-    let opt = prefix.join("opt").join(name);
-    let shell = std::env::var("SHELL").ok();
-    let dir = |sub: &str| keg.join(sub).is_dir();
-    if dir("bin") || dir("sbin") {
-        text += &format!("\nIf you need to have {name} first in your PATH, run:\n");
-        for sub in ["bin", "sbin"] {
-            if dir(sub) {
-                text += &format!(
-                    "  {}\n",
-                    nb_io::installer::install::diagnostic::prepend_path_in_profile(
-                        &opt.join(sub),
-                        shell.as_deref()
-                    )
-                );
-            }
-        }
-    }
-    if dir("lib") || dir("include") {
-        text += &format!("\nFor compilers to find {name} you may need to set:\n");
-        if dir("lib") {
-            let value = format!("-L{}", opt.join("lib").display());
-            text += &format!("  {}\n", export_value("LDFLAGS", &value, shell.as_deref()));
-        }
-        if dir("include") {
-            let value = format!("-I{}", opt.join("include").display());
-            text += &format!("  {}\n", export_value("CPPFLAGS", &value, shell.as_deref()));
-        }
-        if on_path("pkgconf") && (dir("lib/pkgconfig") || dir("share/pkgconfig")) {
-            text += &format!("\nFor pkgconf to find {name} you may need to set:\n");
-            for sub in ["lib/pkgconfig", "share/pkgconfig"] {
-                if dir(sub) {
-                    let value = opt.join(sub).display().to_string();
-                    text += &format!(
-                        "  {}\n",
-                        export_value("PKG_CONFIG_PATH", &value, shell.as_deref())
-                    );
-                }
-            }
-        }
-        if on_path("cmake") && (dir("lib/cmake") || dir("share/cmake")) {
-            text += &format!("\nFor cmake to find {name} you may need to set:\n");
-        }
-    }
-    if !text.ends_with('\n') {
-        text.push('\n');
-    }
-    text
-}
-
-/// `KegOnlyReason#to_s`.
-fn keg_only_reason(reason: &Value) -> String {
-    if let Some(explanation) = reason["explanation"].as_str().filter(|e| !e.is_empty()) {
-        return explanation.trim_end().to_string();
-    }
-    match reason["reason"].as_str().unwrap_or_default() {
-        ":versioned_formula" => "this is an alternate version of another formula".to_string(),
-        ":provided_by_macos" => "macOS already provides this software and installing another version in\nparallel can cause all kinds of trouble".to_string(),
-        ":shadowed_by_macos" => "macOS provides similar software and installing this software in\nparallel can cause all kinds of trouble".to_string(),
-        other => other.trim_start_matches(':').trim_end().to_string(),
-    }
-}
-
-/// `Utils::Shell.export_value` for the shell of `$SHELL`.
-fn export_value(key: &str, value: &str, shell: Option<&str>) -> String {
-    let shell = shell
-        .and_then(|s| Path::new(s).file_name())
-        .map(|s| s.to_string_lossy().into_owned())
-        .unwrap_or_default();
-    let value = sh_quote(value);
-    match shell.as_str() {
-        "fish" => format!("set -gx {key} {value}"),
-        "csh" | "tcsh" => format!("setenv {key} {value};"),
-        _ => format!("export {key}={value}"),
-    }
-}
-
-/// `Utils::Shell.sh_quote`: unchanged when safe, else backslash-escaped.
-fn sh_quote(text: &str) -> String {
-    if text.is_empty() {
-        return "''".to_string();
-    }
-    let mut out = String::new();
-    for c in text.chars() {
-        if !(c.is_ascii_alphanumeric() || "_-.,:/@~+\n".contains(c)) {
-            out.push('\\');
-        }
-        out.push(c);
-    }
-    out
-}
-
-/// Whether `command` is an executable on `PATH`.
-fn on_path(command: &str) -> bool {
-    std::env::var_os("PATH").is_some_and(|path| {
-        std::env::split_paths(&path).any(|dir| {
-            use std::os::unix::fs::PermissionsExt;
-            std::fs::metadata(dir.join(command))
-                .is_ok_and(|meta| meta.is_file() && meta.permissions().mode() & 0o111 != 0)
-        })
-    })
-}
-
 /// `Cask::Info.get_info`.
 async fn cask_info(installer: &nb_io::Installer, json: &Value) -> String {
     let json = nb_io::installer::for_current_platform(json);
@@ -971,14 +791,7 @@ async fn cask_info(installer: &nb_io::Installer, json: &Value) -> String {
         dependencies: dependencies(installer, &json).await,
         installed,
         outdated_from,
-        places: Places {
-            prefix: installer.prefix().display().to_string(),
-            appdir: config
-                .appdir()
-                .map(|dir| dir.display().to_string())
-                .unwrap_or_else(|| "/Applications".to_string()),
-            home: std::env::var("HOME").unwrap_or_default(),
-        },
+        places: Places::new(installer, config.appdir()),
         json,
     };
     render(&facts)
@@ -992,24 +805,6 @@ struct InstalledCask {
     installed_at: i64,
     /// From homebrew/cask's API, as opposed to a tap's file.
     from_api: bool,
-}
-
-/// What the cask's placeholders stand for here.
-struct Places {
-    prefix: String,
-    appdir: String,
-    home: String,
-}
-
-impl Places {
-    /// `from_h_string_gsubs`.
-    fn expand(&self, text: &str) -> String {
-        // The prefix first: `$HOME` is the start of it.
-        text.replace("$HOMEBREW_PREFIX", &self.prefix)
-            .replace("/$HOME", &self.home)
-            .replace("$HOME", &self.home)
-            .replace("$APPDIR", &self.appdir)
-    }
 }
 
 /// `Required (n): …` and the recursive count, installed and all.
@@ -1115,8 +910,8 @@ fn render(facts: &CaskFacts) -> String {
         }
     }
     out += "\n";
-    if let Some(caveats) = text("caveats") {
-        out += &format!("{}\n{}\n", ohai("Caveats"), facts.places.expand(caveats));
+    if let Some(caveats) = cask_caveats(json, token, &facts.places) {
+        out += &format!("{}\n{caveats}\n", ohai("Caveats"));
     }
     out
 }
@@ -1642,24 +1437,6 @@ mod tests {
             "https://github.com/me/homebrew-x/blob/HEAD/a.rb"
         );
         assert_eq!(github_remote_path("/srv/tap", "a.rb"), "/srv/tap/a.rb");
-        assert_eq!(
-            keg_only_reason(&json!({"reason": ":versioned_formula", "explanation": ""})),
-            "this is an alternate version of another formula"
-        );
-        assert_eq!(
-            keg_only_reason(
-                &json!({"reason": ":provided_by_macos", "explanation": "macOS provides BSD libedit"})
-            ),
-            "macOS provides BSD libedit"
-        );
-        assert_eq!(
-            export_value("LDFLAGS", "-L/p/opt/x/lib", Some("/bin/zsh")),
-            "export LDFLAGS=-L/p/opt/x/lib"
-        );
-        assert_eq!(
-            export_value("CPPFLAGS", "-I/p/a b", Some("/usr/local/bin/fish")),
-            "set -gx CPPFLAGS -I/p/a\\ b"
-        );
         assert_eq!(number_readable(1234567), "1,234,567");
         assert_eq!(compare_versions("3.10", "3.9"), std::cmp::Ordering::Greater);
         assert_eq!(

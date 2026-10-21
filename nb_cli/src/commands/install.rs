@@ -5,6 +5,7 @@ use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
+use crate::caveats::Messages;
 use crate::ui::StdUi;
 use crate::utils::{
     normalize_formula_name, report_build_failure, resolve_install_name, suggest_homebrew,
@@ -68,6 +69,8 @@ pub async fn execute(
     let mut installed_count = 0usize;
     let mut notices = Vec::new();
     let mut post_install_failures = Vec::new();
+    let mut messages = Messages::default();
+    let mut cask_errors: Vec<(String, nb_core::Error)> = Vec::new();
 
     if !normalized_names.is_empty() {
         let plan = match installer
@@ -87,7 +90,24 @@ pub async fn execute(
             }
         };
 
+        let planned: Vec<String> = plan.items.iter().map(|i| i.formula.name.clone()).collect();
         let result = execute_formula_plan(installer, &formulas, plan, no_link, ui).await?;
+        // In the order asked for, as Homebrew installs them; dependencies,
+        // not asked for, have none.
+        let short = |name: &String| name.rsplit('/').next().unwrap_or(name).to_string();
+        let mut order: Vec<String> = normalized_names
+            .iter()
+            .map(short)
+            .filter(|name| planned.contains(name))
+            .collect();
+        for name in planned {
+            if !order.contains(&name) {
+                order.push(name);
+            }
+        }
+        for name in &order {
+            messages.record_formula(installer, name).await;
+        }
         installed_count += result.installed;
         notices.extend(result.notices);
         post_install_failures.extend(result.post_install_failures);
@@ -99,20 +119,55 @@ pub async fn execute(
             cask_names.len()
         ))
         .map_err(ui_error)?;
-        let result = installer.install_casks(&cask_names, !no_link).await?;
-        installed_count += result.installed;
+        // As with `brew install`, a cask that fails leaves the rest to go on.
+        for name in &cask_names {
+            let token = name.rsplit(['/', ':']).next().unwrap_or(name);
+            match installer
+                .install_casks(std::slice::from_ref(name), !no_link)
+                .await
+            {
+                Ok(result) => {
+                    installed_count += result.installed;
+                    messages.record_cask(installer, token).await;
+                }
+                Err(e) if installed_count == 0 && formulas.len() == 1 => return Err(e),
+                Err(e) => cask_errors.push((token.to_string(), e)),
+            }
+        }
     }
 
     let elapsed = start.elapsed();
     ui.blank_line().map_err(ui_error)?;
+    for (token, err) in &cask_errors {
+        ui.error(format!(
+            "Failed to install {}: {}",
+            style(token).bold(),
+            err
+        ))
+        .map_err(ui_error)?;
+    }
     ui.heading(format!(
         "Installed {} packages in {:.2}s",
         style(installed_count).green().bold(),
         elapsed.as_secs_f64()
     ))
     .map_err(ui_error)?;
+    show_caveats(ui, &messages)?;
 
-    report_post_install(ui, &notices, post_install_failures)
+    let reported = report_post_install(ui, &notices, post_install_failures);
+    match cask_errors.into_iter().next() {
+        Some((_, e)) => Err(e),
+        None => reported,
+    }
+}
+
+/// The caveats of what was installed, as Homebrew shows them at the end.
+pub(crate) fn show_caveats(ui: &mut StdUi, messages: &Messages) -> Result<(), nb_core::Error> {
+    let text = messages.render();
+    if text.is_empty() {
+        return Ok(());
+    }
+    ui.println(text.trim_end_matches('\n')).map_err(ui_error)
 }
 
 /// What `nb install` does with a formula that may be installed already.

@@ -28,7 +28,7 @@ pub async fn execute(
     if dry_run {
         return Ok(());
     }
-    super::uninstall::execute(installer, unneeded, false, false, true, ui).await
+    super::uninstall::execute(installer, unneeded, false, false, true, false, ui).await
 }
 
 /// The autoremove `nb uninstall` ends with. Its failure, such as the API

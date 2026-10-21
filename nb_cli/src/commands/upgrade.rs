@@ -293,6 +293,7 @@ pub(crate) async fn replace_packages(
     let mut errors: Vec<(String, nb_core::Error)> = Vec::new();
     let mut notices = Vec::new();
     let mut post_install_failures = Vec::new();
+    let mut messages = crate::caveats::Messages::default();
 
     for name in names {
         ui.step_start(name).map_err(ui_error)?;
@@ -314,6 +315,10 @@ pub(crate) async fn replace_packages(
             Ok(result) => {
                 ui.step_ok().map_err(ui_error)?;
                 upgraded += 1;
+                match name.strip_prefix("cask:") {
+                    Some(token) => messages.record_cask(installer, token).await,
+                    None => messages.record_formula(installer, name).await,
+                }
                 notices.extend(result.notices);
                 post_install_failures.extend(result.post_install_failures);
             }
@@ -358,10 +363,13 @@ pub(crate) async fn replace_packages(
             elapsed.as_secs_f64()
         ))
         .map_err(ui_error)?;
+        super::install::show_caveats(ui, &messages)?;
         super::install::report_post_install(ui, &notices, post_install_failures)
     } else if !errors.is_empty() {
+        super::install::show_caveats(ui, &messages)?;
         Err(errors.remove(0).1)
     } else {
+        super::install::show_caveats(ui, &messages)?;
         Err(pending.expect("a pending failure"))
     }
 }

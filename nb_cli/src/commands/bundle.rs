@@ -1846,7 +1846,7 @@ async fn cleanup(
                 .iter()
                 .map(|t| format!("cask:{t}"))
                 .collect();
-            let _ = super::uninstall::execute(installer, names, false, zap, false, ui).await;
+            let _ = super::uninstall::execute(installer, names, false, zap, false, true, ui).await;
             let n = casks_to_remove.len();
             println!("Uninstalled {n} cask{}", if n == 1 { "" } else { "s" });
         }
@@ -1857,6 +1857,7 @@ async fn cleanup(
                 false,
                 false,
                 false,
+                true,
                 ui,
             )
             .await;

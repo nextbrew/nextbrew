@@ -1,4 +1,5 @@
 pub mod brewfile;
+pub mod caveats;
 pub mod cli;
 pub mod commands;
 pub mod init;
