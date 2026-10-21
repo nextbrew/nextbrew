@@ -246,7 +246,7 @@ fn test_info_finds_installed_formula() {
 
     let output = t.nb(&["info", "jq"]);
     assert_success(&output, "nb info jq (not installed)");
-    assert_stdout_contains(&output, "not installed");
+    assert_stdout_contains(&output, "Not installed");
 
     assert_success(&t.nb(&["install", "jq"]), "nb install jq");
 
@@ -254,7 +254,7 @@ fn test_info_finds_installed_formula() {
     assert_success(&output, "nb info jq");
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(
-        stdout.contains("Name:") && !stdout.contains("not installed"),
+        stdout.contains("\nInstalled\n") && !stdout.contains("Not installed"),
         "stdout: {stdout}"
     );
 }
