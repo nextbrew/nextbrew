@@ -215,7 +215,9 @@ pub(crate) async fn formula_caveats(
             prefix: installer.prefix().to_path_buf(),
             home: home.clone(),
         };
-        if let Ok(Some(spec)) = nb_io::services::ServiceSpec::from_api(service, &service_places) {
+        if let Ok(Some(mut spec)) = nb_io::services::ServiceSpec::from_api(service, &service_places)
+        {
+            spec.set_env_file(nb_io::services::user_env_file(&home, name));
             let running = nb_io::services::Launchd::current(home)
                 .find(&nb_io::services::label(name))
                 .running();

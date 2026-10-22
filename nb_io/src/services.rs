@@ -79,6 +79,8 @@ pub struct ServiceSpec {
     launch_only_once: bool,
     require_root: bool,
     environment_variables: Vec<(String, String)>,
+    /// The user's `services/<formula>.env`, read when the environment is.
+    env_file: Option<PathBuf>,
     working_dir: Option<String>,
     root_dir: Option<String>,
     input_path: Option<String>,
@@ -190,6 +192,7 @@ impl ServiceSpec {
             launch_only_once: flag("launch_only_once"),
             require_root: flag("require_root"),
             environment_variables,
+            env_file: None,
             working_dir: string("working_dir"),
             root_dir: string("root_dir"),
             input_path: string("input_path"),
@@ -249,26 +252,40 @@ impl ServiceSpec {
         unique
     }
 
-    /// `effective_environment_variables`: the user's env `file` overrides
-    /// the service's variables.
-    pub fn apply_env_file(&mut self, file: &Path) {
+    /// Read the user's env `file` (`services/<formula>.env`) whenever the
+    /// service's environment is used.
+    pub fn set_env_file(&mut self, file: PathBuf) {
+        self.env_file = Some(file);
+    }
+
+    /// `effective_environment_variables`: the user's env file overrides
+    /// the service's variables. As Homebrew's, it is read (and warned
+    /// about) each time the environment is used, and only then.
+    fn effective_environment_variables(&self) -> Vec<(String, String)> {
+        let mut vars = self.environment_variables.clone();
+        let Some(file) = &self.env_file else {
+            return vars;
+        };
         let warn = |why: &str| eprintln!("Warning: Skipping {}: {why}", file.display());
         let Some(meta) = std::fs::metadata(file).ok().filter(|meta| meta.is_file()) else {
-            return;
+            return vars;
         };
         // SAFETY: geteuid cannot fail.
         if unsafe { libc::geteuid() } == 0 {
-            return warn("user env overrides are not supported for root services.");
+            warn("user env overrides are not supported for root services.");
+            return vars;
         }
         let mode = std::os::unix::fs::PermissionsExt::mode(&meta.permissions());
         if mode & 0o002 != 0 {
-            return warn("file is world-writable.");
+            warn("file is world-writable.");
+            return vars;
         }
         if mode & 0o020 != 0 {
-            return warn("file is group-writable.");
+            warn("file is group-writable.");
+            return vars;
         }
         let Ok(text) = std::fs::read_to_string(file) else {
-            return;
+            return vars;
         };
         for line in text.lines().map(str::trim) {
             if line.is_empty() || line.starts_with('#') {
@@ -285,21 +302,18 @@ impl ServiceSpec {
                 continue;
             };
             let (key, value) = (key.trim().to_string(), value.trim().to_string());
-            match self
-                .environment_variables
-                .iter_mut()
-                .find(|(k, _)| *k == key)
-            {
+            match vars.iter_mut().find(|(k, _)| *k == key) {
                 Some(var) => var.1 = value,
-                None => self.environment_variables.push((key, value)),
+                None => vars.push((key, value)),
             }
         }
+        vars
     }
 
     /// `manual_command`: the environment (without `PATH`) and the command,
     /// quoted for a shell.
     pub fn manual_command(&self) -> String {
-        self.environment_variables
+        self.effective_environment_variables()
             .iter()
             .filter(|(key, _)| key != "PATH")
             .map(|(key, value)| format!("{key}=\"{value}\""))
@@ -392,11 +406,12 @@ impl ServiceSpec {
         add("StandardInPath", path(&self.input_path));
         add("StandardOutPath", path(&self.log_path));
         add("StandardErrorPath", path(&self.error_log_path));
-        if !self.environment_variables.is_empty() {
+        let environment_variables = self.effective_environment_variables();
+        if !environment_variables.is_empty() {
             add(
                 "EnvironmentVariables",
                 Some(Dict(
-                    self.environment_variables
+                    environment_variables
                         .iter()
                         .map(|(key, value)| (key.clone(), Str(value.clone())))
                         .collect(),
@@ -510,7 +525,7 @@ impl ServiceSpec {
             "StandardError",
             present(&self.error_log_path).map(|p| format!("append:{p}")),
         );
-        for (key, value) in &self.environment_variables {
+        for (key, value) in &self.effective_environment_variables() {
             options.push(format!("Environment=\"{key}={value}\""));
         }
         format!(
@@ -749,6 +764,16 @@ pub fn relabel_plist(contents: &str, label: &str) -> Option<String> {
     let start = key + contents[key..].find("<string>")? + "<string>".len();
     let end = start + contents[start..].find("</string>")?;
     Some(format!("{}{label}{}", &contents[..start], &contents[end..]))
+}
+
+/// Homebrew's `$HOMEBREW_USER_CONFIG_HOME/services/<formula>.env`:
+/// `$XDG_CONFIG_HOME/nextbrew`, or `~/.nextbrew`.
+pub fn user_env_file(home: &Path, formula: &str) -> PathBuf {
+    let config = match std::env::var_os("XDG_CONFIG_HOME").filter(|v| !v.is_empty()) {
+        Some(config) => PathBuf::from(config).join("nextbrew"),
+        None => home.join(".nextbrew"),
+    };
+    config.join(format!("services/{formula}.env"))
 }
 
 /// The `Label` of a plist file, if it is an XML plist with one.
@@ -1125,7 +1150,7 @@ mod tests {
         std::fs::write(&env, "# c\n B = 3 \nbad\nC=4=5\n").unwrap();
         std::fs::set_permissions(&env, std::os::unix::fs::PermissionsExt::from_mode(0o600))
             .unwrap();
-        spec.apply_env_file(&env);
+        spec.set_env_file(env);
         assert_eq!(spec.manual_command(), r#"A="1" B="3" C="4=5" /bin/x"#);
     }
 

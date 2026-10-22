@@ -412,8 +412,10 @@ fn install_service_file(service: &Service, file: Option<&Path>) -> Result<(), nb
             .map_err(nb_core::Error::file("failed to read the service file"))?,
         None => match &service.launchd.service_user {
             Some(user) if !service.launchd.systemd => {
-                ohai(format!("Setting username in {} to: {user}", service.label));
+                // The contents first, as Homebrew makes them (and warns about
+                // the env file) before saying so.
                 let contents = service.contents()?;
+                ohai(format!("Setting username in {} to: {user}", service.label));
                 nb_io::services::set_plist_user_name(&contents, user).unwrap_or(contents)
             }
             _ => service.contents()?,
