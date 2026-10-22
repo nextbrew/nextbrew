@@ -16,6 +16,8 @@ require "pathname"
 require "json"
 require "tmpdir"
 require "tempfile"
+require "set"
+require "find"
 require "digest/sha2"
 
 module NextBrewChecksum
@@ -50,6 +52,10 @@ FORMULA_FILE = ENV.fetch("NEXTBREW_FORMULA_FILE")
 INSTALLED_DEPS = JSON.parse(ENV.fetch("NEXTBREW_INSTALLED_DEPS", "{}"))
 # Where the source was unpacked, wherever the formula goes from there.
 BUILDPATH = Pathname.new(Dir.pwd)
+# Homebrew's own, which formulae use directly.
+HOMEBREW_PREFIX = Pathname.new(NEXTBREW_PREFIX)
+HOMEBREW_CELLAR = Pathname.new(NEXTBREW_CELLAR)
+HOMEBREW_LIBRARY = HOMEBREW_PREFIX + "Library"
 
 # Where each `system` call's output goes (`Formula#logs`), counted as
 # Homebrew numbers them, and how a failed one stops the build.
@@ -88,24 +94,52 @@ module OS
   end
 
   module Mac
+    # `MacOS.version`: the major version from 11 on, as `strip_patch`
+    # makes it, else `10.x`.
     def self.version
-      return MacOSVersion.new("15.0") if OS.mac?
-      MacOSVersion.new("0")
+      return MacOSVersion.new("0") unless OS.mac?
+
+      @version ||= begin
+        full = `/usr/bin/sw_vers -productVersion`.strip
+        major, minor = full.split(".")
+        MacOSVersion.new(major.to_i >= 11 ? major : "#{major}.#{minor}")
+      end
     end
+
+    def self.full_version
+      MacOSVersion.new(`/usr/bin/sw_vers -productVersion`.strip)
+    end
+  end
+end
+
+# Homebrew's top-level `MacOS`.
+module MacOS
+  def self.version; OS::Mac.version; end
+  def self.full_version; OS::Mac.full_version; end
+
+  def self.sdk_path
+    Pathname.new(`/usr/bin/xcrun --show-sdk-path`.strip)
   end
 end
 
 class MacOSVersion
   include Comparable
 
+  SYMBOLS = {
+    tahoe: "26", sequoia: "15", sonoma: "14", ventura: "13", monterey: "12",
+    big_sur: "11", catalina: "10.15", mojave: "10.14"
+  }.freeze
+
   def initialize(version)
-    @version = version
-    @major = version.split(".").first.to_i
+    version = SYMBOLS.fetch(version, version.to_s) if version.is_a?(Symbol)
+    @version = version.to_s
+    @major = @version.split(".").first.to_i
   end
 
+  # As versions, so `10.15 < 11` and `version >= :sonoma` hold.
   def <=>(other)
-    other = MacOSVersion.new(other.to_s) unless other.is_a?(MacOSVersion)
-    @version <=> other.to_s
+    other = MacOSVersion.new(other) unless other.is_a?(MacOSVersion)
+    Gem::Version.new(@version) <=> Gem::Version.new(other.to_s)
   end
 
   def to_s; @version; end
@@ -217,6 +251,8 @@ class PatchDSL
   def url(u, **_kwargs); @patch_url = u; end
   def sha256(s); @patch_sha256 = s; end
   def mirror(_); nil; end
+  # What kind of patch it is (`:cherry_pick`, `:backport`): for audits only.
+  def type(_); nil; end
 end
 
 class ResourceDSL
@@ -319,6 +355,9 @@ module Metafiles
 end
 
 class Pathname
+  # As Homebrew's, so a path goes where a string does (`ENV["X"] = prefix`).
+  alias to_str to_s
+
   # Homebrew's: move each source here (a file it has already moved is an
   # error, as there). A directory already here gets the source's contents.
   def install(*sources)
@@ -352,19 +391,24 @@ class Pathname
     end
   end
 
+  # Homebrew's: a link here to each source, relative to this directory
+  # (where a relative source is read from, too).
   def install_symlink(*sources)
-    sources.flatten.each do |src|
-      if src.is_a?(Hash)
-        src.each do |from, to|
-          FileUtils.mkdir_p(self)
-          FileUtils.ln_sf(Pathname.new(from).expand_path.to_s, (self + to.to_s).to_s)
-        end
-        next
+    sources.each do |src|
+      case src
+      when Array then src.each { |s| install_symlink_p(s, File.basename(s)) }
+      when Hash then src.each { |s, new_basename| install_symlink_p(s, new_basename) }
+      else install_symlink_p(src, File.basename(src))
       end
-      src = Pathname.new(src) unless src.is_a?(Pathname)
-      FileUtils.mkdir_p(self)
-      FileUtils.ln_sf(src.expand_path.to_s, (self + src.basename).to_s)
     end
+  end
+
+  def install_symlink_p(src, new_basename)
+    mkpath
+    dstdir = realpath
+    src = Pathname(src).expand_path(dstdir)
+    src = src.dirname.realpath + src.basename if src.dirname.exist?
+    FileUtils.ln_sf(src.relative_path_from(dstdir), dstdir + new_basename.to_s)
   end
 
   def write(content)
@@ -432,7 +476,13 @@ class Formula
     def no_autobump!(**_kwargs); nil; end
     def livecheck(&block); nil; end
     def bottle(&block); nil; end
-    def skip_clean(*_args); nil; end
+    def skip_clean(*paths)
+      skip_clean_paths.merge(paths.flatten)
+    end
+
+    def skip_clean_paths
+      @skip_clean_paths ||= Set.new
+    end
     def link_overwrite(*_args); nil; end
     def keg_only(*_args); nil; end
     def caveats; nil; end
@@ -521,6 +571,24 @@ class Formula
   def opt_include; opt_prefix + "include"; end
   def opt_share; opt_prefix + "share"; end
   def opt_pkgshare; opt_prefix + "share" + name; end
+
+  # `Utils::Path::FormulaHelpers`: another formula's stable paths by name.
+  def formula_opt_prefix(formula_name)
+    HOMEBREW_PREFIX + "opt" + formula_name.to_s.split("/").last
+  end
+  def formula_opt_bin(formula_name); formula_opt_prefix(formula_name) + "bin"; end
+  def formula_opt_lib(formula_name); formula_opt_prefix(formula_name) + "lib"; end
+  def formula_opt_libexec(formula_name); formula_opt_prefix(formula_name) + "libexec"; end
+  def formula_opt_include(formula_name); formula_opt_prefix(formula_name) + "include"; end
+
+  # `Formula#rpath`: `target` as the dynamic loader finds it from `source`.
+  def rpath(source: bin, target: lib)
+    "#{loader_path}/#{target.relative_path_from(source)}"
+  end
+
+  def loader_path
+    OS.mac? ? "@loader_path" : "$ORIGIN"
+  end
 
   def bash_completion; prefix + "etc" + "bash_completion.d"; end
   def zsh_completion; share + "zsh" + "site-functions"; end
@@ -779,6 +847,103 @@ def shared_library(name, version = nil)
   end
 end
 
+# Homebrew's `Cleaner` (with the macOS executable test), run on the keg as
+# `FormulaInstaller#clean` does after the build: libtool and Perl files out,
+# fixed permissions, conflicting info `dir` files and empty directories
+# and dangling links gone, Python metadata that records the build made
+# reproducible. Paths the formula names in `skip_clean` are left alone.
+class NextBrewCleaner
+  PERL_BASENAMES = Set.new(%w[perllocal.pod .packlist]).freeze
+
+  def initialize(formula)
+    @formula = formula
+    @prefix = formula.prefix
+    @paths = formula.class.skip_clean_paths
+  end
+
+  def clean
+    charset = @formula.lib + "charset.alias"
+    charset.unlink if charset.exist?
+    [@formula.bin, @formula.sbin, @formula.lib].each { |dir| clean_dir(dir) if dir.exist? }
+    if @formula.info.exist?
+      @formula.info.glob("**/dir").each do |file|
+        next unless file.file?
+        next if file == @formula.info + @formula.name + "dir"
+        next if skip_clean?(file)
+
+        file.unlink
+      end
+    end
+    clean_python_metadata
+    prune
+  end
+
+  private
+
+  # `Formula#skip_clean?`.
+  def skip_clean?(path)
+    return true if path.extname == ".la" && @paths.include?(:la)
+
+    @paths.include?(path.relative_path_from(@prefix).to_s)
+  end
+
+  def clean_dir(directory)
+    directory.find do |path|
+      Find.prune if skip_clean?(path)
+      next if path.directory?
+
+      if path.extname == ".la" || path.extname == ".tbd" || PERL_BASENAMES.include?(path.basename.to_s)
+        path.unlink
+      elsif !path.symlink?
+        path.chmod(executable_path?(path) ? 0o555 : 0o444)
+      end
+    end
+  end
+
+  # `Utils::Path.text_executable?`, or a Mach-O executable.
+  def executable_path?(path)
+    head = File.open(path, "rb") { |f| f.read(4) } || ""
+    return true if head.start_with?("#!")
+
+    magic = head.unpack1("N")
+    return false unless [0xfeedface, 0xfeedfacf, 0xcefaedfe, 0xcffaedfe, 0xcafebabe].include?(magic)
+
+    out = IO.popen(["file", "-b", path.to_s], err: File::NULL, &:read).to_s
+    out.include?("executable")
+  rescue SystemCallError
+    path.executable?
+  end
+
+  def clean_python_metadata
+    @prefix.realpath.find do |path|
+      Find.prune if skip_clean?(path)
+      next if path.directory? || path.symlink?
+      next if path.parent.extname != ".dist-info"
+
+      case path.basename.to_s
+      when "direct_url.json", "RECORD" then path.unlink
+      when "INSTALLER" then File.write(path, "brew\n")
+      end
+    end
+  end
+
+  def prune
+    dirs = []
+    symlinks = []
+    @prefix.find do |path|
+      if path == @formula.libexec || skip_clean?(path)
+        Find.prune
+      elsif path.symlink?
+        symlinks << path
+      elsif path.directory?
+        dirs << path
+      end
+    end
+    dirs.reverse_each { |d| d.rmdir if d.children.empty? }
+    symlinks.reverse_each { |s| s.unlink unless File.exist?(s) }
+  end
+end
+
 formula_raw = File.read(FORMULA_FILE)
 end_marker_idx = formula_raw.index(/^__END__\s*$/)
 FORMULA_DATA_CONTENT = end_marker_idx ? formula_raw[(formula_raw.index("\n", end_marker_idx) + 1)..] : nil
@@ -795,7 +960,15 @@ unless formula_class
 end
 
 patches = formula_class.instance_variable_get(:@_patches) || []
-patches.each do |p|
+# Fetch the patches' files together first, as Homebrew does before the
+# build, then apply them in order.
+fetched = patches.each_with_index.select { |p, _| p[:type] == :url }.map do |p, i|
+  tmp = Tempfile.new("nb_patch")
+  tmp.close
+  [i, tmp, Thread.new { Kernel.system("curl", "-sSL", "-o", tmp.path, p[:url]) }]
+end
+downloads = fetched.to_h { |i, tmp, thread| [i, [tmp, thread.value]] }
+patches.each_with_index do |p, index|
   strip_flag = "-#{p[:strip]}"
   case p[:type]
   when :data
@@ -808,11 +981,10 @@ patches.each do |p|
       end
     end
   when :url
-    puts "==> Downloading patch from #{p[:url]}"
-    tmp = Tempfile.new("nb_patch")
+    puts "==> Applying patch #{p[:url]}"
+    tmp, downloaded = downloads.fetch(index)
     begin
-      Kernel.system("curl", "-sSL", "-o", tmp.path, p[:url])
-      unless $?.success?
+      unless downloaded
         $stderr.puts "Error: failed to download patch #{p[:url]}"
         exit 1
       end
@@ -848,4 +1020,5 @@ if instance.libexec.exist? &&
    instance.prefix.children.none? { |p| p.file? && Metafiles.copy?(p.basename.to_s) }
   instance.prefix.install_metafiles(instance.libexec)
 end
+NextBrewCleaner.new(instance).clean
 puts "==> Build complete: #{FORMULA_NAME} #{FORMULA_VERSION}"

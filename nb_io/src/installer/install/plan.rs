@@ -37,7 +37,9 @@ impl Installer {
             if !root && self.has_installed_keg(&install_name) {
                 continue;
             }
-            items.push(self.plan_item(install_name, formula, build_from_source, !root)?);
+            // As `--build-from-source` does in Homebrew: what was named is
+            // built, its dependencies are poured from bottles where they can be.
+            items.push(self.plan_item(install_name, formula, build_from_source && root, !root)?);
         }
         self.plan_build_dependencies(&mut items, &mut formulas)
             .await?;
@@ -127,7 +129,7 @@ impl Installer {
                         match self.plan_item(
                             install_name.clone(),
                             formula,
-                            build_from_source,
+                            build_from_source && root,
                             !root,
                         ) {
                             Ok(item) => items.push(item),
@@ -943,6 +945,45 @@ mod tests {
 
         let names: Vec<_> = plan.items.iter().map(|i| i.install_name.as_str()).collect();
         assert_eq!(names, ["python@3.14", "node"]);
+    }
+
+    #[tokio::test]
+    async fn only_the_named_formula_is_built_from_source() {
+        let mock_server = MockServer::start().await;
+        let tmp = TempDir::new().unwrap();
+        let with_source = |name: &str, deps: &[&str]| {
+            bottled_formula(name, deps).replacen(
+                r#""versions""#,
+                &format!(
+                    r#""urls": {{ "stable": {{ "url": "https://example.com/{name}-1.0.0.tar.gz" }} }}, "versions""#
+                ),
+                1,
+            )
+        };
+        let installer = installer_serving(
+            &mock_server,
+            &tmp,
+            &[
+                ("app", with_source("app", &["lib"])),
+                ("lib", with_source("lib", &[])),
+            ],
+        )
+        .await;
+
+        let plan = installer
+            .plan_with_options(&["app".to_string()], true)
+            .await
+            .unwrap();
+
+        let methods: Vec<_> = plan
+            .items
+            .iter()
+            .map(|i| {
+                let source = matches!(i.method, nb_core::InstallMethod::Source(_));
+                (i.install_name.as_str(), source)
+            })
+            .collect();
+        assert_eq!(methods, [("lib", false), ("app", true)]);
     }
 
     #[tokio::test]
