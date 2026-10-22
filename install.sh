@@ -486,6 +486,10 @@ BUILD_OUTPUT=$(mktemp)
     fi
 ) &
 if ! spinner "Building ${ORANGE}nextbrew${NC}" $!; then
+    # ruby-prism-sys generates its bindings with bindgen, which loads libclang.
+    if grep -q 'libclang' "$BUILD_OUTPUT"; then
+        error_exit "Building nextbrew needs libclang. Install it (Debian/Ubuntu: 'sudo apt install libclang-dev', Fedora: 'sudo dnf install clang-devel') or set LIBCLANG_PATH, then run this again."
+    fi
     error_exit "Failed to build nextbrew. Run 'cargo build --release --bin nb --bin nbx' to see details."
 fi
 completed "Built ${ORANGE}nextbrew${NC}"
