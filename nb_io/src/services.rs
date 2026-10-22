@@ -249,6 +249,53 @@ impl ServiceSpec {
         unique
     }
 
+    /// `effective_environment_variables`: the user's env `file` overrides
+    /// the service's variables.
+    pub fn apply_env_file(&mut self, file: &Path) {
+        let warn = |why: &str| eprintln!("Warning: Skipping {}: {why}", file.display());
+        let Some(meta) = std::fs::metadata(file).ok().filter(|meta| meta.is_file()) else {
+            return;
+        };
+        // SAFETY: geteuid cannot fail.
+        if unsafe { libc::geteuid() } == 0 {
+            return warn("user env overrides are not supported for root services.");
+        }
+        let mode = std::os::unix::fs::PermissionsExt::mode(&meta.permissions());
+        if mode & 0o002 != 0 {
+            return warn("file is world-writable.");
+        }
+        if mode & 0o020 != 0 {
+            return warn("file is group-writable.");
+        }
+        let Ok(text) = std::fs::read_to_string(file) else {
+            return;
+        };
+        for line in text.lines().map(str::trim) {
+            if line.is_empty() || line.starts_with('#') {
+                continue;
+            }
+            let Some((key, value)) = line
+                .split_once('=')
+                .filter(|(key, _)| !key.trim().is_empty())
+            else {
+                eprintln!(
+                    "Warning: Skipping invalid line in {}: {line}",
+                    file.display()
+                );
+                continue;
+            };
+            let (key, value) = (key.trim().to_string(), value.trim().to_string());
+            match self
+                .environment_variables
+                .iter_mut()
+                .find(|(k, _)| *k == key)
+            {
+                Some(var) => var.1 = value,
+                None => self.environment_variables.push((key, value)),
+            }
+        }
+    }
+
     /// `manual_command`: the environment (without `PATH`) and the command,
     /// quoted for a shell.
     pub fn manual_command(&self) -> String {
@@ -1030,6 +1077,27 @@ mod tests {
         for (name, service, expected) in cases {
             assert_eq!(plist_of(service, name), expected, "{name}");
         }
+    }
+
+    #[test]
+    fn an_env_file_overrides_the_service_environment() {
+        let home = tempfile::TempDir::new().unwrap();
+        let places = Places {
+            prefix: PathBuf::from("/opt/homebrew"),
+            home: home.path().to_path_buf(),
+        };
+        let service: Value = serde_json::from_str(
+            r#"{"run": "/bin/x", "environment_variables": {"A": "1", "B": "2"}}"#,
+        )
+        .unwrap();
+        let mut spec = ServiceSpec::from_api(&service, &places).unwrap().unwrap();
+        let env = home.path().join(".nextbrew/services/x.env");
+        std::fs::create_dir_all(env.parent().unwrap()).unwrap();
+        std::fs::write(&env, "# c\n B = 3 \nbad\nC=4=5\n").unwrap();
+        std::fs::set_permissions(&env, std::os::unix::fs::PermissionsExt::from_mode(0o600))
+            .unwrap();
+        spec.apply_env_file(&env);
+        assert_eq!(spec.manual_command(), r#"A="1" B="3" C="4=5" /bin/x"#);
     }
 
     #[test]

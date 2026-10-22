@@ -83,7 +83,16 @@ impl Installer {
         let spec = match &formula.service {
             Some(service) => ServiceSpec::from_api(service, &places)?,
             None => None,
-        };
+        }
+        .map(|mut spec| {
+            // Homebrew's `$HOMEBREW_USER_CONFIG_HOME/services/<formula>.env`.
+            let config = match std::env::var_os("XDG_CONFIG_HOME").filter(|v| !v.is_empty()) {
+                Some(config) => PathBuf::from(config).join("nextbrew"),
+                None => places.home.join(".nextbrew"),
+            };
+            spec.apply_env_file(&config.join(format!("services/{}.env", formula.name)));
+            spec
+        });
         let (os, legacy, ext) = if cfg!(target_os = "macos") {
             ("macos", "homebrew.mxcl", "plist")
         } else {
