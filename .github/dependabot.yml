@@ -1,0 +1,27 @@
+version: 2
+
+# Weekly, one pull request per ecosystem. A release must be a week old first,
+# so a compromised one is likelier to be pulled before it reaches us.
+updates:
+  - package-ecosystem: cargo
+    directory: /
+    schedule:
+      interval: weekly
+    cooldown:
+      default-days: 7
+    groups:
+      cargo:
+        patterns: ['*']
+    labels: [dependencies]
+
+  # Also the SHAs the workflows and .github/actions pin.
+  - package-ecosystem: github-actions
+    directories: ['/', '/.github/actions/*']
+    schedule:
+      interval: weekly
+    cooldown:
+      default-days: 7
+    groups:
+      github-actions:
+        patterns: ['*']
+    labels: [dependencies]

@@ -1,0 +1,22 @@
+name: CI Test for Pull Requests
+
+on:
+  pull_request:
+    paths-ignore:
+      - '**/*.md'
+      - 'docs/**'
+
+permissions: {}
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  ci-test:
+    name: ci
+    permissions:
+      contents: read
+    uses: ./.github/workflows/test-workflow.yml
+    with:
+      full: ${{ !github.event.repository.private }}

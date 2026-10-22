@@ -1,0 +1,106 @@
+name: CI Test
+
+# What every pull request and push to main runs (pr.yml, main.yml).
+on:
+  workflow_call:
+    inputs:
+      full:
+        description: macOS and Linux Arm64 too; Linux x64 only otherwise (their minutes are paid on a private repo)
+        required: false
+        type: boolean
+        default: true
+
+permissions: {}
+
+defaults:
+  run:
+    shell: bash --noprofile --norc -euo pipefail {0}
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: 0
+
+jobs:
+  fmt:
+    name: fmt
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Setup Rust
+        uses: ./.github/actions/setup-rust
+        with:
+          components: rustfmt
+          cache: 'false'
+
+      - name: Check formatting
+        run: cargo fmt --all -- --check
+
+  # On macOS too: much of nextbrew is behind cfg(target_os = "macos").
+  clippy:
+    name: clippy (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        os: ${{ fromJSON(inputs.full && '["ubuntu-latest","macos-latest"]' || '["ubuntu-latest"]') }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Setup Rust
+        uses: ./.github/actions/setup-rust
+        with:
+          components: clippy
+          cache-key: ${{ matrix.os }}
+
+      - name: Clippy
+        run: cargo clippy --workspace --all-targets --locked -- -D warnings
+
+  # The integration tests install, run and remove real formulae (jq, curl,
+  # ffmpeg, and jq built from source).
+  test:
+    name: test (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 60
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        os: ${{ fromJSON(inputs.full && '["ubuntu-latest","ubuntu-24.04-arm","macos-latest"]' || '["ubuntu-latest"]') }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Setup Rust
+        uses: ./.github/actions/setup-rust
+        with:
+          cache-key: ${{ matrix.os }}
+
+      - name: Unit tests
+        run: cargo test --workspace --locked
+
+      - name: Integration tests
+        run: cargo test --package nb_cli --test integration --locked -- --ignored
+
+  build:
+    name: build
+    permissions:
+      contents: read
+    uses: ./.github/workflows/build.yml
+    with:
+      full: ${{ inputs.full }}

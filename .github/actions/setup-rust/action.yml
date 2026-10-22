@@ -1,0 +1,36 @@
+name: Setup Rust
+description: Install the Rust toolchain from rust-toolchain.toml and cache the build
+
+inputs:
+  components:
+    description: Extra components (comma-separated), e.g. clippy
+    required: false
+    default: ''
+  targets:
+    description: Extra targets (comma-separated)
+    required: false
+    default: ''
+  cache-key:
+    description: Key shared by jobs that build alike
+    required: false
+    default: ''
+  cache:
+    description: Cache the build ('false' for release builds, which must not read a cache a pull request could have written)
+    required: false
+    default: 'true'
+
+runs:
+  using: composite
+  steps:
+    - name: Install Rust
+      uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # master
+      with:
+        toolchain: '1.96' # keep in step with rust-toolchain.toml
+        components: ${{ inputs.components }}
+        targets: ${{ inputs.targets }}
+
+    - name: Cache the build
+      if: inputs.cache == 'true'
+      uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+      with:
+        shared-key: ${{ inputs.cache-key }}

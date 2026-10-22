@@ -1,43 +1,65 @@
 name: parity
 
-# ponytail: manual only; macOS minutes cost 10x on a private repo.
-# Put the push/schedule triggers back once the repo is public.
+# nb against the runner's brew on the same formulae. Weekly once the
+# repository is public (the schedule is skipped while it is private, as
+# macOS minutes are paid there); by hand at any time.
 on:
+  schedule:
+    - cron: '23 5 * * 0'
   workflow_dispatch:
 
-permissions:
-  contents: read
+permissions: {}
+
+defaults:
+  run:
+    shell: bash --noprofile --norc -euo pipefail {0}
 
 concurrency:
   group: parity-${{ github.ref }}
-  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+  cancel-in-progress: false
 
 jobs:
-  parity:
-    name: macos-arm64 / rust ${{ matrix.rust }}
-    runs-on: macos-latest
-    strategy:
-      matrix:
-        rust: ["1.96"]
+  # A schedule's event says nothing of the repository, so ask.
+  public:
+    name: public?
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    outputs:
+      public: ${{ steps.ask.outputs.public }}
     steps:
-      - uses: actions/checkout@v4
+      - name: Ask GitHub
+        id: ask
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: echo "public=$(gh api "repos/$GITHUB_REPOSITORY" --jq '.private | not')" >> "$GITHUB_OUTPUT"
 
-      - name: install rust ${{ matrix.rust }}
-        uses: dtolnay/rust-toolchain@master
+  parity:
+    name: macos-arm64
+    needs: public
+    if: github.event_name == 'workflow_dispatch' || needs.public.outputs.public == 'true'
+    runs-on: macos-latest
+    timeout-minutes: 90
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          toolchain: ${{ matrix.rust }}
+          persist-credentials: false
 
-      - name: cache rust dependencies
-        uses: Swatinem/rust-cache@v2
+      - name: Setup Rust
+        uses: ./.github/actions/setup-rust
         with:
-          shared-key: macos-latest-${{ matrix.rust }}
+          cache-key: macos-latest
 
-      - name: homebrew version
+      - name: Homebrew version
         run: brew --version
 
       # One at a time: the tests share the runner's Homebrew, which locks
       # per install.
-      - name: run parity tests
+      - name: Parity tests
         env:
-          NB_PARITY_REQUIRE_BREW: "1"
-        run: cargo test --package nb_cli --features parity --test parity -- --nocapture --test-threads=1 --skip install_timings
+          NB_PARITY_REQUIRE_BREW: '1'
+        run: cargo test --locked --package nb_cli --features parity --test parity -- --nocapture --test-threads=1 --skip install_timings

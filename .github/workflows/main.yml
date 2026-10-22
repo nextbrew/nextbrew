@@ -1,0 +1,25 @@
+name: CI Test for main
+
+on:
+  push:
+    branches: [main]
+    paths-ignore:
+      - '**/*.md'
+      - 'docs/**'
+  # Everything, macOS too, even while the repository is private.
+  workflow_dispatch:
+
+permissions: {}
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  ci-test:
+    name: ci
+    permissions:
+      contents: read
+    uses: ./.github/workflows/test-workflow.yml
+    with:
+      full: ${{ github.event_name == 'workflow_dispatch' || !github.event.repository.private }}

@@ -1,0 +1,5 @@
+rules:
+  # Asks for `$/...` in place of `./...`; actionlint and older runners'
+  # tooling do not know that syntax yet.
+  self-repository:
+    disable: true

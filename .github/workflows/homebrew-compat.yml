@@ -5,16 +5,18 @@ name: homebrew-changes
 # a new key, cask artifact or step type, or a formula or cask nextbrew can no
 # longer handle. Nothing is fixed automatically.
 #
-# Ubuntu only (macOS minutes cost 10x on a private repo). The last run's
-# report is kept in the actions cache and is what the next run compares with.
+# The last run's report is kept in the actions cache and is what the next
+# run compares with.
 on:
   schedule:
-    - cron: "17 3 * * *"
+    - cron: '17 3 * * *'
   workflow_dispatch:
 
-permissions:
-  contents: read
-  issues: write
+permissions: {}
+
+defaults:
+  run:
+    shell: bash --noprofile --norc -euo pipefail {0}
 
 concurrency:
   group: homebrew-changes
@@ -24,31 +26,35 @@ jobs:
   report:
     name: report
     runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      issues: write
     steps:
-      - uses: actions/checkout@v4
-
-      - name: install rust
-        uses: dtolnay/rust-toolchain@stable
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          toolchain: "1.96"
+          persist-credentials: false
 
-      - name: cache rust dependencies
-        uses: Swatinem/rust-cache@v2
+      - name: Setup Rust
+        uses: ./.github/actions/setup-rust
+        with:
+          cache-key: homebrew-changes
 
-      - name: fetch the API
+      - name: Fetch the API
         run: |
           mkdir -p api
           curl -fsSL --retry 3 -o api/formula.json https://formulae.brew.sh/api/formula.json
           curl -fsSL --retry 3 -o api/cask.json https://formulae.brew.sh/api/cask.json
 
-      - name: restore the last report
-        uses: actions/cache/restore@v4
+      - name: Restore the last report
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: last-report.json
           key: homebrew-report-${{ github.run_id }}
           restore-keys: homebrew-report-
 
-      - name: report
+      - name: Report
         id: report
         run: |
           baseline=()
@@ -58,7 +64,7 @@ jobs:
             echo "no earlier report; this run sets the baseline"
           fi
           set +e
-          cargo run --release -p nb_io --example compat_report -- \
+          cargo run --release --locked -p nb_io --example compat_report -- \
             api/formula.json api/cask.json "${baseline[@]}" > report.json
           status=$?
           set -e
@@ -69,14 +75,14 @@ jobs:
           esac
           cp report.json last-report.json
 
-      - name: keep the report for the next run
-        uses: actions/cache/save@v4
+      - name: Keep the report for the next run
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: last-report.json
           key: homebrew-report-${{ github.run_id }}
 
-      - name: upload the report
-        uses: actions/upload-artifact@v4
+      - name: Upload the report
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: homebrew-report
           path: |
@@ -84,14 +90,15 @@ jobs:
             diff.md
           if-no-files-found: ignore
 
-      - name: open an issue
+      - name: Open an issue
         if: steps.report.outputs.new == 'true'
         env:
           GH_TOKEN: ${{ github.token }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: |
           {
             echo "The daily run found these since the last one:"
-            echo "${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+            echo "$RUN_URL"
             echo
             cat diff.md
           } > body.md

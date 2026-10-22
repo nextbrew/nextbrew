@@ -277,3 +277,20 @@ fn test_gc_removes_unused_store_entries() {
     assert_success(&t.nb(&["gc"]), "nb gc");
     assert_eq!(t.count_store_entries(), 0);
 }
+
+#[test]
+#[ignore = "integration test"]
+fn test_build_from_source() {
+    let t = TestEnv::new();
+
+    assert_success(
+        &t.nb(&["install", "--build-from-source", "jq"]),
+        "nb install --build-from-source jq",
+    );
+
+    // Runs from the keg with oniguruma from the prefix, which the build's
+    // RPATH (Linux) or install names (macOS) must find.
+    let output = t.run_binary("jq", &["-n", "[1,2] | map(. + 1) | add"]);
+    assert_success(&output, "jq built from source");
+    assert_eq!(String::from_utf8_lossy(&output.stdout), "5\n");
+}

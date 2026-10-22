@@ -1,42 +1,43 @@
 name: timing
 
-# ponytail: manual only; macOS minutes cost 10x on a private repo.
-# Put the push/schedule triggers back once the repo is public.
+# Install times of this build against the newest release and brew. By hand:
+# it needs a release to compare with, and macOS minutes are paid while the
+# repository is private.
 on:
   workflow_dispatch:
 
-permissions:
-  contents: read
-  pull-requests: write
+permissions: {}
+
+defaults:
+  run:
+    shell: bash --noprofile --norc -euo pipefail {0}
 
 concurrency:
   group: timing-${{ github.ref }}
-  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+  cancel-in-progress: false
 
 jobs:
   timing:
-    name: macos-arm64 / rust ${{ matrix.rust }}
+    name: macos-arm64
     runs-on: macos-latest
-    strategy:
-      matrix:
-        rust: ["1.96"]
+    timeout-minutes: 90
+    permissions:
+      contents: read
     steps:
-      - uses: actions/checkout@v4
-
-      - name: install rust ${{ matrix.rust }}
-        uses: dtolnay/rust-toolchain@master
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          toolchain: ${{ matrix.rust }}
+          persist-credentials: false
 
-      - name: cache rust dependencies
-        uses: Swatinem/rust-cache@v2
+      - name: Setup Rust
+        uses: ./.github/actions/setup-rust
         with:
-          shared-key: macos-latest-${{ matrix.rust }}-release
+          cache-key: macos-latest-release
 
-      - name: homebrew version
+      - name: Homebrew version
         run: brew --version
 
-      - name: download the last release
+      - name: Download the last release
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
@@ -44,40 +45,11 @@ jobs:
           chmod +x /tmp/nb-release
           /tmp/nb-release --version
 
-      # Gated on the nightly run only; pull requests report.
-      - name: time installs
+      - name: Time installs
         env:
-          NB_PARITY_REQUIRE_BREW: "1"
+          NB_PARITY_REQUIRE_BREW: '1'
           NB_TIMING_BASELINE: /tmp/nb-release
-          NB_TIMING_MIN_SPEEDUP: ${{ github.event_name == 'schedule' && '1.5' || '' }}
-          NB_TIMING_MIN_WARM_SPEEDUP: ${{ github.event_name == 'schedule' && '3' || '' }}
-          NB_TIMING_MAX_REGRESSION: ${{ github.event_name == 'schedule' && '1.2' || '' }}
           NB_TIMING_TABLE: /tmp/nb-timing.md
-        run: cargo test --release --package nb_cli --features parity --test parity -- --nocapture install_timings
-
-      # The token is read-only for pull requests from forks; those only get
-      # the job summary.
-      - name: comment the table on the pull request
-        if: github.event_name == 'pull_request' && !github.event.pull_request.head.repo.fork
-        env:
-          GH_TOKEN: ${{ github.token }}
-          PR: ${{ github.event.pull_request.number }}
-          SHA: ${{ github.event.pull_request.head.sha }}
         run: |
-          marker='<!-- nb-timing -->'
-          {
-            echo "$marker"
-            echo "### install timings"
-            echo
-            cat /tmp/nb-timing.md
-            echo
-            echo "_${SHA:0:7}, macos-latest. Cold: nothing cached. Warm: uninstalled, downloads cached. Each nb build 3 rounds, fastest counts; release is the newest GitHub release._"
-          } > /tmp/nb-timing-comment.md
-          existing=$(gh api "repos/$GITHUB_REPOSITORY/issues/$PR/comments" --paginate \
-            --jq ".[] | select(.body | startswith(\"$marker\")) | .id" | head -1)
-          if [ -n "$existing" ]; then
-            gh api --method PATCH "repos/$GITHUB_REPOSITORY/issues/comments/$existing" \
-              -F body=@/tmp/nb-timing-comment.md >/dev/null
-          else
-            gh pr comment "$PR" --body-file /tmp/nb-timing-comment.md
-          fi
+          cargo test --release --locked --package nb_cli --features parity --test parity -- --nocapture install_timings
+          cat /tmp/nb-timing.md >> "$GITHUB_STEP_SUMMARY"
