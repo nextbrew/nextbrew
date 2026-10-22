@@ -1302,10 +1302,12 @@ class NextBrewCleaner
     end
   end
 
-  # `Utils::Path.text_executable?`, or a Mach-O executable.
+  # `Utils::Path.text_executable?`, or a Mach-O executable (any ELF file on
+  # Linux, as there).
   def executable_path?(path)
     head = File.open(path, "rb") { |f| f.read(4) } || ""
     return true if head.start_with?("#!")
+    return head == "\x7FELF".b if OS.linux?
 
     magic = head.unpack1("N")
     return false unless [0xfeedface, 0xfeedfacf, 0xcefaedfe, 0xcffaedfe, 0xcafebabe].include?(magic)

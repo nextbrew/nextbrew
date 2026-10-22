@@ -120,6 +120,9 @@ pub fn logs_dir(name: &str) -> PathBuf {
 pub struct BuildDep {
     pub name: String,
     pub keg_only: bool,
+    /// Needed at run time (`Build#install`'s `run_time_deps`), not only to
+    /// build.
+    pub run_time: bool,
 }
 
 /// `Superenv#setup_build_environment`'s paths without its compiler
@@ -130,7 +133,7 @@ pub struct BuildDep {
 /// flags as the wrapper's do, where `configure` does not see them (it
 /// turns an `-L` in `LDFLAGS` into an `-I` before the build's own).
 /// Paths that do not exist are left out, as there.
-fn superenv_paths(prefix: &Path, deps: &[BuildDep]) -> Vec<(&'static str, String)> {
+fn superenv_paths(prefix: &Path, keg: &Path, deps: &[BuildDep]) -> Vec<(&'static str, String)> {
     let opt = |dep: &BuildDep| prefix.join("opt").join(&dep.name);
     let existing = |paths: Vec<PathBuf>| -> Vec<PathBuf> {
         let mut kept: Vec<PathBuf> = Vec::new();
@@ -212,9 +215,38 @@ fn superenv_paths(prefix: &Path, deps: &[BuildDep]) -> Vec<(&'static str, String
             .collect(),
     ));
     let ldflags = if cfg!(target_os = "macos") {
-        "-Wl,-headerpad_max_install_names"
+        "-Wl,-headerpad_max_install_names".to_string()
     } else {
-        ""
+        // The Linux wrapper's `-Wl,-rpath=` for `determine_rpath_paths`
+        // (the keg's and gcc's even before they exist), and the brewed
+        // glibc's loader if there is one.
+        let mut rpath = vec![keg.join("lib"), prefix.join("opt/gcc/lib/gcc/current")];
+        rpath.extend(existing(
+            deps.iter()
+                .filter(|dep| dep.run_time)
+                .map(|dep| opt(dep).join("lib"))
+                .collect(),
+        ));
+        rpath.push(prefix.join("lib"));
+        let mut flags: Vec<String> = Vec::new();
+        for path in rpath {
+            let flag = format!("-Wl,-rpath={}", path.display());
+            if !flags.contains(&flag) {
+                flags.push(flag);
+            }
+        }
+        let loader = prefix.join("lib/ld.so");
+        if std::fs::File::open(&loader).is_ok() {
+            flags.push(format!("-Wl,--dynamic-linker={}", loader.display()));
+        }
+        flags.join(" ")
+    };
+    // `HOMEBREW_OPTIMIZATION_LEVEL`, which the wrapper puts in place of the
+    // build's own `-O` and `-g`.
+    let optimization = if cfg!(target_os = "macos") {
+        "-Os"
+    } else {
+        "-O2"
     };
 
     // `determine_pkg_config_libdir`: none of pkg-config's own, but on
@@ -245,11 +277,9 @@ fn superenv_paths(prefix: &Path, deps: &[BuildDep]) -> Vec<(&'static str, String
         ("CPLUS_INCLUDE_PATH", system_include.clone()),
         ("OBJC_INCLUDE_PATH", system_include),
         ("LIBRARY_PATH", libraries),
-        ("LDFLAGS", ldflags.into()),
-        // `HOMEBREW_OPTIMIZATION_LEVEL`, which the wrapper puts in place of
-        // the build's own `-O` and `-g`.
-        ("CFLAGS", "-Os".into()),
-        ("CXXFLAGS", "-Os".into()),
+        ("LDFLAGS", ldflags),
+        ("CFLAGS", optimization.into()),
+        ("CXXFLAGS", optimization.into()),
     ]
 }
 
@@ -269,8 +299,19 @@ pub fn build_env(
 
     #[cfg(target_os = "macos")]
     super::mac_pkgconfig::install(prefix);
-    for (key, value) in superenv_paths(prefix, deps) {
+    for (key, value) in superenv_paths(prefix, &plan.cellar_path, deps) {
         env.insert(key.into(), value);
+    }
+    // Linux's superenv: the brewed m4, for libtool's and bison's tools.
+    if cfg!(target_os = "linux")
+        && deps
+            .iter()
+            .any(|dep| dep.name == "libtool" || dep.name == "bison")
+    {
+        env.insert(
+            "M4".into(),
+            prefix.join("opt/m4/bin/m4").display().to_string(),
+        );
     }
     #[cfg(target_os = "macos")]
     {
@@ -530,17 +571,19 @@ mod tests {
         ] {
             std::fs::create_dir_all(prefix.join(dir)).unwrap();
         }
-        let dep = |name: &str, keg_only| BuildDep {
+        let dep = |name: &str, keg_only, run_time| BuildDep {
             name: name.into(),
             keg_only,
+            run_time,
         };
         let deps = [
-            dep("ncurses", true),
-            dep("xz", false),
-            dep("python@3.13", false),
-            dep("python@3.14", false),
+            dep("ncurses", true, false),
+            dep("xz", false, true),
+            dep("python@3.13", false, true),
+            dep("python@3.14", false, false),
         ];
-        let env: HashMap<_, _> = superenv_paths(prefix, &deps).into_iter().collect();
+        let keg = prefix.join("Cellar/f/1");
+        let env: HashMap<_, _> = superenv_paths(prefix, &keg, &deps).into_iter().collect();
         let p = |sub: &str| prefix.join(sub).display().to_string();
         assert_eq!(
             env["PATH"],
@@ -575,6 +618,21 @@ mod tests {
             env["LIBRARY_PATH"],
             format!("{}:{}", p("opt/ncurses/lib"), p("lib"))
         );
-        assert_eq!(env["CFLAGS"], "-Os");
+        if cfg!(target_os = "macos") {
+            assert_eq!(env["CFLAGS"], "-Os");
+        } else {
+            assert_eq!(env["CFLAGS"], "-O2");
+            // Only run-time dependencies' libraries that exist.
+            assert_eq!(
+                env["LDFLAGS"],
+                format!(
+                    "-Wl,-rpath={} -Wl,-rpath={} -Wl,-rpath={} -Wl,-rpath={}",
+                    p("Cellar/f/1/lib"),
+                    p("opt/gcc/lib/gcc/current"),
+                    p("opt/xz/lib"),
+                    p("lib")
+                )
+            );
+        }
     }
 }

@@ -24,6 +24,19 @@ impl Installer {
             .map(|name| (name, false))
             .collect();
         let mut found = std::collections::HashMap::new();
+        // `run_time_deps`: those reached without going through a build one.
+        let mut run_time = std::collections::HashSet::new();
+        let mut todo = formula.runtime_dependencies();
+        while let Some(name) = todo.pop() {
+            if !run_time.insert(name.clone()) {
+                continue;
+            }
+            let dep = self.formula(&name).await.ok();
+            if let Some(dep) = &dep {
+                todo.extend(dep.runtime_dependencies());
+            }
+            found.insert(name, dep);
+        }
         while let Some((name, expanded)) = stack.pop() {
             if seen.contains(&name) {
                 continue;
@@ -35,6 +48,7 @@ impl Installer {
             if expanded {
                 seen.insert(name.clone());
                 deps.push(crate::build::BuildDep {
+                    run_time: run_time.contains(&name),
                     name,
                     keg_only: dep.is_some_and(nb_core::Formula::is_keg_only),
                 });
