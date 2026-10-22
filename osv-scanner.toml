@@ -1,0 +1,11 @@
+# Read by the security scan (.github/workflows/security-scan.yml).
+
+[[IgnoredVulns]]
+id = "RUSTSEC-2026-0344"
+ignoreUntil = 2027-01-31T00:00:00Z
+reason = """\
+ruzstd 0.8.3 comes from object's default compression feature, through \
+arwen 0.0.5 (the newest, on object 0.38) and nb_io's own object 0.39. \
+Neither nb_io nor arwen reads compressed sections (no uncompressed_data), \
+so the decoder is never run. Drop this once arwen moves to object 0.40 \
+(ruzstd 0.9)."""

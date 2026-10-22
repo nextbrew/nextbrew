@@ -47,7 +47,7 @@ jobs:
       - name: Scan Cargo.lock
         run: |
           set +e
-          osv-scanner scan source --lockfile Cargo.lock --format markdown > osv.md
+          osv-scanner scan source --config osv-scanner.toml --lockfile Cargo.lock --format markdown > osv.md
           status=$?
           set -e
           cat osv.md >> "$GITHUB_STEP_SUMMARY"
