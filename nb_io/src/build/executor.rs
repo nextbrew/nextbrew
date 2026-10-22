@@ -28,12 +28,20 @@ impl BuildExecutor {
         plan: &BuildPlan,
         formula_rb_path: &Path,
         installed_deps: &HashMap<String, DepInfo>,
+        deps: &[super::BuildDep],
+        ruby: Option<PathBuf>,
+        patch_base: &str,
     ) -> Result<(), Error> {
         let work_dir = self.work_root.join(&plan.formula_name);
         self.prepare_work_dir(&work_dir).await?;
 
+        let mirrors = fs::read_to_string(formula_rb_path)
+            .await
+            .map(|rb| super::source::source_mirrors(&rb))
+            .unwrap_or_default();
         let source_root = download_and_extract_source(
             &plan.source_url,
+            &mirrors,
             plan.source_checksum.as_deref(),
             &work_dir,
         )
@@ -65,8 +73,9 @@ impl BuildExecutor {
         let _ = fs::remove_dir_all(&logs).await;
         let failed = work_dir.join("build-failed");
 
-        let mut env = build_env(plan, &self.prefix, &source_root, &logs);
+        let mut env = build_env(plan, &self.prefix, &source_root, &logs, deps);
         env.insert("NEXTBREW_BUILD_FAILED".into(), failed.display().to_string());
+        env.insert("NEXTBREW_PATCH_BASE".into(), patch_base.to_string());
         env.insert(
             "NEXTBREW_FORMULA_FILE".into(),
             formula_rb_path.display().to_string(),
@@ -75,7 +84,10 @@ impl BuildExecutor {
         let deps_json = serde_json::to_string(installed_deps).unwrap_or_else(|_| "{}".into());
         env.insert("NEXTBREW_INSTALLED_DEPS".into(), deps_json);
 
-        let ruby = find_ruby().await?;
+        let ruby = match ruby {
+            Some(ruby) => ruby,
+            None => find_ruby().await?,
+        };
         if run_build(&ruby, &shim_path, &source_root, &env)
             .await?
             .is_some()

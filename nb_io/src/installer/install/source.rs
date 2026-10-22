@@ -9,6 +9,49 @@ use crate::progress::InstallProgress;
 use super::{Installer, PlannedInstall, dependency_cellar_path};
 
 impl Installer {
+    /// `Build#expand_deps` as superenv gets them: the formula's
+    /// dependencies, build ones too, each after its own run-time ones, and
+    /// whether each is keg-only.
+    async fn build_env_deps(&self, formula: &nb_core::Formula) -> Vec<crate::build::BuildDep> {
+        let mut deps = Vec::new();
+        let mut seen = std::collections::HashSet::new();
+        // (name, its dependencies have been put first)
+        let mut stack: Vec<(String, bool)> = formula
+            .runtime_dependencies()
+            .into_iter()
+            .chain(formula.all_build_dependencies())
+            .rev()
+            .map(|name| (name, false))
+            .collect();
+        let mut found = std::collections::HashMap::new();
+        while let Some((name, expanded)) = stack.pop() {
+            if seen.contains(&name) {
+                continue;
+            }
+            if !found.contains_key(&name) {
+                found.insert(name.clone(), self.formula(&name).await.ok());
+            }
+            let dep = found[&name].as_ref();
+            if expanded {
+                seen.insert(name.clone());
+                deps.push(crate::build::BuildDep {
+                    name,
+                    keg_only: dep.is_some_and(nb_core::Formula::is_keg_only),
+                });
+                continue;
+            }
+            stack.push((name.clone(), true));
+            if let Some(dep) = dep {
+                for child in dep.runtime_dependencies().into_iter().rev() {
+                    if !seen.contains(&child) {
+                        stack.push((child, false));
+                    }
+                }
+            }
+        }
+        deps
+    }
+
     pub(super) async fn install_from_source(
         &mut self,
         item: &PlannedInstall,
@@ -60,9 +103,39 @@ impl Installer {
         let previous_keg_backup =
             Self::backup_existing_source_keg(&keg_path, formula_name, &version)?;
 
+        let deps = self.build_env_deps(&item.formula).await;
+        // Homebrew's own Ruby reads formulae as Homebrew does; without it,
+        // the one on `PATH` (or the system's) may be too old for some.
+        let ruby = match self.portable_ruby().await {
+            Ok(ruby) => Some(ruby),
+            Err(e) => {
+                eprintln!(
+                    "Warning: could not get Homebrew's portable Ruby ({e}); building with the ruby on PATH."
+                );
+                None
+            }
+        };
+        // Where the formula's own `Patches/` are: its tap's checkout, or
+        // homebrew-core online.
+        let patch_base = match item.formula.third_party_tap() {
+            Some(_) => formula_rb
+                .ancestors()
+                .find(|dir| dir.join(".git").exists())
+                .or_else(|| formula_rb.parent())
+                .map(|dir| dir.display().to_string())
+                .unwrap_or_default(),
+            None => crate::network::api::HOMEBREW_CORE_RAW_BASE.to_string(),
+        };
         let executor = crate::build::BuildExecutor::new(self.prefix.clone());
         if let Err(build_err) = executor
-            .execute(build_plan, &formula_rb, &installed_deps)
+            .execute(
+                build_plan,
+                &formula_rb,
+                &installed_deps,
+                &deps,
+                ruby,
+                &patch_base,
+            )
             .await
         {
             if let Some(backup_path) = previous_keg_backup.as_ref() {

@@ -17,6 +17,7 @@ pub mod diagnostic;
 pub mod doctor;
 mod outdated;
 mod plan;
+mod portable_ruby;
 mod post_install;
 mod quarantine;
 mod services;

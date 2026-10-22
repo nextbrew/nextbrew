@@ -114,6 +114,145 @@ pub fn logs_dir(name: &str) -> PathBuf {
     root.join(name)
 }
 
+/// A dependency of a build, as Homebrew's superenv sees it: one of the
+/// formula's, or theirs at run time.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BuildDep {
+    pub name: String,
+    pub keg_only: bool,
+}
+
+/// `Superenv#setup_build_environment`'s paths without its compiler
+/// wrapper: the dependencies' tools first on `PATH`, only their
+/// pkg-config files, keg-only ones' aclocal and CMake paths, and the
+/// include and library paths the wrapper adds to each compiler call. Those
+/// go in the variables the compiler itself reads, after the build's own
+/// flags as the wrapper's do, where `configure` does not see them (it
+/// turns an `-L` in `LDFLAGS` into an `-I` before the build's own).
+/// Paths that do not exist are left out, as there.
+fn superenv_paths(prefix: &Path, deps: &[BuildDep]) -> Vec<(&'static str, String)> {
+    let opt = |dep: &BuildDep| prefix.join("opt").join(&dep.name);
+    let existing = |paths: Vec<PathBuf>| -> Vec<PathBuf> {
+        let mut kept: Vec<PathBuf> = Vec::new();
+        for path in paths {
+            if path.is_dir() && !kept.contains(&path) {
+                kept.push(path);
+            }
+        }
+        kept
+    };
+    let join = |paths: &[PathBuf]| {
+        paths
+            .iter()
+            .map(|p| p.display().to_string())
+            .collect::<Vec<_>>()
+            .join(":")
+    };
+    let keg_only: Vec<&BuildDep> = deps.iter().filter(|dep| dep.keg_only).collect();
+
+    // `homebrew_extra_paths`: Pythons' unversioned commands, newest first.
+    let mut pythons: Vec<&BuildDep> = deps
+        .iter()
+        .filter(|dep| dep.name == "python" || dep.name.starts_with("python@"))
+        .collect();
+    pythons.sort_by_key(|dep| {
+        let version = dep.name.strip_prefix("python@").unwrap_or("0");
+        std::cmp::Reverse(
+            version
+                .split('.')
+                .map(|part| part.parse::<u32>().unwrap_or(0))
+                .collect::<Vec<_>>(),
+        )
+    });
+    let mut path: Vec<PathBuf> = deps.iter().map(|dep| opt(dep).join("bin")).collect();
+    path.extend(pythons.iter().map(|dep| opt(dep).join("libexec/bin")));
+    let mut path = join(&existing(path));
+    if !path.is_empty() {
+        path.push(':');
+    }
+    path.push_str("/usr/bin:/bin:/usr/sbin:/sbin");
+
+    let pkg_config = existing(
+        deps.iter()
+            .map(|dep| opt(dep).join("lib/pkgconfig"))
+            .chain(deps.iter().map(|dep| opt(dep).join("share/pkgconfig")))
+            .collect(),
+    );
+    let aclocal = existing(
+        keg_only
+            .iter()
+            .map(|dep| opt(dep).join("share/aclocal"))
+            .chain([prefix.join("share/aclocal")])
+            .collect(),
+    );
+    let cmake_prefix = existing(
+        keg_only
+            .iter()
+            .map(|dep| opt(dep))
+            .chain([prefix.to_path_buf()])
+            .collect(),
+    );
+    let frameworks = existing(deps.iter().map(|dep| opt(dep).join("Frameworks")).collect());
+
+    // The wrapper's `cppflags` (`-isystem` for the prefix, `-I` for
+    // keg-only dependencies) and `ldflags`.
+    let system_include = join(&existing(vec![prefix.join("include")]));
+    let include = join(&existing(
+        keg_only
+            .iter()
+            .map(|dep| opt(dep).join("include"))
+            .collect(),
+    ));
+    let libraries = join(&existing(
+        keg_only
+            .iter()
+            .filter(|dep| dep.name != "llvm" && !dep.name.starts_with("llvm@"))
+            .map(|dep| opt(dep).join("lib"))
+            .chain([prefix.join("lib")])
+            .collect(),
+    ));
+    let ldflags = if cfg!(target_os = "macos") {
+        "-Wl,-headerpad_max_install_names"
+    } else {
+        ""
+    };
+
+    // `determine_pkg_config_libdir`: none of pkg-config's own, but on
+    // macOS the system's and Homebrew's files for what macOS provides.
+    let pkg_config_libdir = if cfg!(target_os = "macos") {
+        let version = nb_core::macos_major_version()
+            .map(|v| v.to_string())
+            .unwrap_or_default();
+        join(&existing(vec![
+            PathBuf::from("/usr/lib/pkgconfig"),
+            prefix
+                .join("Library/Homebrew/os/mac/pkgconfig")
+                .join(version),
+        ]))
+    } else {
+        String::new()
+    };
+
+    vec![
+        ("PATH", path),
+        ("PKG_CONFIG_PATH", join(&pkg_config)),
+        ("PKG_CONFIG_LIBDIR", pkg_config_libdir),
+        ("ACLOCAL_PATH", join(&aclocal)),
+        ("CMAKE_PREFIX_PATH", join(&cmake_prefix)),
+        ("CMAKE_FRAMEWORK_PATH", join(&frameworks)),
+        ("CPATH", include),
+        ("C_INCLUDE_PATH", system_include.clone()),
+        ("CPLUS_INCLUDE_PATH", system_include.clone()),
+        ("OBJC_INCLUDE_PATH", system_include),
+        ("LIBRARY_PATH", libraries),
+        ("LDFLAGS", ldflags.into()),
+        // `HOMEBREW_OPTIMIZATION_LEVEL`, which the wrapper puts in place of
+        // the build's own `-O` and `-g`.
+        ("CFLAGS", "-Os".into()),
+        ("CXXFLAGS", "-Os".into()),
+    ]
+}
+
 /// A build's whole environment, as Homebrew gives one: only the variables
 /// `bin/brew` keeps from the user's (no `CFLAGS`, `GOPATH`, CA settings
 /// and the like), less anything that looks like a secret, with a home of
@@ -124,25 +263,33 @@ pub fn build_env(
     prefix: &Path,
     buildpath: &Path,
     logs: &Path,
+    deps: &[BuildDep],
 ) -> HashMap<String, String> {
     let mut env = kept_user_env(std::env::vars());
 
-    let bin_dir = prefix.join("bin");
-    let lib_dir = prefix.join("lib");
-    let include_dir = prefix.join("include");
-    let pkgconfig_dir = lib_dir.join("pkgconfig");
-
-    env.insert(
-        "PATH".into(),
-        format!("{}:/usr/bin:/bin:/usr/sbin:/sbin", bin_dir.display()),
-    );
-    env.insert(
-        "PKG_CONFIG_PATH".into(),
-        pkgconfig_dir.display().to_string(),
-    );
-    env.insert("CFLAGS".into(), format!("-I{}", include_dir.display()));
-    env.insert("CPPFLAGS".into(), format!("-I{}", include_dir.display()));
-    env.insert("LDFLAGS".into(), format!("-L{}", lib_dir.display()));
+    #[cfg(target_os = "macos")]
+    super::mac_pkgconfig::install(prefix);
+    for (key, value) in superenv_paths(prefix, deps) {
+        env.insert(key.into(), value);
+    }
+    #[cfg(target_os = "macos")]
+    {
+        // The compilers and SDK as superenv's `xcrun` shim finds them, but
+        // found once: called by name, each of a `configure`'s hundreds of
+        // checks would ask `xcrun` again.
+        let toolchain = macos_toolchain();
+        env.insert("CC".into(), toolchain.cc.clone());
+        env.insert("CXX".into(), toolchain.cxx.clone());
+        if let Some(sdk) = &toolchain.sdk {
+            env.insert("SDKROOT".into(), sdk.clone());
+        }
+        // `configure` runs itself again under `CONFIG_SHELL`, and its
+        // checks start many shells: macOS's dash starts them faster than
+        // its bash does.
+        if Path::new("/bin/dash").exists() {
+            env.insert("CONFIG_SHELL".into(), "/bin/dash".into());
+        }
+    }
 
     // `common_sandbox_env`. The user's curl configuration stays, as
     // nextbrew fetches a formula's resources and patches in the build.
@@ -209,6 +356,10 @@ pub fn build_env(
     );
     env.insert("NEXTBREW_FORMULA_NAME".into(), plan.formula_name.clone());
     env.insert("NEXTBREW_FORMULA_VERSION".into(), plan.version.clone());
+    env.insert(
+        "NEXTBREW_FORMULA_STABLE_VERSION".into(),
+        plan.stable_version.clone(),
+    );
     env.insert("NEXTBREW_LOGS".into(), logs.display().to_string());
 
     let jobs = num_cpus();
@@ -228,6 +379,36 @@ pub fn build_env(
     env
 }
 
+#[cfg(target_os = "macos")]
+struct Toolchain {
+    cc: String,
+    cxx: String,
+    sdk: Option<String>,
+}
+
+/// `xcrun --find` for the compilers and `xcrun --show-sdk-path`, asked
+/// once; their names when `xcrun` cannot say.
+#[cfg(target_os = "macos")]
+fn macos_toolchain() -> &'static Toolchain {
+    static TOOLCHAIN: std::sync::OnceLock<Toolchain> = std::sync::OnceLock::new();
+    TOOLCHAIN.get_or_init(|| {
+        let xcrun = |args: &[&str]| {
+            std::process::Command::new("/usr/bin/xcrun")
+                .args(args)
+                .output()
+                .ok()
+                .filter(|output| output.status.success())
+                .map(|output| String::from_utf8_lossy(&output.stdout).trim().to_string())
+                .filter(|path| !path.is_empty() && Path::new(path).exists())
+        };
+        Toolchain {
+            cc: xcrun(&["--find", "clang"]).unwrap_or_else(|| "clang".into()),
+            cxx: xcrun(&["--find", "clang++"]).unwrap_or_else(|| "clang++".into()),
+            sdk: xcrun(&["--show-sdk-path"]),
+        }
+    })
+}
+
 fn num_cpus() -> usize {
     std::thread::available_parallelism()
         .map(|n| n.get())
@@ -244,6 +425,7 @@ mod tests {
         BuildPlan {
             formula_name: "test".to_string(),
             version: "1.0.0".to_string(),
+            stable_version: "1.0.0".to_string(),
             source_url: "https://example.com/test.tar.gz".to_string(),
             source_checksum: None,
             ruby_source_path: None,
@@ -264,6 +446,7 @@ mod tests {
             &PathBuf::from("/opt/nextbrew/prefix"),
             Path::new("/tmp/build/src"),
             Path::new("/tmp/logs/test"),
+            &[],
         );
         assert!(env.contains_key("MACOSX_DEPLOYMENT_TARGET"));
         let target = &env["MACOSX_DEPLOYMENT_TARGET"];
@@ -304,12 +487,10 @@ mod tests {
             &PathBuf::from("/opt/nextbrew/prefix"),
             Path::new("/tmp/build/src"),
             Path::new("/tmp/logs/test"),
+            &[],
         );
         assert_eq!(env["HOME"], "/tmp/build/src/.brew_home");
-        assert_eq!(
-            env["PATH"],
-            "/opt/nextbrew/prefix/bin:/usr/bin:/bin:/usr/sbin:/sbin"
-        );
+        assert_eq!(env["PATH"], "/usr/bin:/bin:/usr/sbin:/sbin");
         assert_eq!(env["GOPATH"], "/opt/nextbrew/prefix/cache/go_mod_cache");
         assert_eq!(env["NEXTBREW_LOGS"], "/tmp/logs/test");
         assert_eq!(env["GIT_CONFIG_GLOBAL"], "/dev/null");
@@ -323,9 +504,77 @@ mod tests {
             &PathBuf::from("/opt/nextbrew/prefix"),
             Path::new("/tmp/build/src"),
             Path::new("/tmp/logs/test"),
+            &[],
         );
         assert!(env.contains_key("NEXTBREW_PREFIX"));
         assert!(env.contains_key("NEXTBREW_FORMULA_NAME"));
         assert!(env.contains_key("MAKEFLAGS"));
+    }
+
+    #[test]
+    fn dependencies_are_reached_as_superenv_reaches_them() {
+        let tmp = tempfile::tempdir().unwrap();
+        let prefix = tmp.path();
+        for dir in [
+            "include",
+            "lib",
+            "opt/ncurses/bin",
+            "opt/ncurses/include",
+            "opt/ncurses/lib/pkgconfig",
+            "opt/ncurses/share/aclocal",
+            "opt/xz/bin",
+            "opt/xz/include",
+            "opt/xz/lib/pkgconfig",
+            "opt/python@3.13/libexec/bin",
+            "opt/python@3.14/libexec/bin",
+        ] {
+            std::fs::create_dir_all(prefix.join(dir)).unwrap();
+        }
+        let dep = |name: &str, keg_only| BuildDep {
+            name: name.into(),
+            keg_only,
+        };
+        let deps = [
+            dep("ncurses", true),
+            dep("xz", false),
+            dep("python@3.13", false),
+            dep("python@3.14", false),
+        ];
+        let env: HashMap<_, _> = superenv_paths(prefix, &deps).into_iter().collect();
+        let p = |sub: &str| prefix.join(sub).display().to_string();
+        assert_eq!(
+            env["PATH"],
+            format!(
+                "{}:{}:{}:{}:/usr/bin:/bin:/usr/sbin:/sbin",
+                p("opt/ncurses/bin"),
+                p("opt/xz/bin"),
+                p("opt/python@3.14/libexec/bin"),
+                p("opt/python@3.13/libexec/bin"),
+            )
+        );
+        assert_eq!(
+            env["PKG_CONFIG_PATH"],
+            format!(
+                "{}:{}",
+                p("opt/ncurses/lib/pkgconfig"),
+                p("opt/xz/lib/pkgconfig")
+            )
+        );
+        if !cfg!(target_os = "macos") {
+            assert_eq!(env["PKG_CONFIG_LIBDIR"], "");
+        }
+        assert_eq!(env["ACLOCAL_PATH"], p("opt/ncurses/share/aclocal"));
+        assert_eq!(
+            env["CMAKE_PREFIX_PATH"],
+            format!("{}:{}", p("opt/ncurses"), prefix.display())
+        );
+        // Only keg-only dependencies need their own paths.
+        assert_eq!(env["CPATH"], p("opt/ncurses/include"));
+        assert_eq!(env["C_INCLUDE_PATH"], p("include"));
+        assert_eq!(
+            env["LIBRARY_PATH"],
+            format!("{}:{}", p("opt/ncurses/lib"), p("lib"))
+        );
+        assert_eq!(env["CFLAGS"], "-Os");
     }
 }

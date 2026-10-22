@@ -75,7 +75,7 @@ fn index_max_age() -> Duration {
         .unwrap_or(INDEX_MAX_AGE)
 }
 
-const HOMEBREW_CORE_RAW_BASE: &str =
+pub(crate) const HOMEBREW_CORE_RAW_BASE: &str =
     "https://raw.githubusercontent.com/Homebrew/homebrew-core/main";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

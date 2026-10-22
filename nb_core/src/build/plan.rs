@@ -20,7 +20,10 @@ pub enum InstallMethod {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BuildPlan {
     pub formula_name: String,
+    /// The keg's version, with the revision (`pkg_version`).
     pub version: String,
+    /// The source's version, without it (`version`).
+    pub stable_version: String,
     pub source_url: String,
     pub source_checksum: Option<String>,
     pub ruby_source_path: Option<String>,
@@ -45,6 +48,7 @@ impl BuildPlan {
         Some(Self {
             formula_name: formula.name.clone(),
             version,
+            stable_version: formula.versions.stable.clone(),
             source_url: source.url.clone(),
             source_checksum: source.checksum.clone(),
             ruby_source_path: formula.ruby_source_path.clone(),
