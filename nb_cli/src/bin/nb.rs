@@ -287,8 +287,12 @@ async fn run(cli: Cli) -> Result<(), nb_core::Error> {
             commands::tap::trust_kind(tap, formula, cask, command),
             commands::tap::TrustAction::Untrust,
         ),
-        Commands::Services { command } => {
-            commands::services::execute(&installer, command, cli.verbose > 0).await
+        Commands::Services {
+            command,
+            sudo_service_user,
+        } => {
+            commands::services::execute_as(&installer, command, cli.verbose > 0, sudo_service_user)
+                .await
         }
         Commands::Postinstall { formulas } => {
             commands::postinstall::execute(&mut installer, formulas, &mut ui).await

@@ -187,6 +187,18 @@ fn current_user() -> String {
         })
 }
 
+/// `System.user_exists?`.
+fn user_exists(name: &str) -> bool {
+    if name == current_user() {
+        return true;
+    }
+    let Ok(name) = std::ffi::CString::new(name) else {
+        return false;
+    };
+    // SAFETY: `name` is a valid C string; only the pointer's nullness is read.
+    !unsafe { libc::getpwnam(name.as_ptr()) }.is_null()
+}
+
 fn home() -> Result<PathBuf, nb_core::Error> {
     std::env::var_os("HOME")
         .map(PathBuf::from)
@@ -198,10 +210,33 @@ pub async fn execute(
     command: Option<ServicesCommands>,
     verbose: bool,
 ) -> Result<(), nb_core::Error> {
+    execute_as(installer, command, verbose, None).await
+}
+
+pub async fn execute_as(
+    installer: &nb_io::Installer,
+    command: Option<ServicesCommands>,
+    verbose: bool,
+    sudo_service_user: Option<String>,
+) -> Result<(), nb_core::Error> {
     if !cfg!(any(target_os = "macos", target_os = "linux")) {
         return Err(usage("`nb services` is supported only on macOS and Linux."));
     }
-    let launchd = Launchd::current(home()?);
+    let mut launchd = Launchd::current(home()?);
+    if sudo_service_user.is_some() {
+        if !launchd.root() {
+            return Err(usage(format!(
+                "`{BIN} --sudo-service-user` is supported only when running as root!"
+            )));
+        }
+        if launchd.systemd {
+            return Err(usage(format!(
+                "`{BIN} --sudo-service-user` is currently supported only on macOS!"
+            )));
+        }
+    }
+    launchd.service_user = sudo_service_user;
+    let launchd = launchd;
     let command = command.unwrap_or(ServicesCommands::List { json: false });
     let (subcommand, formulas, all) = match &command {
         ServicesCommands::List { .. } | ServicesCommands::Cleanup => ("list", Vec::new(), false),
@@ -361,7 +396,7 @@ fn start(
             println!("   {}", contents.replace('\n', "\n   "));
             println!();
         }
-        if launchd.root() {
+        if launchd.root() && launchd.service_user.is_none() {
             take_root_ownership(service)?;
         }
         load(service, None, true, launchd)?;
@@ -375,7 +410,14 @@ fn install_service_file(service: &Service, file: Option<&Path>) -> Result<(), nb
     let contents = match file {
         Some(file) => std::fs::read_to_string(file)
             .map_err(nb_core::Error::file("failed to read the service file"))?,
-        None => service.contents()?,
+        None => match &service.launchd.service_user {
+            Some(user) if !service.launchd.systemd => {
+                ohai(format!("Setting username in {} to: {user}", service.label));
+                let contents = service.contents()?;
+                nb_io::services::set_plist_user_name(&contents, user).unwrap_or(contents)
+            }
+            _ => service.contents()?,
+        },
     };
     remove_service_files(service);
     let dest = service.dest();
@@ -520,7 +562,7 @@ fn load(
     enable: bool,
     launchd: &Launchd,
 ) -> Result<(), nb_core::Error> {
-    if launchd.root() && !service.requires_root() {
+    if launchd.root() && !service.requires_root() && launchd.service_user.is_none() {
         opoo(format!(
             "`{}` must be run as non-root to start at user login!",
             service.name()
@@ -536,6 +578,15 @@ fn load(
         if !service.dest().exists() {
             install_service_file(service, file)?;
         }
+    }
+    if let Some(user) = &launchd.service_user
+        && !user_exists(user)
+    {
+        let function = if enable { "start" } else { "run" };
+        return Err(usage(format!(
+            "Cannot {function} `{}` as `{user}` is not a user!",
+            service.name()
+        )));
     }
     if let Some(spec) = &service.formula.spec {
         for dir in spec.path_dirs() {

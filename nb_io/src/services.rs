@@ -760,6 +760,32 @@ pub fn plist_label(path: &Path) -> Option<String> {
     Some(contents[start..end].to_string())
 }
 
+/// The plist with its job run as `user` (`--sudo-service-user`). Homebrew
+/// re-emits the plist with sorted keys; the key goes in that place among
+/// one-tab keys (as `to_plist` writes them), else at the end of the dict.
+pub fn set_plist_user_name(contents: &str, user: &str) -> Option<String> {
+    if let Some(key) = contents.find("<key>UserName</key>") {
+        let start = key + contents[key..].find("<string>")? + "<string>".len();
+        let end = start + contents[start..].find("</string>")?;
+        return Some(format!("{}{user}{}", &contents[..start], &contents[end..]));
+    }
+    let at = contents
+        .match_indices("\n\t<key>")
+        .find(|(i, _)| {
+            let key = &contents[i + "\n\t<key>".len()..];
+            key.split("</key>")
+                .next()
+                .is_some_and(|key| key > "UserName")
+        })
+        .map(|(i, _)| i + 1)
+        .or_else(|| contents.rfind("</dict>"))?;
+    Some(format!(
+        "{}\t<key>UserName</key>\n\t<string>{user}</string>\n{}",
+        &contents[..at],
+        &contents[at..]
+    ))
+}
+
 /// The `UserName` a plist runs its job as, if it names one.
 pub fn plist_user_name(path: &Path) -> Option<String> {
     let contents = std::fs::read_to_string(path).ok()?;
@@ -848,6 +874,8 @@ pub struct Launchd {
     home: PathBuf,
     /// systemd instead of launchd, as on Linux.
     pub systemd: bool,
+    /// `--sudo-service-user`: the user root runs the jobs as.
+    pub service_user: Option<String>,
 }
 
 impl Launchd {
@@ -859,6 +887,7 @@ impl Launchd {
             root: euid == 0,
             home,
             systemd: cfg!(target_os = "linux"),
+            service_user: None,
         }
     }
 
@@ -1148,6 +1177,22 @@ mod tests {
             "[Unit]\nDescription=Homebrew generated timer for backup\n\n\
              [Install]\nWantedBy=timers.target\n\n[Timer]\n\
              Unit=dev.nextbrew.backup.service\nPersistent=true\nOnCalendar=Mon *-*-* 04:05:00\n"
+        );
+    }
+
+    #[test]
+    fn the_user_name_goes_where_homebrew_sorts_it() {
+        let plist = plist_of(r#"{"run": "/bin/x", "working_dir": "/tmp"}"#, "x");
+        let with_user = set_plist_user_name(&plist, "admin").unwrap();
+        assert!(with_user.contains(
+            "\t<key>UserName</key>\n\t<string>admin</string>\n\t<key>WorkingDirectory</key>"
+        ));
+        let replaced = set_plist_user_name(&with_user, "other").unwrap();
+        assert!(replaced.contains("<string>other</string>") && !replaced.contains("admin"));
+        let last = set_plist_user_name("<dict>\n</dict>\n", "a").unwrap();
+        assert_eq!(
+            last,
+            "<dict>\n\t<key>UserName</key>\n\t<string>a</string>\n</dict>\n"
         );
     }
 

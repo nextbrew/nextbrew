@@ -435,6 +435,9 @@ pub enum Commands {
     },
     /// Manage background services with launchd
     Services {
+        /// When run as root on macOS, run the service(s) as this user
+        #[arg(long, global = true)]
+        sudo_service_user: Option<String>,
         #[command(subcommand)]
         command: Option<ServicesCommands>,
     },
