@@ -123,6 +123,9 @@ pub struct BuildDep {
     /// Needed at run time (`Build#install`'s `run_time_deps`), not only to
     /// build.
     pub run_time: bool,
+    /// Its own dependencies, build ones too: `Formula#deps`, which
+    /// `Formula["x"].python3` reads.
+    pub dependencies: Vec<String>,
 }
 
 /// `Superenv#setup_build_environment`'s paths without its compiler
@@ -575,6 +578,7 @@ mod tests {
             name: name.into(),
             keg_only,
             run_time,
+            dependencies: Vec::new(),
         };
         let deps = [
             dep("ncurses", true, false),

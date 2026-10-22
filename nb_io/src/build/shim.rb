@@ -55,6 +55,8 @@ FORMULA_NAME = ENV.fetch("NEXTBREW_FORMULA_NAME")
 FORMULA_VERSION = ENV.fetch("NEXTBREW_FORMULA_VERSION")
 FORMULA_FILE = ENV.fetch("NEXTBREW_FORMULA_FILE")
 INSTALLED_DEPS = JSON.parse(ENV.fetch("NEXTBREW_INSTALLED_DEPS", "{}"))
+# Each dependency's own dependencies, build ones too.
+FORMULA_DEPS = JSON.parse(ENV.fetch("NEXTBREW_FORMULA_DEPS", "{}"))
 # Where the source was unpacked, wherever the formula goes from there.
 BUILDPATH = Pathname.new(Dir.pwd)
 # Homebrew's own, which formulae use directly.
@@ -926,11 +928,7 @@ class Formula
 
   # `Formula#python3`: the one `python@3.x` dependency's interpreter.
   def python3
-    pythons = self.class.dependency_names.grep(/\Apython@3\.\d+\z/)
-    unless pythons.length == 1
-      odie "`#{name}` must have exactly one `python@3.x` dependency to use `python3`"
-    end
-    formula_opt_bin(pythons.first) + pythons.first.delete("@")
+    nextbrew_python3(name, self.class.dependency_names)
   end
 
   # `Formula#stable`: the stable source's URL, mirrors and version.
@@ -1201,6 +1199,10 @@ class FormulaRef
 
   def any_installed_version; self; end
 
+  def python3
+    nextbrew_python3(@name, FORMULA_DEPS.fetch(@name, []))
+  end
+
   def to_s; @name; end
 end
 
@@ -1239,6 +1241,17 @@ class InreplaceString
   end
 
   def to_s; @content; end
+end
+
+# `Formula#python3`: the `python3.x` of the formula's one `python@3.x`
+# dependency.
+def nextbrew_python3(name, dependencies)
+  pythons = dependencies.grep(/\Apython@3\.\d+\z/)
+  if pythons.length != 1
+    found = pythons.empty? ? "none" : pythons.join(", ")
+    raise "`#{name}` must have exactly one `python@3.x` dependency to use `python3`; found #{found}."
+  end
+  Pathname.new(HOMEBREW_PREFIX) + "opt" + pythons.first + "bin" + pythons.first.delete("@")
 end
 
 def shared_library(name, version = nil)

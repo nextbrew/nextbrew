@@ -51,6 +51,13 @@ impl Installer {
                     run_time: run_time.contains(&name),
                     name,
                     keg_only: dep.is_some_and(nb_core::Formula::is_keg_only),
+                    dependencies: dep
+                        .map(|dep| {
+                            let mut all = dep.runtime_dependencies();
+                            all.extend(dep.all_build_dependencies());
+                            all
+                        })
+                        .unwrap_or_default(),
                 });
                 continue;
             }

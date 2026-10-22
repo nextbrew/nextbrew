@@ -83,6 +83,14 @@ impl BuildExecutor {
 
         let deps_json = serde_json::to_string(installed_deps).unwrap_or_else(|_| "{}".into());
         env.insert("NEXTBREW_INSTALLED_DEPS".into(), deps_json);
+        let formula_deps: HashMap<&str, &[String]> = deps
+            .iter()
+            .map(|dep| (dep.name.as_str(), dep.dependencies.as_slice()))
+            .collect();
+        env.insert(
+            "NEXTBREW_FORMULA_DEPS".into(),
+            serde_json::to_string(&formula_deps).unwrap_or_else(|_| "{}".into()),
+        );
 
         let ruby = match ruby {
             Some(ruby) => ruby,
