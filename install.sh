@@ -65,12 +65,13 @@ if [[ -d "/opt/nextbrew" ]]; then
     NEXTBREW_ROOT="/opt/nextbrew"
 elif [[ "$(uname -s)" == "Darwin" ]]; then
     NEXTBREW_ROOT="/opt/nextbrew"
+elif [[ -d "${XDG_DATA_HOME:-$HOME/.local/share}/nextbrew" ]]; then
+    NEXTBREW_ROOT="${XDG_DATA_HOME:-$HOME/.local/share}/nextbrew"
 else
-    XDG_DATA_HOME="${XDG_DATA_HOME:-$HOME/.local/share}"
-    NEXTBREW_ROOT="$XDG_DATA_HOME/nextbrew"
+    NEXTBREW_ROOT="/home/nextbrew/.nextbrew"
 fi
 
-if [[ "$(uname -s)" == "Darwin" ]]; then
+if [[ "$(uname -s)" == "Darwin" || "$NEXTBREW_ROOT" == "/home/nextbrew/.nextbrew" ]]; then
     : "${NEXTBREW_PREFIX:=$NEXTBREW_ROOT}"
 else
     : "${NEXTBREW_PREFIX:=$NEXTBREW_ROOT/prefix}"

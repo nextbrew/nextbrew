@@ -210,19 +210,27 @@ pub fn get_root_path(cli_root: Option<PathBuf>) -> PathBuf {
     }
 
     if cfg!(target_os = "macos") {
-        legacy_root
-    } else {
-        let xdg_data_home = std::env::var("XDG_DATA_HOME")
-            .ok()
-            .map(PathBuf::from)
-            .unwrap_or_else(|| {
-                std::env::var("HOME")
-                    .map(|h| PathBuf::from(h).join(".local").join("share"))
-                    .unwrap_or_else(|_| legacy_root.clone())
-            });
-        xdg_data_home.join("nextbrew")
+        return legacy_root;
+    }
+    // Earlier Linux installs kept everything under $XDG_DATA_HOME.
+    let xdg_root = std::env::var("XDG_DATA_HOME")
+        .ok()
+        .map(PathBuf::from)
+        .or_else(|| {
+            std::env::var("HOME")
+                .ok()
+                .map(|h| PathBuf::from(h).join(".local").join("share"))
+        })
+        .map(|data| data.join("nextbrew"));
+    match xdg_root {
+        Some(root) if root.exists() => root,
+        _ => PathBuf::from(LINUX_DEFAULT_ROOT),
     }
 }
+
+/// As long as `/home/linuxbrew/.linuxbrew` at most, so the bottles Homebrew
+/// pins to its Cellar can be relocated into this one.
+pub const LINUX_DEFAULT_ROOT: &str = "/home/nextbrew/.nextbrew";
 
 pub fn get_prefix_path(cli_prefix: Option<PathBuf>, root: &Path) -> PathBuf {
     if let Some(prefix) = cli_prefix {
@@ -244,7 +252,7 @@ fn get_prefix_path_for_os(env_prefix: Option<PathBuf>, root: &Path, is_macos: bo
 }
 
 fn default_prefix_for_os(root: &Path, is_macos: bool) -> PathBuf {
-    if is_macos {
+    if is_macos || root == Path::new(LINUX_DEFAULT_ROOT) {
         root.to_path_buf()
     } else {
         root.join("prefix")
@@ -288,6 +296,13 @@ mod tests {
             get_prefix_path_for_os(None, &root, false),
             root.join("prefix")
         );
+    }
+
+    #[test]
+    fn linux_default_root_is_its_own_prefix() {
+        let root = PathBuf::from(super::LINUX_DEFAULT_ROOT);
+
+        assert_eq!(get_prefix_path_for_os(None, &root, false), root);
     }
 
     #[test]
