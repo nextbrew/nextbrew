@@ -148,6 +148,13 @@ pub fn report_build_failure(error: &nb_core::Error) {
     }
 }
 
+/// A package's failure while the others went on, said as the last one is
+/// at the end.
+pub fn report_failure(error: &nb_core::Error) {
+    report_build_failure(error);
+    eprintln!("{} {}", style("error:").red().bold(), error);
+}
+
 pub fn suggest_homebrew(formula: &str, error: &nb_core::Error) {
     // Homebrew refuses these too, and a failed build has said where to
     // report it.

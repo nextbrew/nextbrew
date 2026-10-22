@@ -82,6 +82,9 @@ pub struct Installer {
     /// The options casks are installed with (`--appdir`, `--no-quarantine`,
     /// ...), over `$HOMEBREW_CASK_OPTS`.
     cask_config: crate::installer::cask_config::CaskConfig,
+    /// The formulae the last plan installed (see
+    /// [`Installer::last_installed`]).
+    last_installed: Vec<(String, bool)>,
 }
 
 #[derive(Debug)]
@@ -102,6 +105,9 @@ pub struct PlannedInstall {
     pub link_rank: usize,
     /// Related formulae in the same plan that Homebrew installs later.
     pub link_later: Vec<String>,
+    /// Asked for, but a dependency of a formula asked for before it:
+    /// Homebrew installs it as that one's dependency, not on request.
+    pub as_earlier_dependency: bool,
 }
 
 #[derive(Debug)]
@@ -148,6 +154,14 @@ pub struct OutdatedPackage {
     pub is_source_build: bool,
 }
 
+/// One package's failure, while the rest go on: the last is kept to return,
+/// and the one it replaces is reported now, so none goes unsaid.
+fn keep_last(error: &mut Option<Error>, e: Error, report: &impl Fn(InstallProgress)) {
+    if let Some(earlier) = error.replace(e) {
+        report(InstallProgress::Failed { error: earlier });
+    }
+}
+
 impl Installer {
     #[allow(clippy::too_many_arguments)]
     pub fn new(
@@ -175,6 +189,7 @@ impl Installer {
             locks_dir,
             cache_dir,
             cask_config: Default::default(),
+            last_installed: Vec::new(),
         }
     }
 
@@ -219,6 +234,7 @@ impl Installer {
         link: bool,
         progress: Option<Arc<ProgressCallback>>,
     ) -> Result<ExecuteResult, Error> {
+        self.last_installed.clear();
         let report = |event: InstallProgress| {
             if let Some(ref cb) = progress {
                 cb(event);
@@ -314,7 +330,7 @@ impl Installer {
                 tokio::select! {
                     result = rx.recv(), if downloads_open => match result {
                         None => downloads_open = false,
-                        Some(Err(e)) => error = Some(e),
+                        Some(Err(e)) => keep_last(&mut error, e, &report),
                         Some(Ok(download)) => {
                             let job = BottleJob::new(download.index, &bottle_items[download.index]);
                             report(InstallProgress::UnpackStarted {
@@ -349,15 +365,17 @@ impl Installer {
                                     finished.push(&bottle_items[index]);
                                     ahead.extend(self.prepare_post_install_ahead(&bottle_items[index].formula));
                                 }
-                                Err(e) => error = Some(e),
+                                Err(e) => keep_last(&mut error, e, &report),
                             }
                         }
-                        Ok((_, Err(e))) => error = Some(e),
-                        Err(e) => {
-                            error = Some(Error::ExecutionError {
+                        Ok((_, Err(e))) => keep_last(&mut error, e, &report),
+                        Err(e) => keep_last(
+                            &mut error,
+                            Error::ExecutionError {
                                 message: format!("bottle preparation task failed: {e}"),
-                            })
-                        }
+                            },
+                            &report,
+                        ),
                     },
                 }
             }
@@ -380,16 +398,19 @@ impl Installer {
                     installed += 1;
                     finished.push(item);
                 }
-                Err(e) => {
-                    error = Some(e);
-                    continue;
-                }
+                Err(e) => keep_last(&mut error, e, &report),
             }
         }
 
         for task in ahead {
             let _ = task.await;
         }
+        let mut by_rank: Vec<&PlannedInstall> = finished.clone();
+        by_rank.sort_by_key(|item| item.link_rank);
+        self.last_installed = by_rank
+            .iter()
+            .map(|item| (item.install_name.clone(), item.as_earlier_dependency))
+            .collect();
         finished.sort_by_key(|item| positions.get(&item.install_name).copied());
         let mut notices = Vec::new();
         let mut post_install_failures = Vec::new();
@@ -498,6 +519,15 @@ impl Installer {
         }
         self.db.set_pinned(name, pinned)?;
         Ok(true)
+    }
+
+    /// The formulae the last install, upgrade or reinstall put in, also
+    /// when some of the others failed: as Homebrew installs them, the names
+    /// asked for in order, each after the dependencies it brought in. Each
+    /// says whether it was asked for but went in as the dependency of one
+    /// asked for before it.
+    pub fn last_installed(&self) -> &[(String, bool)] {
+        &self.last_installed
     }
 
     pub fn is_installed(&self, name: &str) -> bool {
@@ -666,6 +696,7 @@ pub fn create_installer(
         locks_dir,
         cache_dir: root.join("cache"),
         cask_config: Default::default(),
+        last_installed: Vec::new(),
     })
 }
 
@@ -961,6 +992,11 @@ mod tests {
 
         assert!(installer.db.get_installed("mainpkg").unwrap().on_request);
         assert!(!installer.db.get_installed("deplib").unwrap().on_request);
+        // A dependency before the formula that brought it in.
+        assert_eq!(
+            installer.last_installed(),
+            [("deplib".into(), false), ("mainpkg".into(), false)]
+        );
 
         let deps = installer.dependencies("mainpkg", false).await.unwrap();
         assert_eq!(deps.into_iter().collect::<Vec<_>>(), ["deplib"]);
@@ -1240,6 +1276,7 @@ mod tests {
 
         assert!(installer.db.get_installed("goodpkg").is_some());
         assert!(installer.db.get_installed("badpkg").is_none());
+        assert_eq!(installer.last_installed(), [("goodpkg".into(), false)]);
         assert!(root.join("cellar/goodpkg/1.0.0").exists());
     }
 

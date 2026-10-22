@@ -293,6 +293,7 @@ impl Installer {
             link_keg_only: false,
             link_overwrite: Vec::new(),
             link_rank: 0,
+            as_earlier_dependency: false,
             link_later: Vec::new(),
         })
     }
@@ -558,7 +559,13 @@ fn rank_like_homebrew(
     }
     let mut seen = HashSet::new();
     let mut order = Vec::new();
+    let mut earlier_dependencies = HashSet::new();
     for name in names {
+        if let Some(formula) = formulas.get(name.as_str())
+            && seen.contains(&formula.name)
+        {
+            earlier_dependencies.insert(formula.name.clone());
+        }
         visit(name, formulas, &mut seen, &mut order);
     }
     for item in items {
@@ -566,6 +573,7 @@ fn rank_like_homebrew(
             .iter()
             .position(|name| *name == item.formula.name)
             .unwrap_or(usize::MAX);
+        item.as_earlier_dependency = earlier_dependencies.contains(&item.formula.name);
     }
 }
 
@@ -1338,5 +1346,39 @@ mod tests {
 
         record(&mut installer, "tool-bottle");
         assert_eq!(installer.unneeded_formulae().await.unwrap(), ["go"]);
+    }
+
+    #[tokio::test]
+    async fn a_name_asked_for_after_one_that_needs_it_goes_in_as_its_dependency() {
+        let mock_server = MockServer::start().await;
+        let tmp = TempDir::new().unwrap();
+        let installer = installer_serving(
+            &mock_server,
+            &tmp,
+            &[
+                ("app", bottled_formula("app", &["lib"])),
+                ("lib", bottled_formula("lib", &[])),
+            ],
+        )
+        .await;
+        async fn marked(installer: &Installer, names: &[&str]) -> Vec<(String, bool)> {
+            let names: Vec<String> = names.iter().map(|name| name.to_string()).collect();
+            let plan = installer.plan(&names).await.unwrap();
+            let mut marked: Vec<(String, bool)> = plan
+                .items
+                .iter()
+                .map(|item| (item.formula.name.clone(), item.as_earlier_dependency))
+                .collect();
+            marked.sort();
+            marked
+        }
+        assert_eq!(
+            marked(&installer, &["app", "lib"]).await,
+            [("app".into(), false), ("lib".into(), true)]
+        );
+        assert_eq!(
+            marked(&installer, &["lib", "app"]).await,
+            [("app".into(), false), ("lib".into(), false)]
+        );
     }
 }

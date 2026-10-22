@@ -35,6 +35,9 @@ pub enum InstallProgress {
     PostInstallCompleted { name: String },
     /// A post-install step failed; the package stays installed
     PostInstallFailed { name: String, message: String },
+    /// A package failed while the rest went on. Only the last failure is
+    /// returned at the end, so the ones before it come here.
+    Failed { error: nb_core::Error },
 }
 
 /// Callback type for progress reporting

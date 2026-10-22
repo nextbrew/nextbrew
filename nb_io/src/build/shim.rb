@@ -916,6 +916,9 @@ class Formula
   def opt_include; opt_prefix + "include"; end
   def opt_share; opt_prefix + "share"; end
   def opt_pkgshare; opt_prefix + "share" + name; end
+  def opt_libexec; opt_prefix + "libexec"; end
+  def opt_elisp; opt_prefix + "share" + "emacs" + "site-lisp" + name; end
+  def opt_frameworks; opt_prefix + "Frameworks"; end
 
   # `Utils::Path::FormulaHelpers`: another formula's stable paths by name.
   def formula_opt_prefix(formula_name)
@@ -1188,6 +1191,12 @@ class FormulaRef
   def opt_lib; opt_prefix + "lib"; end
   def opt_include; opt_prefix + "include"; end
   def opt_bin; opt_prefix + "bin"; end
+  def opt_sbin; opt_prefix + "sbin"; end
+  def opt_libexec; opt_prefix + "libexec"; end
+  def opt_share; opt_prefix + "share"; end
+  def opt_pkgshare; opt_share + @name; end
+  def opt_elisp; opt_share + "emacs" + "site-lisp" + @name; end
+  def opt_frameworks; opt_prefix + "Frameworks"; end
   def lib; opt_lib; end
   def include; opt_include; end
 

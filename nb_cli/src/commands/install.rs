@@ -90,24 +90,16 @@ pub async fn execute(
             }
         };
 
-        let planned: Vec<String> = plan.items.iter().map(|i| i.formula.name.clone()).collect();
-        let result = execute_formula_plan(installer, &formulas, plan, no_link, ui).await?;
-        // In the order asked for, as Homebrew installs them; dependencies,
-        // not asked for, have none.
-        let short = |name: &String| name.rsplit('/').next().unwrap_or(name).to_string();
-        let mut order: Vec<String> = normalized_names
-            .iter()
-            .map(short)
-            .filter(|name| planned.contains(name))
-            .collect();
-        for name in planned {
-            if !order.contains(&name) {
-                order.push(name);
+        let result = execute_formula_plan(installer, &formulas, plan, no_link, ui).await;
+        // Also when some failed.
+        messages.record_installed(installer).await;
+        let result = match result {
+            Ok(result) => result,
+            Err(e) => {
+                show_caveats(ui, &messages)?;
+                return Err(e);
             }
-        }
-        for name in &order {
-            messages.record_formula(installer, name).await;
-        }
+        };
         installed_count += result.installed;
         notices.extend(result.notices);
         post_install_failures.extend(result.post_install_failures);
@@ -426,6 +418,9 @@ pub async fn execute_formula_plan(
                     pb.set_message(format!("{} post-install failed", style("✗").red()));
                     pb.finish();
                 }
+            }
+            InstallProgress::Failed { error } => {
+                multi_clone.suspend(|| crate::utils::report_failure(&error));
             }
         }
     }));

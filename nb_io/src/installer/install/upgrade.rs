@@ -62,6 +62,7 @@ impl Installer {
         // One lock for the entire flow — uninstall + install must not race
         // with other nb processes touching the same package.
         let _lock = acquire_install_lock(&self.locks_dir)?;
+        self.last_installed.clear();
 
         let old = self.db.get_installed(name).ok_or(Error::NotInstalled {
             name: name.to_string(),

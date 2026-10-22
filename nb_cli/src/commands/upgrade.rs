@@ -286,6 +286,9 @@ pub(crate) async fn replace_packages(
                     pb.finish();
                 }
             }
+            InstallProgress::Failed { error } => {
+                multi_clone.suspend(|| crate::utils::report_failure(&error));
+            }
         }
     }));
 
@@ -317,13 +320,14 @@ pub(crate) async fn replace_packages(
                 upgraded += 1;
                 match name.strip_prefix("cask:") {
                     Some(token) => messages.record_cask(installer, token).await,
-                    None => messages.record_formula(installer, name).await,
+                    None => messages.record_installed(installer).await,
                 }
                 notices.extend(result.notices);
                 post_install_failures.extend(result.post_install_failures);
             }
             Err(e) => {
                 ui.step_fail().map_err(ui_error)?;
+                messages.record_installed(installer).await;
                 errors.push((name.clone(), e));
             }
         }

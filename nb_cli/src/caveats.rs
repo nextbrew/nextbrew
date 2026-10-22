@@ -57,6 +57,17 @@ pub(crate) struct Messages {
 }
 
 impl Messages {
+    /// What the last plan installed, as Homebrew records it: in the order
+    /// installed, and none for one asked for that went in as the
+    /// dependency of one asked for before it.
+    pub async fn record_installed(&mut self, installer: &nb_io::Installer) {
+        for (name, as_dependency) in installer.last_installed().to_vec() {
+            if !as_dependency {
+                self.record_formula(installer, &name).await;
+            }
+        }
+    }
+
     /// `FormulaInstaller#caveats` for an installed formula: only one
     /// installed on request has any.
     pub async fn record_formula(&mut self, installer: &nb_io::Installer, name: &str) {
@@ -70,7 +81,14 @@ impl Messages {
         let Ok(json) = installer.formula_json(&full_name).await else {
             return;
         };
-        let json = nb_io::installer::for_current_platform(&json);
+        let mut json = nb_io::installer::for_current_platform(&json);
+        // Homebrew builds a formula from its file, and shows the caveats
+        // from there too.
+        if keg.store_key.starts_with("source:")
+            && let Some(caveats) = json["caveats"].as_str()
+        {
+            json["caveats"] = Value::String(as_from_file(installer, caveats, name, &keg.version));
+        }
         let keg_only = serde_json::from_value::<nb_core::Formula>(json.clone())
             .is_ok_and(|formula| formula.is_keg_only());
         let places = Places::new(installer, None);
@@ -178,14 +196,21 @@ pub(crate) async fn formula_caveats(
     shadowed_path: bool,
 ) -> String {
     let mut parts = Vec::new();
+    let keg = installer.get_installed(name);
     if let Some(caveats) = json["caveats"].as_str().filter(|c| !c.is_empty()) {
-        let caveats = places.expand_formula(caveats);
+        // A tap's formula Homebrew always reads from its file.
+        let caveats = match &keg {
+            Some(keg) if full_name.contains('/') => {
+                as_from_file(installer, caveats, name, &keg.version)
+            }
+            _ => caveats.to_string(),
+        };
+        let caveats = places.expand_formula(&caveats);
         parts.push(format!(
             "{}\n",
             caveats.strip_suffix('\n').unwrap_or(&caveats)
         ));
     }
-    let keg = installer.get_installed(name);
     let linked = keg.is_some() && installer.is_linked(name).unwrap_or(false);
     if keg_only && !linked {
         let keg_path = keg
@@ -248,6 +273,28 @@ pub(crate) async fn formula_caveats(
 
 /// `Caveats#keg_only_text`: why it was not linked, and for an installed
 /// keg the lines that put it on `PATH` and before compilers.
+/// Caveats as Homebrew renders them from the formula's file rather than
+/// the API: there `prefix` is the opt path once the installed keg is
+/// optlinked (`Formula#prefix`), where the API has the keg's own.
+fn as_from_file(installer: &nb_io::Installer, caveats: &str, name: &str, version: &str) -> String {
+    let opt = installer.prefix().join("opt").join(name);
+    let keg = installer.keg_path(name, version);
+    let optlinked = std::fs::canonicalize(&opt)
+        .ok()
+        .is_some_and(|opt| std::fs::canonicalize(&keg).is_ok_and(|keg| keg == opt));
+    if !optlinked {
+        return caveats.to_string();
+    }
+    opt_prefixed(caveats, name, version)
+}
+
+fn opt_prefixed(caveats: &str, name: &str, version: &str) -> String {
+    caveats.replace(
+        &format!("$HOMEBREW_CELLAR/{name}/{version}"),
+        &format!("$HOMEBREW_PREFIX/opt/{name}"),
+    )
+}
+
 pub(crate) fn keg_only_text(
     name: &str,
     reason: &Value,
@@ -641,6 +688,17 @@ mod tests {
         std::fs::create_dir_all(path.parent().unwrap()).unwrap();
         std::fs::write(path, "#!/bin/sh\n").unwrap();
         std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o755)).unwrap();
+    }
+
+    #[test]
+    fn the_kegs_own_path_becomes_its_opt_path() {
+        let caveats = "unchanged from\n$HOMEBREW_CELLAR/nvm/0.40.8 will destroy\n\
+                       $HOMEBREW_CELLAR/nvm/0.40.8/etc/x $HOMEBREW_CELLAR/node/1.0";
+        assert_eq!(
+            opt_prefixed(caveats, "nvm", "0.40.8"),
+            "unchanged from\n$HOMEBREW_PREFIX/opt/nvm will destroy\n\
+             $HOMEBREW_PREFIX/opt/nvm/etc/x $HOMEBREW_CELLAR/node/1.0"
+        );
     }
 
     #[test]
