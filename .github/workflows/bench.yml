@@ -1,0 +1,149 @@
+name: bench
+
+# Install times of nextbrew, Homebrew, zerobrew, nanobrew and wax on the
+# same formulae (bench/clients.sh), one round per runner, summarised by
+# bench/report.py into the tables and site/data/benchmarks.json the site
+# publishes. By hand: the clients' versions are pinned below.
+on:
+  workflow_dispatch:
+    inputs:
+      rounds:
+        description: Rounds, each on its own runner (1-5)
+        default: '3'
+      formulae:
+        description: Formulae (space-separated; empty for the Justfile's BENCH_QUICK_PACKAGES)
+        default: ''
+
+permissions: {}
+
+defaults:
+  run:
+    shell: bash --noprofile --norc -euo pipefail {0}
+
+concurrency:
+  group: bench-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  plan:
+    name: plan
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions: {}
+    outputs:
+      rounds: ${{ steps.rounds.outputs.rounds }}
+    steps:
+      - name: Rounds
+        id: rounds
+        env:
+          ROUNDS: ${{ inputs.rounds }}
+        run: |
+          [[ "$ROUNDS" =~ ^[1-5]$ ]] || { echo "rounds must be 1-5" >&2; exit 1; }
+          echo "rounds=$(seq -s, 1 "$ROUNDS" | sed 's/^/[/; s/$/]/')" >> "$GITHUB_OUTPUT"
+
+  round:
+    name: round ${{ matrix.round }}
+    needs: plan
+    runs-on: macos-latest
+    timeout-minutes: 180
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        round: ${{ fromJSON(needs.plan.outputs.rounds) }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Setup Rust
+        uses: ./.github/actions/setup-rust
+        with:
+          cache-key: macos-latest-release
+
+      - name: Build nb
+        run: |
+          cargo build --release --locked --package nb_cli --bin nb
+          mkdir -p "$HOME/bin"
+          cp target/release/nb "$HOME/bin/nb"
+          echo "$HOME/bin" >> "$GITHUB_PATH"
+
+      - name: Install the other clients
+        run: |
+          fetch() { # url sha256 file
+            curl -fsSL -o "$3" "$1"
+            echo "$2  $3" | shasum -a 256 -c -
+          }
+          fetch https://github.com/lucasgelfond/zerobrew/releases/download/v0.4.2/zb-darwin-arm64 \
+            c58b0167df1da80f7daf65caf3815150b1eaf369991867da9fe087155e3f98dc "$HOME/bin/zb"
+          fetch https://github.com/plyght/wax/releases/download/v0.20.31/wax-macos-arm64 \
+            c4c0b09eeef388e6c90eaca1c42b57362b0fd072006929bb34d2478472b66411 "$HOME/bin/wax"
+          fetch https://github.com/justrach/nanobrew/releases/download/v0.1.212/nb-arm64-apple-darwin.tar.gz \
+            17d11f5f0b727db70ef6a330903085999cf50f6ac0733efaffc6615c72727b3a nanobrew.tar.gz
+          mkdir -p "$HOME/nanobrew-bin"
+          tar -xzf nanobrew.tar.gz -C "$HOME/nanobrew-bin"
+          rm nanobrew.tar.gz
+          chmod +x "$HOME/bin/zb" "$HOME/bin/wax"
+          sudo "$HOME/nanobrew-bin/nb" init
+
+      # The runner's Homebrew comes with formulae installed; bench/clients.sh
+      # removes them before it starts.
+      - name: Update Homebrew
+        run: brew update --quiet
+
+      - name: Run
+        env:
+          FORMULAE: ${{ inputs.formulae }}
+        run: |
+          export NANOBREW="$HOME/nanobrew-bin/nb"
+          [[ -n "$FORMULAE" ]] || FORMULAE=$(sed -n "s/^BENCH_QUICK_PACKAGES := '\(.*\)'$/\1/p" Justfile)
+          read -ra formulae <<< "$FORMULAE"
+          bench/clients.sh "$RUNNER_TEMP/round" "${formulae[@]}"
+
+      - name: Upload
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: bench-round-${{ matrix.round }}
+          path: ${{ runner.temp }}/round
+          if-no-files-found: error
+
+  report:
+    name: report
+    needs: round
+    if: always() && needs.round.result != 'skipped'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Download
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          pattern: bench-round-*
+          path: rounds
+
+      - name: Report
+        run: |
+          first=$(find rounds -mindepth 1 -maxdepth 1 -name "bench-round-*" | sort | head -1)
+          env_of() { sed -n "s/^$1\t//p" "$first/env.tsv"; }
+          date=$(env_of date | cut -c1-10)
+          machine="GitHub Actions macos-latest runner ($(env_of cpu)), $(env_of os), $(env_of bandwidth)"
+          python3 bench/report.py --machine "$machine" --version brew="$(env_of brew | awk '{ print $2 }' | cut -d- -f1)" \
+            --out "results/$date" --site site/data/benchmarks.json rounds/bench-round-*/ > /dev/null
+          cp site/data/benchmarks.json "results/$date/"
+          cat "results/$date/benchmark.md" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: bench-report
+          path: results
+          if-no-files-found: error
