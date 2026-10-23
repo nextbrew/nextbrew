@@ -7,7 +7,7 @@
     "build": "next build",
     "postbuild": "pagefind --site .next/server/app --output-path out/_pagefind && node scripts/llms.mjs && scripts/check-out.sh",
     "dev": "cp ../install.sh public/install && next dev",
-    "test": "node --test scripts/",
+    "test": "node --test 'scripts/*.test.mjs'",
     "deploy": "wrangler pages deploy out --project-name nextbrew"
   },
   "dependencies": {
