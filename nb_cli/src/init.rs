@@ -108,15 +108,7 @@ pub fn run_init(
         prefix.join("Cellar"),
     ];
 
-    let need_sudo = dirs_to_create.iter().any(|d| {
-        if d.exists() {
-            !is_writable(d)
-        } else {
-            d.parent()
-                .map(|p| p.exists() && !is_writable(p))
-                .unwrap_or(true)
-        }
-    });
+    let need_sudo = dirs_to_create.iter().any(|d| needs_sudo(d));
 
     if need_sudo {
         ui.info("Creating directories (requires sudo)...")?;
@@ -248,6 +240,14 @@ fn fish_shell_quote(value: &str) -> String {
             .replace('"', "\\\"")
             .replace('$', "\\$")
     )
+}
+
+/// Whether creating `dir` needs sudo: its nearest existing ancestor (or `dir`
+/// itself) isn't writable, e.g. `/home/nextbrew/.nextbrew` when only `/home` exists.
+fn needs_sudo(dir: &Path) -> bool {
+    dir.ancestors()
+        .find(|a| a.exists())
+        .is_none_or(|a| !is_writable(a))
 }
 
 /// Where nb and nbx live: `NEXTBREW_BIN` (install.sh exports the directory it
@@ -696,6 +696,22 @@ mod tests {
         fs::create_dir(&prefix).unwrap();
 
         assert!(!needs_init(&root, &prefix));
+    }
+
+    #[test]
+    fn needs_sudo_checks_nearest_existing_ancestor() {
+        let tmp = TempDir::new().unwrap();
+        let readonly = tmp.path().join("readonly");
+        fs::create_dir(&readonly).unwrap();
+        fs::set_permissions(&readonly, fs::Permissions::from_mode(0o555)).unwrap();
+
+        let deep = readonly.join("nextbrew/.nextbrew/store");
+        let result = needs_sudo(&deep);
+        let writable = needs_sudo(&tmp.path().join("a/b/c"));
+
+        fs::set_permissions(&readonly, fs::Permissions::from_mode(0o755)).unwrap();
+        assert!(result);
+        assert!(!writable);
     }
 
     #[test]

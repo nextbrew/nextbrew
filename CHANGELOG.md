@@ -7,7 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-## [0.1.0]
+## [0.1.1] - 2026-10-23
+
+### Fixed
+- `nb init` on Linux asks for sudo to create `/home/nextbrew/.nextbrew` instead of failing with "Permission denied"
+
+## [0.1.0] - 2026-10-23
 
 First release of nextbrew, as `nb` and `nbx`.
 
