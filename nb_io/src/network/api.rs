@@ -78,6 +78,16 @@ fn index_max_age() -> Duration {
 pub(crate) const HOMEBREW_CORE_RAW_BASE: &str =
     "https://raw.githubusercontent.com/Homebrew/homebrew-core/main";
 
+/// homebrew-core's files at `git_head` (the API's `tap_git_head`, the
+/// commit the API was made from), as Homebrew fetches a formula's source;
+/// at `main` without one.
+pub(crate) fn homebrew_core_raw_base(git_head: Option<&str>) -> String {
+    match git_head.filter(|head| !head.is_empty()) {
+        Some(head) => format!("https://raw.githubusercontent.com/Homebrew/homebrew-core/{head}"),
+        None => HOMEBREW_CORE_RAW_BASE.to_string(),
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum RubySourceLocator<'a> {
     CoreRelativePath(&'a str),
@@ -100,9 +110,11 @@ impl<'a> RubySourceLocator<'a> {
         }
     }
 
-    fn to_url(self) -> String {
+    fn to_url(self, git_head: Option<&str>) -> String {
         match self {
-            Self::CoreRelativePath(path) => format!("{HOMEBREW_CORE_RAW_BASE}/{path}"),
+            Self::CoreRelativePath(path) => {
+                format!("{}/{path}", homebrew_core_raw_base(git_head))
+            }
             Self::AbsoluteUrl(url) => url.to_string(),
         }
     }
@@ -370,12 +382,13 @@ impl ApiClient {
     pub async fn fetch_formula_rb(
         &self,
         ruby_source_path: &str,
+        git_head: Option<&str>,
         cache_dir: &std::path::Path,
         expected_sha256: Option<&str>,
     ) -> Result<std::path::PathBuf, Error> {
         let locator = RubySourceLocator::parse(ruby_source_path);
         let source_id = locator.source_id(ruby_source_path);
-        let url = locator.to_url();
+        let url = locator.to_url(git_head);
 
         self.fetch_formula_rb_from_url(source_id, &url, cache_dir, expected_sha256)
             .await
@@ -389,10 +402,14 @@ impl ApiClient {
         expected_sha256: Option<&str>,
     ) -> Result<std::path::PathBuf, Error> {
         let cache_key = format!("rb:{url}");
-        if let Some(entry) = self.cache.as_ref().and_then(|c| c.get(&cache_key)) {
-            verify_sha256_bytes(entry.body.as_bytes(), expected_sha256)
-                .map_err(|e| Self::map_formula_rb_checksum_error(e, ruby_source_path, "cache"))?;
-
+        // A copy that no longer matches (the file moved on since) is
+        // fetched again.
+        if let Some(entry) = self
+            .cache
+            .as_ref()
+            .and_then(|c| c.get(&cache_key))
+            .filter(|entry| verify_sha256_bytes(entry.body.as_bytes(), expected_sha256).is_ok())
+        {
             let dest = cache_dir.join(ruby_source_path.replace('/', "_"));
             std::fs::create_dir_all(cache_dir)
                 .map_err(Error::file("failed to create rb cache dir"))?;
@@ -1132,11 +1149,11 @@ mod tests {
     #[test]
     fn ruby_source_locator_resolves_urls_exhaustively() {
         assert_eq!(
-            RubySourceLocator::CoreRelativePath("Formula/f/foo.rb").to_url(),
+            RubySourceLocator::CoreRelativePath("Formula/f/foo.rb").to_url(None),
             "https://raw.githubusercontent.com/Homebrew/homebrew-core/main/Formula/f/foo.rb"
         );
         assert_eq!(
-            RubySourceLocator::AbsoluteUrl("https://example.com/foo.rb").to_url(),
+            RubySourceLocator::AbsoluteUrl("https://example.com/foo.rb").to_url(None),
             "https://example.com/foo.rb"
         );
     }
@@ -1219,6 +1236,7 @@ mod tests {
         let fetched = client
             .fetch_formula_rb(
                 &format!("{}/custom/foo.rb", mock_server.uri()),
+                None,
                 cache_dir.path(),
                 None,
             )
@@ -1256,12 +1274,19 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn fetch_formula_rb_from_cache_rejects_checksum_mismatch() {
+    async fn a_cached_formula_rb_that_no_longer_matches_is_fetched_again() {
+        let mock_server = MockServer::start().await;
+        let current = "class Foo < Formula\n  url \"new\"\nend\n";
+        Mock::given(method("GET"))
+            .and(path("/Formula/f/foo.rb"))
+            .respond_with(ResponseTemplate::new(200).set_body_string(current))
+            .mount(&mock_server)
+            .await;
+        let url = format!("{}/Formula/f/foo.rb", mock_server.uri());
         let cache = ApiCache::in_memory().unwrap();
-        let cache_url = "https://example.invalid/Formula/f/foo.rb";
         cache
             .put(
-                &format!("rb:{cache_url}"),
+                &format!("rb:{url}"),
                 &CacheEntry {
                     etag: None,
                     last_modified: None,
@@ -1272,18 +1297,28 @@ mod tests {
 
         let cache_dir = tempdir().unwrap();
         let client = ApiClient::new().with_cache(cache);
-
-        let err = client
-            .fetch_formula_rb_from_url(
-                "Formula/f/foo.rb",
-                cache_url,
-                cache_dir.path(),
-                Some(&"f".repeat(64)),
-            )
+        let mut hasher = <sha2::Sha256 as sha2::Digest>::new();
+        sha2::Digest::update(&mut hasher, current.as_bytes());
+        let sha = crate::checksum::sha256_hex(hasher);
+        let fetched = client
+            .fetch_formula_rb_from_url("Formula/f/foo.rb", &url, cache_dir.path(), Some(&sha))
             .await
-            .unwrap_err();
+            .unwrap();
 
-        assert!(matches!(err, Error::ChecksumMismatch { .. }));
+        assert_eq!(std::fs::read_to_string(fetched).unwrap(), current);
+    }
+
+    #[test]
+    fn formula_sources_are_fetched_at_the_apis_commit() {
+        let core = RubySourceLocator::parse("Formula/f/foo.rb");
+        assert_eq!(
+            core.to_url(Some("96641d7")),
+            "https://raw.githubusercontent.com/Homebrew/homebrew-core/96641d7/Formula/f/foo.rb"
+        );
+        assert_eq!(
+            core.to_url(None),
+            format!("{HOMEBREW_CORE_RAW_BASE}/Formula/f/foo.rb")
+        );
     }
 
     #[test]

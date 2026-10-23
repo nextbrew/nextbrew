@@ -136,6 +136,7 @@ mod tests {
             urls: None,
             ruby_source_path: None,
             ruby_source_checksum: None,
+            tap_git_head: None,
             uses_from_macos: Vec::new(),
             requirements: Vec::new(),
             variations: None,

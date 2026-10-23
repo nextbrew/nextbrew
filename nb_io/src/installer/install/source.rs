@@ -103,7 +103,12 @@ impl Installer {
                     .map(|checksum| checksum.sha256.as_str());
 
                 self.api_client
-                    .fetch_formula_rb(ruby_source_path, &cache_dir, formula_rb_checksum)
+                    .fetch_formula_rb(
+                        ruby_source_path,
+                        item.formula.tap_git_head.as_deref(),
+                        &cache_dir,
+                        formula_rb_checksum,
+                    )
                     .await?
             }
         };
@@ -145,7 +150,9 @@ impl Installer {
                 .or_else(|| formula_rb.parent())
                 .map(|dir| dir.display().to_string())
                 .unwrap_or_default(),
-            None => crate::network::api::HOMEBREW_CORE_RAW_BASE.to_string(),
+            None => {
+                crate::network::api::homebrew_core_raw_base(item.formula.tap_git_head.as_deref())
+            }
         };
         let executor = crate::build::BuildExecutor::new(self.prefix.clone());
         if let Err(build_err) = executor

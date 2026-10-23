@@ -150,6 +150,9 @@ pub struct Formula {
     pub ruby_source_path: Option<String>,
     #[serde(default)]
     pub ruby_source_checksum: Option<RubySourceChecksum>,
+    /// The homebrew-core commit the API was made from.
+    #[serde(default)]
+    pub tap_git_head: Option<String>,
     #[serde(default)]
     pub uses_from_macos: Vec<UsesFromMacos>,
     #[serde(default)]

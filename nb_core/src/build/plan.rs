@@ -121,6 +121,7 @@ mod tests {
             }),
             ruby_source_path: Some(format!("Formula/{}/{name}.rb", &name[..1])),
             ruby_source_checksum: None,
+            tap_git_head: None,
             uses_from_macos: Vec::new(),
             requirements: Vec::new(),
             variations: None,
