@@ -600,8 +600,14 @@ mod tests {
     #[test]
     fn bin_dir_prefers_nextbrew_bin() {
         let dir = "/home/user/.nextbrew";
-        assert_eq!(bin_dir(dir, Some("/home/user/.local/bin".into())), "/home/user/.local/bin");
-        assert_eq!(bin_dir(dir, Some(String::new())), "/home/user/.nextbrew/bin");
+        assert_eq!(
+            bin_dir(dir, Some("/home/user/.local/bin".into())),
+            "/home/user/.local/bin"
+        );
+        assert_eq!(
+            bin_dir(dir, Some(String::new())),
+            "/home/user/.nextbrew/bin"
+        );
         assert_eq!(bin_dir(dir, None), "/home/user/.nextbrew/bin");
     }
 
