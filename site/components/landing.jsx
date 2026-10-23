@@ -17,7 +17,7 @@ export function Landing({ lang }) {
             <a className="nb-btn nb-btn-primary" href={`/${lang}/docs/installation`}>{t.start}</a>
             <a className="nb-btn" href={`/${lang}/docs`}>{t.why}</a>
           </div>
-          <CopyCommand command={INSTALL} />
+          <CopyCommand command={INSTALL} label={t.copy} />
         </div>
         <Terminal />
       </section>
@@ -30,7 +30,7 @@ export function Landing({ lang }) {
       <section className="nb-features">
         {t.features.map(([title, body]) => <div key={title}><h3>{title}</h3><p>{body}</p></div>)}
       </section>
-      <section className="nb-cta"><h2>{t.cta}</h2><CopyCommand command={INSTALL} /></section>
+      <section className="nb-cta"><h2>{t.cta}</h2><CopyCommand command={INSTALL} label={t.copy} /></section>
     </div>
   )
 }

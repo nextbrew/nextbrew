@@ -17,7 +17,7 @@ html.dark .nb-dark { display: inline; }
 html.dark .nb-landing { --nb-fg: #ededed; --nb-muted: #a1a1a1; --nb-line: #222; --nb-panel: #0a0a0a; --nb-dot: #262626; }
 .nb-muted { color: var(--nb-muted); }
 
-.nb-hero { position: relative; display: grid; grid-template-columns: 1.1fr 1fr; gap: 40px; align-items: center; padding: 96px 24px 80px; max-width: 1200px; margin: 0 auto; }
+.nb-hero { position: relative; isolation: isolate; display: grid; grid-template-columns: 1.1fr 1fr; gap: 40px; align-items: center; padding: 96px 24px 80px; max-width: 1200px; margin: 0 auto; }
 .nb-hero::before { content: ""; position: absolute; inset: 0; z-index: -1;
   background-image: radial-gradient(circle, var(--nb-dot) 1px, transparent 1.2px); background-size: 20px 20px;
   -webkit-mask-image: linear-gradient(to top, #000, transparent 55%); mask-image: linear-gradient(to top, #000, transparent 55%); }
@@ -41,7 +41,7 @@ html.dark .nb-landing { --nb-fg: #ededed; --nb-muted: #a1a1a1; --nb-line: #222; 
 .nb-bars { margin: 14px 0; font: 12px var(--font-geist-mono), monospace; }
 .nb-bar { display: grid; grid-template-columns: 70px 1fr 56px; gap: 10px; align-items: center; margin: 5px 0; }
 .nb-bar i { display: block; height: 12px; border-radius: 3px; }
-.nb-bar-nb { background: var(--nb-fg); } .nb-bar-brew { background: var(--nb-line); }
+.nb-bar-nb { background: var(--nb-fg); } .nb-bar-brew { background: var(--nb-muted); opacity: .5; }
 
 .nb-features { display: grid; grid-template-columns: repeat(3, 1fr); max-width: 1200px; margin: 0 auto; border-top: 1px solid var(--nb-line); }
 .nb-features > div { padding: 28px 24px; border-right: 1px solid var(--nb-line); border-bottom: 1px solid var(--nb-line); }

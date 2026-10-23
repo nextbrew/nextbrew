@@ -20,9 +20,9 @@ export function Terminal() {
     return () => clearInterval(id)
   }, [])
   return (
-    <div className="nb-term" aria-label="nb install ffmpeg">
+    <div className="nb-term" role="img" aria-label="nb install ffmpeg">
       <div className="nb-term-bar"><i /><i /><i /></div>
-      <pre>{LINES.slice(0, shown).map(([kind, line]) => <div key={line} className={kind && `nb-${kind}`}>{line}</div>)}</pre>
+      <pre aria-hidden="true">{LINES.slice(0, shown).map(([kind, line]) => <div key={line} className={kind && `nb-${kind}`}>{line}</div>)}</pre>
     </div>
   )
 }
