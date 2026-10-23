@@ -84,7 +84,7 @@ export NEXTBREW_PREFIX
 # A prior `nb init` adds $NEXTBREW_PREFIX/bin to PATH, which can cause
 # nextbrew's curl/git (linked against nextbrew's OpenSSL) to be used by
 # this script. On some macOS versions that leads to dyld symbol errors.
-# see https://github.com/nextbrewhq/nextbrew/issues/288
+# see https://github.com/zerobrewhq/zerobrew/issues/288
 sanitized_path=""
 IFS=':' read -ra _path_parts <<< "$PATH"
 for _p in "${_path_parts[@]}"; do
