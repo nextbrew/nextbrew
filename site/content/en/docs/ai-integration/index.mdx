@@ -1,0 +1,22 @@
+---
+title: AI Integration
+description: Three small pieces that help AI coding agents use nextbrew instead of guessing at Homebrew.
+---
+
+# AI Integration
+
+nextbrew ships three things for AI coding agents:
+
+- [Agent Skill](/en/docs/ai-integration/agent-skill): a `SKILL.md` that tells an agent to use `nb` and `nbx`, and when to stop and ask.
+- [AGENTS.md](/en/docs/ai-integration/agents-md): a short block to paste into a project so every agent that reads `AGENTS.md` picks `nb` over `brew`.
+- [llms.txt](/en/docs/ai-integration/llms-txt): these docs as plain Markdown, for agents that read the docs themselves.
+
+## Running tools with nbx
+
+[`nbx`](/en/docs/commands/nbx) is the easiest way for an agent to use a tool once. It runs a formula's command, installing the formula first if needed, and does not link anything into your prefix.
+
+```sh
+nbx jq --version
+```
+
+For anything the project needs to keep, use `nb install <name>`. For updates, `nb outdated --json` gives output a script or an agent can parse.

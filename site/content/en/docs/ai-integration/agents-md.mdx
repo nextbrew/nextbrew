@@ -1,0 +1,17 @@
+---
+title: AGENTS.md
+description: A block to paste into a project's AGENTS.md so agents use nextbrew.
+---
+
+# AGENTS.md
+
+Many agents read an `AGENTS.md` file at the root of a project. Paste this block into yours:
+
+```markdown
+## Packages
+This machine uses nextbrew. Install tools with `nb install <name>` (not `brew`),
+run one-off tools with `nbx <formula> ...`, and check updates with `nb outdated --json`.
+If `nb` fails, run `nb doctor` and report its output.
+```
+
+The [Agent Skill](/en/docs/ai-integration/agent-skill) carries the same rules plus a few more. Use the skill for a machine, `AGENTS.md` for a single project.

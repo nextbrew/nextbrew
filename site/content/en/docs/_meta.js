@@ -6,5 +6,6 @@ export default {
   'migrating-from-homebrew': 'Migrating from Homebrew',
   commands: 'Commands',
   guides: 'Guides',
+  'ai-integration': 'AI Integration',
   reference: 'Reference',
 }
