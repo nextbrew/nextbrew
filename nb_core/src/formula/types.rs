@@ -68,6 +68,19 @@ impl SourceUrl {
             || self.url.ends_with(".git")
             || self.url.starts_with("git://")
     }
+
+    /// Whether Homebrew fetches it with `GitDownloadStrategy`: `using:
+    /// :git`, or by its URL (`DownloadStrategyDetector`).
+    pub fn is_git(&self) -> bool {
+        match self.using.as_deref() {
+            Some(using) => using == "git" || using == "github_git",
+            None => {
+                self.url.ends_with(".git")
+                    || self.url.starts_with("git://")
+                    || self.url.starts_with("ssh://git")
+            }
+        }
+    }
 }
 
 #[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
@@ -376,6 +389,22 @@ pub struct BottleFile {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn git_sources_are_told_as_homebrew_tells_them() {
+        let url = |url: &str, using: Option<&str>| SourceUrl {
+            url: url.into(),
+            checksum: None,
+            tag: Some("v1".into()),
+            revision: None,
+            using: using.map(Into::into),
+        };
+        assert!(url("https://github.com/goreleaser/goreleaser.git", None).is_git());
+        assert!(url("https://example.com/x", Some("git")).is_git());
+        assert!(!url("https://example.com/x", Some("hg")).is_git());
+        assert!(url("https://example.com/x", Some("hg")).is_vcs());
+        assert!(!url("https://example.com/x.tar.gz", None).is_git());
+    }
 
     #[test]
     fn deserialize_formula_fixtures() {

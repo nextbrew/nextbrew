@@ -404,6 +404,7 @@ pub fn build_env(
         "NEXTBREW_FORMULA_STABLE_VERSION".into(),
         plan.stable_version.clone(),
     );
+    env.insert("NEXTBREW_FORMULA_TAP".into(), plan.tap.clone());
     env.insert("NEXTBREW_LOGS".into(), logs.display().to_string());
 
     let jobs = num_cpus();
@@ -470,6 +471,8 @@ mod tests {
             formula_name: "test".to_string(),
             version: "1.0.0".to_string(),
             stable_version: "1.0.0".to_string(),
+            tap: "homebrew/core".to_string(),
+            source_git: None,
             source_url: "https://example.com/test.tar.gz".to_string(),
             source_checksum: None,
             ruby_source_path: None,

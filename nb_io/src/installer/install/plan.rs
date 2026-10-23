@@ -249,7 +249,7 @@ impl Installer {
         check_clt_for_bottle(&formula)?;
         let method = if build_from_source {
             match BuildPlan::from_formula(&formula, &self.prefix) {
-                Some(plan) => InstallMethod::Source(plan),
+                Some(plan) => InstallMethod::Source(Box::new(plan)),
                 None => match self.select_pourable_bottle(&formula) {
                     Ok(bottle) => InstallMethod::Bottle(bottle),
                     Err(_) => {
@@ -274,7 +274,7 @@ impl Installer {
                     });
                 }
                 Err(_) => match BuildPlan::from_formula(&formula, &self.prefix) {
-                    Some(plan) => InstallMethod::Source(plan),
+                    Some(plan) => InstallMethod::Source(Box::new(plan)),
                     None => {
                         return Err(Error::UnsupportedBottle {
                             name: formula.name.clone(),

@@ -1,3 +1,3 @@
 pub mod plan;
 
-pub use plan::{BuildPlan, BuildSystem, InstallMethod};
+pub use plan::{BuildPlan, BuildSystem, GitRef, InstallMethod};

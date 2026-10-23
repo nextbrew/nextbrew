@@ -14,7 +14,13 @@ pub enum BuildSystem {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum InstallMethod {
     Bottle(crate::SelectedBottle),
-    Source(BuildPlan),
+    Source(Box<BuildPlan>),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GitRef {
+    pub tag: Option<String>,
+    pub revision: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -24,8 +30,13 @@ pub struct BuildPlan {
     pub version: String,
     /// The source's version, without it (`version`).
     pub stable_version: String,
+    /// The tap the formula is from (`user/repo`).
+    pub tap: String,
     pub source_url: String,
     pub source_checksum: Option<String>,
+    /// For a git source, the tag and the commit it should be (or the
+    /// commit alone) to check out.
+    pub source_git: Option<GitRef>,
     pub ruby_source_path: Option<String>,
     pub build_dependencies: Vec<String>,
     pub runtime_dependencies: Vec<String>,
@@ -38,7 +49,10 @@ impl BuildPlan {
     /// The plan to build `formula` from its source archive; `None` when it
     /// has no source, or its source is a repository nextbrew cannot check out.
     pub fn from_formula(formula: &Formula, prefix: &Path) -> Option<Self> {
-        let source = formula.source_url().filter(|source| !source.is_vcs())?;
+        // Of the version control sources, only git's.
+        let source = formula
+            .source_url()
+            .filter(|source| !source.is_vcs() || source.is_git())?;
         let version = formula.effective_version();
         let cellar_path = prefix.join("Cellar").join(&formula.name).join(&version);
 
@@ -49,8 +63,16 @@ impl BuildPlan {
             formula_name: formula.name.clone(),
             version,
             stable_version: formula.versions.stable.clone(),
+            tap: formula
+                .third_party_tap()
+                .unwrap_or("homebrew/core")
+                .to_string(),
             source_url: source.url.clone(),
             source_checksum: source.checksum.clone(),
+            source_git: source.is_git().then(|| GitRef {
+                tag: source.tag.clone(),
+                revision: source.revision.clone(),
+            }),
             ruby_source_path: formula.ruby_source_path.clone(),
             build_dependencies: all_build_deps,
             runtime_dependencies: formula.runtime_dependencies(),
@@ -169,19 +191,33 @@ mod tests {
     }
 
     #[test]
-    fn returns_none_for_a_git_source() {
+    fn git_sources_are_checked_out_and_other_version_control_is_not_built() {
         let prefix = PathBuf::from("/opt/nextbrew");
         let plan_with = |url: &str, tag: Option<&str>, using: Option<&str>| {
             let mut f = test_formula("xcodes", url, &[]);
             let source = f.urls.as_mut().unwrap().stable.as_mut().unwrap();
             source.tag = tag.map(str::to_string);
+            source.revision = tag.map(|_| "abc".to_string());
             source.using = using.map(str::to_string);
             BuildPlan::from_formula(&f, &prefix)
         };
-        assert!(plan_with("https://github.com/XcodesOrg/xcodes.git", None, None).is_none());
+        let git = plan_with(
+            "https://github.com/XcodesOrg/xcodes.git",
+            Some("2.1.0"),
+            None,
+        );
+        assert_eq!(
+            git.unwrap().source_git,
+            Some(GitRef {
+                tag: Some("2.1.0".into()),
+                revision: Some("abc".into())
+            })
+        );
+        assert!(plan_with("https://example.com/src", None, Some("git")).is_some());
+        assert!(plan_with("https://example.com/src", None, Some("hg")).is_none());
         assert!(plan_with("https://example.com/src", Some("2.1.0"), None).is_none());
-        assert!(plan_with("https://example.com/src", None, Some("git")).is_none());
-        assert!(plan_with("https://example.com/src.tar.gz", None, Some("nounzip")).is_some());
+        let archive = plan_with("https://example.com/src.tar.gz", None, Some("nounzip"));
+        assert_eq!(archive.unwrap().source_git, None);
     }
 
     #[test]

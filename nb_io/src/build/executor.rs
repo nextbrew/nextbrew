@@ -39,13 +39,20 @@ impl BuildExecutor {
             .await
             .map(|rb| super::source::source_mirrors(&rb))
             .unwrap_or_default();
-        let source_root = download_and_extract_source(
-            &plan.source_url,
-            &mirrors,
-            plan.source_checksum.as_deref(),
-            &work_dir,
-        )
-        .await?;
+        let source_root = match &plan.source_git {
+            Some(git) => super::source::clone_git_source(&plan.source_url, git, &work_dir).await?,
+            None => {
+                download_and_extract_source(
+                    &plan.source_url,
+                    &mirrors,
+                    plan.source_checksum.as_deref(),
+                    &work_dir,
+                )
+                .await?
+            }
+        };
+        // Before anything is added to the source.
+        let source_time = super::source::source_modified_time(&source_root).await;
 
         let shim_path = work_dir.join("nextbrew_shim.rb");
         fs::write(&shim_path, SHIM_RUBY)
@@ -76,6 +83,13 @@ impl BuildExecutor {
         let mut env = build_env(plan, &self.prefix, &source_root, &logs, deps);
         env.insert("NEXTBREW_BUILD_FAILED".into(), failed.display().to_string());
         env.insert("NEXTBREW_PATCH_BASE".into(), patch_base.to_string());
+        if let Some(time) = source_time {
+            env.insert("SOURCE_DATE_EPOCH".into(), time.to_string());
+        }
+        env.insert(
+            "NEXTBREW_SOURCE_ARCHIVE".into(),
+            work_dir.join("source.tar.gz").display().to_string(),
+        );
         env.insert(
             "NEXTBREW_FORMULA_FILE".into(),
             formula_rb_path.display().to_string(),

@@ -3,7 +3,7 @@ pub mod context;
 pub mod errors;
 pub mod formula;
 
-pub use build::{BuildPlan, BuildSystem, InstallMethod};
+pub use build::{BuildPlan, BuildSystem, GitRef, InstallMethod};
 pub use context::{ConcurrencyLimits, Context, LogLevel, LoggerHandle, Paths};
 pub use errors::{ConflictedLink, Error};
 pub use formula::{
