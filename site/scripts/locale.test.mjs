@@ -8,8 +8,11 @@ test('defaults to English', () => {
 test('cookie picks the language', () => {
   assert.deepEqual(localeRedirect('/docs/x', '', 'a=b; NEXT_LOCALE=ja'), { redirect: '/ja/docs/x' });
 });
-test('root goes to bare locale', () => {
-  assert.deepEqual(localeRedirect('/', '', ''), { redirect: '/en' });
+test('root serves English in place', () => {
+  assert.deepEqual(localeRedirect('/', '', ''), { rewrite: '/en' });
+});
+test('root with ja cookie redirects', () => {
+  assert.deepEqual(localeRedirect('/', '', 'NEXT_LOCALE=ja'), { redirect: '/ja' });
 });
 test('locale path with different cookie sets cookie', () => {
   assert.deepEqual(localeRedirect('/ja/docs', '', 'NEXT_LOCALE=en'), { setCookie: 'ja' });
