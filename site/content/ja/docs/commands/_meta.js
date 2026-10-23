@@ -1,4 +1,5 @@
 export default {
+  index: '概要',
   install: 'nb install',
   uninstall: 'nb uninstall',
   upgrade: 'nb upgrade',

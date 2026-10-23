@@ -1,4 +1,5 @@
 export default {
+  index: 'Overview',
   install: 'nb install',
   uninstall: 'nb uninstall',
   upgrade: 'nb upgrade',
