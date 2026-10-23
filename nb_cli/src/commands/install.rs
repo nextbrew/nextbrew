@@ -474,8 +474,13 @@ pub async fn execute_formula_plan(
             let handled_missing = suggest_missing_formula_matches(installer, &e).await;
 
             if !handled_missing {
+                // Only to those that did not go in.
+                let installed = installer.last_installed();
                 for formula in requested_formulas {
-                    suggest_homebrew(formula, &e);
+                    let name = formula.rsplit('/').next().unwrap_or(formula);
+                    if !installed.iter().any(|(done, _)| done == name) {
+                        suggest_homebrew(formula, &e);
+                    }
                 }
             }
             Err(e)
