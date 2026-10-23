@@ -31,7 +31,7 @@ Homebrew's formulae and bottles into `/opt/nextbrew`, next to any existing Homeb
 ## Rules
 
 - Install packages with `nb install <name>`, not `brew install`. Casks: `nb install --cask <name>`.
-- For a one-off tool, run it without installing: `nbx <formula> [args...]` (e.g. `nbx jq --version`).
+- For a one-off tool, run it without linking it into the prefix: `nbx <formula> [args...]` (e.g. `nbx jq --version`). A missing formula is installed first and kept.
 - Check for updates with `nb outdated --json`; upgrade with `nb upgrade [names...]`.
 - If a command fails, run `nb doctor` and include its output when reporting.
 - nextbrew refuses third-party taps it has not been told to trust. Do not run `nb trust` on the user's behalf; ask, or fall back to `brew` for that package.
