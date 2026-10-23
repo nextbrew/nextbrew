@@ -5,6 +5,13 @@ import { BenchmarkTable } from '../../components/benchmarks'
 
 # ベンチマーク
 
-キャッシュのない状態で、同じ formula を nextbrew と Homebrew でインストールした時間です。計測には `install_timings` テスト（`.github/workflows/timing.yml`）を使います。
+同じ formula を nextbrew、Homebrew、ほかの Homebrew 互換クライアントでインストールした時間です。計測には [`bench/clients.sh`](https://github.com/nextbrew/nextbrew/blob/main/bench/clients.sh) を使います。
+
+- **Cold**: formula も依存もインストールされておらず、ダウンロードのキャッシュもない状態です。各クライアントの formula 索引は、計測の前に時間に含めず更新します。
+- **Warm**: formula をもう一度アンインストールし、cold で落としたダウンロードは残した状態です。
+- クライアントの順番は formula ごとに入れ替え、どれかがいつも最初に CDN を叩くことがないようにしています。
+- nanobrew は `NANOBREW_DISABLE_UPSTREAM=1` で動かし、upstream のリリースバイナリではなく、ほかと同じ Homebrew の bottle を入れるようにしています。nanobrew は `post_install` を実行しません。ほかのクライアントは実行します。
+- wax はダウンロードした bottle を残さないため、warm でも再びダウンロードします。
+- 合計は、すべてのクライアントがインストールできた formula だけで数えます。
 
 <BenchmarkTable lang="ja" />

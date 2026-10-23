@@ -5,7 +5,17 @@ import { BenchmarkTable } from '../../components/benchmarks'
 
 # Benchmarks
 
-Cold-cache install times of the same formulae with nextbrew and Homebrew,
-measured by the `install_timings` test (`.github/workflows/timing.yml`).
+Install times of the same formulae with nextbrew, Homebrew and other
+Homebrew-compatible clients, measured with
+[`bench/clients.sh`](https://github.com/nextbrew/nextbrew/blob/main/bench/clients.sh).
+
+- **Cold**: the formula and its dependencies are not installed and no downloads are cached.
+  Each client's formula index is refreshed beforehand, untimed.
+- **Warm**: the formula is uninstalled again, and the downloads from the cold run are kept.
+- The order of the clients rotates from formula to formula, so no client always meets the CDN cold.
+- nanobrew runs with `NANOBREW_DISABLE_UPSTREAM=1`, so it installs Homebrew bottles like the others
+  rather than upstream release binaries. It does not run `post_install` steps; the other clients do.
+- wax keeps no downloaded bottles, so its warm installs download again.
+- Totals count only the formulae every client installed.
 
 <BenchmarkTable lang="en" />

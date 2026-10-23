@@ -24,7 +24,7 @@ export function Landing({ lang }) {
       {hasBenchmarks && (
         <section className="nb-speed">
           <div><h2>{t.speedTitle}</h2><p>{t.speedBody}</p><a href={`/${lang}/benchmarks`}>{t.allBenchmarks}</a></div>
-          <div><Bars /></div>
+          <div><Bars lang={lang} /></div>
         </section>
       )}
       <section className="nb-features">

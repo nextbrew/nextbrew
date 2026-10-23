@@ -24,7 +24,10 @@ export const text = {
       ],
       cta: 'Ready to brew faster?', copy: 'Copy',
     },
-    bench: { formula: 'Formula', deps: 'dependencies', measured: 'Measured', pending: 'Benchmarks have not been measured yet.' },
+    bench: {
+      formula: 'Formula', deps: 'Dependencies', measured: 'Measured', pending: 'Benchmarks have not been measured yet.',
+      cold: 'Cold', warm: 'Warm', total: n => `Total (${n} formulae)`, rounds: n => (n === 1 ? '1 round' : `median of ${n} rounds`),
+    },
   },
   ja: {
     footer: {
@@ -50,6 +53,9 @@ export const text = {
       ],
       cta: 'さあ、速く brew しよう。', copy: 'コピー',
     },
-    bench: { formula: 'Formula', deps: '依存', measured: '計測日', pending: 'ベンチマークはまだ計測していません。' },
+    bench: {
+      formula: 'Formula', deps: '依存', measured: '計測日', pending: 'ベンチマークはまだ計測していません。',
+      cold: 'Cold', warm: 'Warm', total: n => `合計（${n} formula）`, rounds: n => (n === 1 ? '1 回' : `${n} 回の中央値`),
+    },
   },
 }
