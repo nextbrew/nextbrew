@@ -17,7 +17,6 @@ use std::os::unix::fs::{FileExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-use memchr::memmem;
 use nb_core::Error;
 use rayon::prelude::*;
 use regex::Regex;

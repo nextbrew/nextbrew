@@ -181,7 +181,9 @@ mod tests {
     }
 
     fn get_test_bottle_tag() -> &'static str {
-        if cfg!(target_os = "linux") {
+        if cfg!(all(target_os = "linux", target_arch = "aarch64")) {
+            "arm64_linux"
+        } else if cfg!(target_os = "linux") {
             "x86_64_linux"
         } else if cfg!(target_arch = "x86_64") {
             "sonoma"
