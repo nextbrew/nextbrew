@@ -23,15 +23,17 @@ No. nextbrew does not run Ruby itself. Packages it installs may contain Ruby.
 
 They keep nextbrew apart from Homebrew's prefixes. Bottles hard-code their prefix
 path, so the location must be no longer than Homebrew's: `/opt/nextbrew` on macOS,
-and on Linux `/home/nextbrew/.nextbrew`, which is as long as `/home/linuxbrew/.linuxbrew`.
+and on Linux `/home/nextbrew/.nextbrew`, which is no longer than `/home/linuxbrew/.linuxbrew`.
 
 ## How do I uninstall nextbrew?
 
 `nb reset` deletes everything inside the root and prefix directories (it asks
-first; `-y` skips the prompt), then re-creates the empty directories. Then delete the `nb` and `nbx` binaries
+first; `-y` skips the prompt), then re-creates the empty directories, so they stay behind. Remove them too, then delete the `nb` and `nbx` binaries
 (the installer puts them in `~/.local/bin` unless `NEXTBREW_BIN` says otherwise) and the lines `nb init` added to your shell config.
 
 ```sh
 nb reset
+sudo rm -rf /opt/nextbrew                 # macOS
+sudo rm -rf /home/nextbrew/.nextbrew      # Linux
 rm ~/.local/bin/nb ~/.local/bin/nbx
 ```

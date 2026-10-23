@@ -9,7 +9,7 @@ description: Homebrew の bottle と cask の定義から、formula と cask を
 nb install [OPTIONS] <FORMULAS>...
 ```
 
-bottle から formula を、またそのほかに cask をインストールします。cask をインストールするには、
+bottle から formula を、cask の定義から cask をインストールします。cask をインストールするには、
 名前の前に `cask:` を付けるか、`--cask` を渡します。インストール済みの formula はそのままにします。古い場合はアップグレードします。
 
 ## オプション
@@ -27,7 +27,7 @@ bottle から formula を、またそのほかに cask をインストールし�
 | `--no-binaries` | cask の binary を含めない |
 | `--language <LANGUAGE>` | 未対応: cask は既定の言語でインストールされる |
 
-cask のインストール先を指定するフラグです。いずれも `<DIR>` を取ります。
+次のフラグで cask のインストール先を指定できます。いずれも `<DIR>` を取ります。
 
 | Flag | DIR にインストールするもの |
 | --- | --- |

@@ -22,7 +22,7 @@ cask、bundle、services、`nb migrate` は、まだ実際の macOS 機では検
 | cask: uninstall stanza と `--zap` | Native。binary だけをインストールする cask は未対応 |
 | Bundle（Brewfile） | Partial |
 | Services | macOS（launchd）では Native。ラベルは `dev.nextbrew.<formula>`。Linux（systemd）は計画中 |
-| Tap | 実装済み（`nb tap`、`nb trust`）。仕様書ではまだ Unsupported と記載されている |
+| Tap | 対応しています（`nb tap`、`nb trust`）。サードパーティの tap は、信頼すると読み込まれます。 |
 | Homebrew からの移行（`nb migrate`） | Partial |
 | ソースからのビルド | 対応範囲は限定的。開発者向けコマンド（create、audit、bottle）は予定なし |
 

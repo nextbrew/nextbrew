@@ -23,16 +23,18 @@ Homebrew の prefix（`/opt/homebrew` か `/usr/local`）とは共有しませ�
 
 Homebrew の prefix と分けるためです。bottle には prefix のパスが埋め込まれているので、
 場所は Homebrew より長くできません。macOS では `/opt/nextbrew`、
-Linux では `/home/linuxbrew/.linuxbrew` と同じ長さの `/home/nextbrew/.nextbrew` です。
+Linux では `/home/linuxbrew/.linuxbrew` より長くならない `/home/nextbrew/.nextbrew` です。
 
 ## nextbrew をアンインストールするには？
 
 `nb reset` は、root と prefix の両ディレクトリの中身をすべて削除し（先に確認があります。`-y` で省略できます）、
-空のディレクトリを作り直します。そのあと `nb` と `nbx` のバイナリ
+空のディレクトリを作り直すので、ディレクトリ自体は残ります。それも削除し、そのあと `nb` と `nbx` のバイナリ
 （`NEXTBREW_BIN` で指定していなければ、インストーラーは `~/.local/bin` に置きます）と、
 `nb init` がシェルの設定に追加した行を削除してください。
 
 ```sh
 nb reset
+sudo rm -rf /opt/nextbrew                 # macOS
+sudo rm -rf /home/nextbrew/.nextbrew      # Linux
 rm ~/.local/bin/nb ~/.local/bin/nbx
 ```

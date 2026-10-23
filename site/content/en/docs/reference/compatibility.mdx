@@ -22,7 +22,7 @@ Cask, bundle, services and `nb migrate` have not yet been verified on real macOS
 | Casks: uninstall stanza and `--zap` | Native; casks that only install a binary are not yet supported |
 | Bundle (Brewfile) | Partial |
 | Services | Native on macOS (launchd), labels `dev.nextbrew.<formula>`; Linux (systemd) is planned |
-| Taps | Implemented (`nb tap`, `nb trust`); the spec still lists them as Unsupported |
+| Taps | Implemented (`nb tap`, `nb trust`); third-party taps must be trusted before they load. |
 | Migrating from Homebrew (`nb migrate`) | Partial |
 | Building from source | Limited coverage; developer commands (create, audit, bottle) are not planned |
 
