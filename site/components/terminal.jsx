@@ -22,7 +22,10 @@ export function Terminal() {
   return (
     <div className="nb-term" role="img" aria-label="nb install ffmpeg">
       <div className="nb-term-bar"><i /><i /><i /></div>
-      <pre aria-hidden="true">{LINES.slice(0, shown).map(([kind, line]) => <div key={line} className={kind && `nb-${kind}`}>{line}</div>)}</pre>
+      {/* All lines are always laid out; unrevealed ones are hidden so the box never resizes. */}
+      <pre aria-hidden="true">{LINES.map(([kind, line], i) => (
+        <div key={line} className={kind && `nb-${kind}`} style={i < shown ? undefined : { visibility: 'hidden' }}>{line}</div>
+      ))}</pre>
     </div>
   )
 }

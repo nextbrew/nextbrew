@@ -31,7 +31,7 @@ html.dark .nb-landing { --nb-fg: #ededed; --nb-muted: #a1a1a1; --nb-line: #222; 
 .nb-term { border: 1px solid var(--nb-line); border-radius: 10px; background: #0a0a0a; color: #a1a1a1; overflow: hidden; }
 .nb-term-bar { display: flex; gap: 6px; padding: 10px 12px; border-bottom: 1px solid #1d1d1d; }
 .nb-term-bar i { width: 10px; height: 10px; border-radius: 50%; background: #333; }
-.nb-term pre { margin: 0; padding: 16px 18px; font: 13px/1.7 var(--font-geist-mono), monospace; min-height: 9.5em; }
+.nb-term pre { margin: 0; padding: 16px 18px; font: 13px/1.7 var(--font-geist-mono), monospace; }
 .nb-term .nb-prompt { color: #ededed; }
 .nb-term .nb-ok { color: #5ad17a; }
 
