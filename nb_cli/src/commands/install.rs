@@ -95,9 +95,13 @@ pub async fn execute(
         messages.record_installed(installer).await;
         let result = match result {
             Ok(result) => result,
+            Err(e) if messages.render().is_empty() => return Err(e),
+            // As Homebrew does, the failure is said before the caveats of
+            // what did install.
             Err(e) => {
+                eprintln!("{} {}", style("error:").red().bold(), e);
                 show_caveats(ui, &messages)?;
-                return Err(e);
+                std::process::exit(1);
             }
         };
         installed_count += result.installed;
