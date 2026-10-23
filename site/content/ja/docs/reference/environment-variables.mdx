@@ -1,0 +1,25 @@
+---
+title: 環境変数
+description: nextbrew が読むすべての環境変数と、その既定値。
+---
+
+# 環境変数
+
+| 変数 | 既定値 | 効果 |
+| --- | --- | --- |
+| `NEXTBREW_ROOT` | プラットフォームごとの既定（[設定](/ja/docs/reference/configuration)を参照） | データディレクトリ。`--root` と同じ |
+| `NEXTBREW_PREFIX` | root から決まる | prefix ディレクトリ。`--prefix` が優先される。macOS では、以前の既定値 `<root>/prefix` は無視される |
+| `NEXTBREW_AUTO_INIT` | 未設定 | 確認なしでディレクトリを初期化する。`--auto-init` と同じ |
+| `NEXTBREW_API_URL` | Homebrew の API | 別の formula API のベース URL を使う |
+| `NEXTBREW_API_AUTO_UPDATE_SECS` | `600` | キャッシュした formula のインデックスを、再検証せずに信頼する秒数 |
+| `NEXTBREW_NO_AUTOREMOVE` | 未設定 | 何らかの値を設定すると、`nb uninstall` が後で autoremove を実行しない |
+| `NEXTBREW_SERVICES_NO_DOMAIN_WARNING` | 未設定 | 設定すると、`nb services` の launchd ドメインの警告を表示しない |
+| `NEXTBREW_DIR` | `~/.nextbrew` | `nb init` がシェル設定のブロックを作るときに使う。インストーラーではソースのチェックアウト先になる |
+| `NEXTBREW_BIN` | `~/.local/bin`（インストーラー） | インストーラーが `nb` と `nbx` を置くディレクトリ。`nb init` が書くシェル設定では `$NEXTBREW_DIR/bin` に設定し、`PATH` に追加する |
+
+注意: `nb init` は、インストーラーの既定値 `~/.local/bin` とは別に、シェル設定で `NEXTBREW_BIN` を `$NEXTBREW_DIR/bin` に設定します。
+
+`nb bundle` は、`HOMEBREW_BUNDLE_FILE`、`HOMEBREW_BUNDLE_FILE_GLOBAL`、`HOMEBREW_BUNDLE_NO_UPGRADE` も読みます。
+
+インストーラー（`install.sh`）は、`NEXTBREW_DIR`、`NEXTBREW_BIN`、`NEXTBREW_ROOT`、`NEXTBREW_PREFIX` を参照します。
+ほかの `NEXTBREW_*`（`NEXTBREW_FORMULA_*`、`NEXTBREW_CELLAR`、`NEXTBREW_LOGS` など）は、ソースビルドのために nextbrew が設定します。自分では設定しないでください。

@@ -1,0 +1,33 @@
+---
+title: 設定
+description: nextbrew がデータを置く場所と、その変更方法。
+---
+
+# 設定
+
+nextbrew に設定ファイルはありません。グローバルオプションと
+[環境変数](/ja/docs/reference/environment-variables)で設定します。
+
+## グローバルオプション
+
+| Flag | 意味 |
+| --- | --- |
+| `--root <ROOT>` | nextbrew のデータディレクトリのパス（環境変数 `NEXTBREW_ROOT`） |
+| `--prefix <PREFIX>` | Homebrew 形式の prefix のパス（`NEXTBREW_PREFIX` より優先） |
+| `--concurrency <CONCURRENCY>` | ダウンロードの同時スレッド数（既定は 20） |
+| `--auto-init` | 確認なしで初期化する（環境変数 `NEXTBREW_AUTO_INIT`） |
+| `-v`, `--verbose` | 出力を詳しくする |
+| `-q`, `--quiet` | 出力を抑え、エラーだけ表示する |
+| `-V`, `--version` | バージョンを表示する |
+
+## ディレクトリ
+
+root には `store`、`db`、`cache`、`locks` があります。prefix には、Homebrew の prefix と同じく `bin` と `Cellar` があります。
+
+| プラットフォーム | Root | Prefix |
+| --- | --- | --- |
+| macOS | `/opt/nextbrew` | root と同じ |
+| Linux（既定） | `/home/nextbrew/.nextbrew` | root と同じ |
+| Linux（root を変更） | 指定した root | `<root>/prefix` |
+
+`nb init` は、これらのディレクトリを作成し、シェルの設定に nextbrew を追加します。

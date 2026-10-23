@@ -1,0 +1,48 @@
+---
+title: nb deps / uses
+description: formula の依存先と、その formula に依存しているものを表示します。
+---
+
+# nb deps / uses
+
+```sh
+nb deps [OPTIONS] <FORMULAS>...
+nb uses [OPTIONS] <FORMULAS>...
+```
+
+`nb deps` は、formula の実行時の依存関係を表示します。`nb uses` は、その formula に依存している
+formula と cask を表示します。
+
+## nb deps のオプション
+
+| Flag | 意味 |
+| --- | --- |
+| `-1`, `--direct` | formula が直接指定している依存関係だけ |
+| `--union` | 共通のものだけでなく、いずれかの formula の依存関係をすべて表示する |
+| `--auto-init` | 確認なしで初期化する |
+| `-v`, `--verbose` | 出力を詳しくする |
+| `-q`, `--quiet` | 出力を抑え、エラーだけ表示する |
+
+## nb uses のオプション
+
+| Flag | 意味 |
+| --- | --- |
+| `--installed` | インストール済みの formula と cask だけ一覧表示する |
+| `--recursive` | 依存関係の依存関係も数える |
+| `--formula`, `--formulae` | formula だけ一覧表示する |
+| `--cask`, `--casks` | cask だけ一覧表示する |
+| `--auto-init` | 確認なしで初期化する |
+| `-v`, `--verbose` | 出力を詳しくする |
+| `-q`, `--quiet` | 出力を抑え、エラーだけ表示する |
+
+## 例
+
+```sh
+nb deps ffmpeg
+nb deps --direct --union git curl
+nb uses --installed --recursive openssl@3
+```
+
+## brew との違い
+
+これらのコマンドは Partial です。実際の macOS 機ではまだ検証していません。[互換性](/ja/docs/reference/compatibility)を参照してください。

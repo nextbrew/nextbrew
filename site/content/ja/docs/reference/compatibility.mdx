@@ -1,0 +1,30 @@
+---
+title: 互換性
+description: 今 Homebrew と同じように動くもの、部分的なもの、未対応のもの。
+---
+
+# 互換性
+
+- **Native**: Homebrew と同じように動きます。
+- **Partial**: 一部のオプションやパッケージに制限があります。
+- **Unsupported**: 明示的なエラーで失敗します。
+
+cask、bundle、services、`nb migrate` は、まだ実際の macOS 機では検証していません。
+
+| 機能 | 状態 |
+| --- | --- |
+| formula: install、uninstall、upgrade、outdated、list、info | Native |
+| formula: link、unlink、pin、autoremove、deps、uses、search | Partial（実際の macOS 機では未検証） |
+| cask: app、suite、dmg、zip、tar、binary | Native（実際の macOS 機では未検証） |
+| cask: フック（`*_steps`） | Native。未知のステップや失敗があると、インストールはロールバックされる |
+| cask: pkg と installer | Native（実際の macOS 機では未検証） |
+| cask: upgrade | Native。自己更新する cask は名前を指定したときだけ |
+| cask: uninstall stanza と `--zap` | Native。binary だけをインストールする cask は未対応 |
+| Bundle（Brewfile） | Partial |
+| Services | macOS（launchd）では Native。ラベルは `dev.nextbrew.<formula>`。Linux（systemd）は計画中 |
+| Tap | 実装済み（`nb tap`、`nb trust`）。仕様書ではまだ Unsupported と記載されている |
+| Homebrew からの移行（`nb migrate`） | Partial |
+| ソースからのビルド | 対応範囲は限定的。開発者向けコマンド（create、audit、bottle）は予定なし |
+
+コマンド名、オプション、終了コードは Homebrew に従います。nextbrew 自身は Ruby を実行しません。
+理解できないステップは、黙ってスキップせず報告します。

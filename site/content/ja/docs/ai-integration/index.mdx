@@ -1,0 +1,22 @@
+---
+title: AI 連携
+description: AI コーディングエージェントが Homebrew を推測せず nextbrew を使えるようにする、3 つの小さな仕組み。
+---
+
+# AI 連携
+
+nextbrew には、AI コーディングエージェント向けに 3 つのものがあります。
+
+- [Agent Skill](/ja/docs/ai-integration/agent-skill): エージェントに `nb` と `nbx` を使うよう伝え、どこで止めて確認するかも示す `SKILL.md` です。
+- [AGENTS.md](/ja/docs/ai-integration/agents-md): プロジェクトに貼り付ける短いブロックです。`AGENTS.md` を読むエージェントが `brew` ではなく `nb` を選ぶようになります。
+- [llms.txt](/ja/docs/ai-integration/llms-txt): このドキュメントをプレーンな Markdown にしたものです。ドキュメントを自分で読むエージェント向けです。
+
+## nbx でツールを実行する
+
+エージェントがツールを一度だけ使うなら、[`nbx`](/ja/docs/commands/nbx) が最も簡単です。formula のコマンドを実行し、必要なら先に formula をインストールします。prefix には何もリンクしません。
+
+```sh
+nbx jq --version
+```
+
+プロジェクトで使い続けるものには、`nb install <name>` を使います。更新の確認には `nb outdated --json` が使えます。スクリプトやエージェントが解析できる出力が得られます。

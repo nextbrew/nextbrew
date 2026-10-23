@@ -1,0 +1,31 @@
+---
+title: nb list
+description: インストール済みの formula と cask を一覧表示します。
+---
+
+# nb list
+
+```sh
+nb list [OPTIONS]
+```
+
+## オプション
+
+| Flag | 意味 |
+| --- | --- |
+| `--formula`, `--formulae` | formula だけを名前で一覧表示する |
+| `--cask`, `--casks` | cask だけをトークンで一覧表示する |
+| `--pinned` | pin された formula だけを名前で一覧表示する |
+| `--versions` | 各パッケージのバージョンを 1 行に 1 つ表示する |
+| `-1` | 名前を 1 行に 1 つ表示する |
+| `--auto-init` | 確認なしで初期化する |
+| `-v`, `--verbose` | 出力を詳しくする |
+| `-q`, `--quiet` | 出力を抑え、エラーだけ表示する |
+
+## 例
+
+```sh
+nb list
+nb list --versions
+nb list --cask -1
+```

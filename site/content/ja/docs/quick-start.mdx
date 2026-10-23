@@ -1,0 +1,44 @@
+---
+title: クイックスタート
+description: nextbrew をインストールし、パッケージのインストール、実行、アップグレード、削除を試します。
+---
+
+# クイックスタート
+
+nextbrew をインストールします。
+
+```sh
+curl -fsSL https://nextbrew.dev/install | bash
+```
+
+formula をインストールします。
+
+```sh
+nb install jq
+```
+
+formula のコマンドを、prefix にリンクせずに実行します。
+
+```sh
+nbx jq --version
+```
+
+インストール済みのパッケージと古いパッケージを確認し、アップグレードします。
+
+```sh
+nb list
+nb outdated
+nb upgrade
+```
+
+パッケージを削除します。
+
+```sh
+nb uninstall jq
+```
+
+cask をインストールするには、名前の前に `cask:` を付けるか、`--cask` を渡します。
+
+```sh
+nb install cask:ghostty
+```

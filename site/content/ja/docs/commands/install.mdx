@@ -1,0 +1,63 @@
+---
+title: nb install
+description: Homebrew の bottle と cask の定義から、formula と cask をインストールします。
+---
+
+# nb install
+
+```sh
+nb install [OPTIONS] <FORMULAS>...
+```
+
+bottle から formula を、またそのほかに cask をインストールします。cask をインストールするには、
+名前の前に `cask:` を付けるか、`--cask` を渡します。インストール済みの formula はそのままにします。古い場合はアップグレードします。
+
+## オプション
+
+| Flag | 意味 |
+| --- | --- |
+| `--no-link` | インストール後にシンボリックリンクを作らない |
+| `-s`, `--build-from-source` | bottle を使わず、ソースからビルドする |
+| `--formula`, `--formulae` | 名前を formula として扱う |
+| `--cask`, `--casks` | 名前を cask として扱う |
+| `--auto-init` | 確認なしで初期化する（環境変数 `NEXTBREW_AUTO_INIT`） |
+| `-v`, `--verbose` | 出力を詳しくする（繰り返し指定できる） |
+| `-q`, `--quiet` | 出力を抑え、エラーだけ表示する |
+| `--require-sha` | チェックサムのない cask を拒否する |
+| `--no-binaries` | cask の binary を含めない |
+| `--language <LANGUAGE>` | 未対応: cask は既定の言語でインストールされる |
+
+cask のインストール先を指定するフラグです。いずれも `<DIR>` を取ります。
+
+| Flag | DIR にインストールするもの |
+| --- | --- |
+| `--appdir` | Applications フォルダー |
+| `--appimagedir` | AppImage |
+| `--keyboard-layoutdir` | キーボードレイアウト |
+| `--colorpickerdir` | カラーピッカー |
+| `--prefpanedir` | 環境設定パネル |
+| `--qlplugindir` | QuickLook プラグイン |
+| `--mdimporterdir` | Spotlight インポーター |
+| `--dictionarydir` | 辞書 |
+| `--fontdir` | フォント |
+| `--servicedir` | サービス |
+| `--input-methoddir` | 入力メソッド |
+| `--internet-plugindir` | インターネットプラグイン |
+| `--audio-unit-plugindir` | Audio Unit プラグイン |
+| `--vst-plugindir` | VST プラグイン |
+| `--vst3-plugindir` | VST3 プラグイン |
+| `--screen-saverdir` | スクリーンセーバー |
+
+## 例
+
+```sh
+nb install jq wget
+nb install cask:ghostty
+nb install --build-from-source hello
+```
+
+## brew との違い
+
+お使いのプラットフォーム向けの bottle がない formula では、nextbrew は黙ってビルドせず、
+停止して `--build-from-source` を使うよう案内します。
+[ソースからのビルド](/ja/docs/guides/building-from-source)を参照してください。

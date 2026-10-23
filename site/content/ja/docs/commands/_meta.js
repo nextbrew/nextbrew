@@ -1,0 +1,17 @@
+export default {
+  install: 'nb install',
+  uninstall: 'nb uninstall',
+  upgrade: 'nb upgrade',
+  outdated: 'nb outdated',
+  list: 'nb list',
+  info: 'nb info',
+  search: 'nb search',
+  deps: 'nb deps / uses',
+  link: 'nb link / unlink',
+  pin: 'nb pin / unpin',
+  autoremove: 'nb autoremove',
+  bundle: 'nb bundle',
+  services: 'nb services',
+  tap: 'nb tap / trust',
+  nbx: 'nbx',
+}

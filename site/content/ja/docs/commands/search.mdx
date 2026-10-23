@@ -1,0 +1,30 @@
+---
+title: nb search
+description: formula と cask を、名前または正規表現で検索します。
+---
+
+# nb search
+
+```sh
+nb search [OPTIONS] <QUERY>
+```
+
+クエリをスラッシュで囲むと、正規表現で検索します。
+
+## オプション
+
+| Flag | 意味 |
+| --- | --- |
+| `--formula` | formula だけ検索する |
+| `--cask` | cask だけ検索する |
+| `--auto-init` | 確認なしで初期化する |
+| `-v`, `--verbose` | 出力を詳しくする |
+| `-q`, `--quiet` | 出力を抑え、エラーだけ表示する |
+
+## 例
+
+```sh
+nb search ripgrep
+nb search --cask firefox
+nb search '/^python@3\./'
+```

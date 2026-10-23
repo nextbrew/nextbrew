@@ -1,0 +1,53 @@
+---
+title: Homebrew からの移行
+description: nextbrew を Homebrew と並べて使い、パッケージを移し、必要なら元に戻します。
+---
+
+# Homebrew からの移行
+
+## 共存
+
+nextbrew は Homebrew と prefix を共有しません。macOS では `/opt/nextbrew` を使い、
+Homebrew は `/opt/homebrew` か `/usr/local` のままです。Linux では、インストーラーは
+`/opt/nextbrew` があればそれを、なければ `~/.local/share/nextbrew` があればそれを、
+どちらもなければ `/home/nextbrew/.nextbrew` を選びます。nextbrew をインストールしても、
+Homebrew には手を加えません。
+
+## PATH の順序
+
+`nb init`（インストーラーが実行します）は、nextbrew の `bin` ディレクトリをシェルの設定に追加します。
+両方に同じコマンドがある場合は、`PATH` で先にあるディレクトリが優先されます。使いたい方を先にしてください。
+シェルの設定を自分で編集したい場合は、`nb init --no-modify-path` を実行します。
+
+## パッケージの移行
+
+`nb migrate` は Partial です。現在は次のことをします。
+
+1. Homebrew にインストール済みのパッケージ（formula と cask。ほかの tap のものも一部含みます）を一覧にします。
+2. 実行内容を表示し、確認を求めます（`-y`/`--yes` で省略できます）。
+3. それらのパッケージが由来するサードパーティの tap を tap し、そこから移すものを trust します。
+4. cask と formula を nextbrew でインストールします。pin された formula は pin のままにします。Homebrew の service は停止し、nextbrew で起動します。
+5. 移行した formula を Homebrew からアンインストールするかを尋ねます。`--force` を付けると、エラーがあっても Homebrew からアンインストールします。
+
+計画できない formula や、インストールできない formula は一覧に出し、Homebrew に残します。
+
+```sh
+nb migrate
+```
+
+## Brewfile
+
+`nb bundle` は、Homebrew と同じ `Brewfile` を読みます。
+
+```sh
+nb bundle
+nb bundle dump
+```
+
+[nb bundle](/ja/docs/commands/bundle) を参照してください。
+
+## 元に戻す
+
+nextbrew は Homebrew を変更していないので、Homebrew 側で元に戻す作業はありません。
+`nb reset` で nextbrew を削除し、バイナリを消してください（[FAQ](/ja/docs/reference/faq) を参照）。
+`nb migrate` で Homebrew からパッケージをアンインストールした場合は、`brew install` で入れ直します。

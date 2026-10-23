@@ -1,0 +1,31 @@
+---
+title: nb autoremove
+description: 依存関係として入れただけで、もう不要になった formula を削除します。
+---
+
+# nb autoremove
+
+```sh
+nb autoremove [OPTIONS]
+```
+
+## オプション
+
+| Flag | 意味 |
+| --- | --- |
+| `-n`, `--dry-run` | 削除せずに、削除される対象を一覧表示する |
+| `--auto-init` | 確認なしで初期化する |
+| `-v`, `--verbose` | 出力を詳しくする |
+| `-q`, `--quiet` | 出力を抑え、エラーだけ表示する |
+
+## 例
+
+```sh
+nb autoremove --dry-run
+nb autoremove
+```
+
+## brew との違い
+
+`brew uninstall` と同じく、`nb uninstall` がこのコマンドを自動で実行します。無効にするには `NEXTBREW_NO_AUTOREMOVE` を設定します。
+このコマンドは Partial です。実際の macOS 機ではまだ検証していません。

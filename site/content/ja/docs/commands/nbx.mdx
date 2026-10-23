@@ -1,0 +1,23 @@
+---
+title: nbx
+description: formula のコマンドを、prefix にリンクせずに実行します。
+---
+
+# nbx
+
+```sh
+nbx <formula> [args...]
+```
+
+`nbx` は formula のコマンドを実行します。formula が未インストールなら、先にインストールします。
+`nb` と並べてインストールされる、別のバイナリです。独自のフラグはありません。
+formula 名より後ろは、すべてそのコマンドに渡されます。
+
+## 例
+
+```sh
+nbx jq --version
+nbx wget https://example.com
+```
+
+`nb run` は、`nb` の中から使える同じ機能です。

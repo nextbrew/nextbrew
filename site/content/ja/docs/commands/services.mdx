@@ -1,0 +1,50 @@
+---
+title: nb services
+description: インストール済み formula のバックグラウンドサービスを管理します。
+---
+
+# nb services
+
+```sh
+nb services [OPTIONS] [COMMAND]
+```
+
+`nb services` は、nextbrew 版の `brew services` です。macOS では launchd を使い、
+ラベルは `dev.nextbrew.<formula>` の形式です。
+
+## サブコマンド
+
+| サブコマンド | 意味 |
+| --- | --- |
+| `list`（別名 `ls`） | 現在のユーザー（または root）が管理するすべてのサービスを一覧表示する |
+| `info`（別名 `i`） | サービスの状態を表示する |
+| `run` | ログイン時（または起動時）の起動には登録せず、サービスを実行する |
+| `start`（別名 `launch`、`load`、`s`、`l`） | サービスをすぐに起動し、ログイン時（または起動時）に起動するよう登録する |
+| `stop`（別名 `unload`、`terminate`、`term`、`t`、`u`） | サービスを停止し、ログイン時（または起動時）の起動登録を解除する |
+| `kill`（別名 `k`） | サービスをすぐに停止するが、登録は残す |
+| `restart`（別名 `relaunch`、`reload`、`r`） | 必要ならサービスを停止し、再び起動する |
+| `cleanup`（別名 `clean`、`cl`、`rm`） | 使われていないサービスをすべて削除する |
+
+## オプション
+
+| Flag | 意味 |
+| --- | --- |
+| `--sudo-service-user <SUDO_SERVICE_USER>` | macOS で root として実行したとき、このユーザーとしてサービスを実行する |
+| `--auto-init` | 確認なしで初期化する |
+| `-v`, `--verbose` | 出力を詳しくする |
+| `-q`, `--quiet` | 出力を抑え、エラーだけ表示する |
+
+## 例
+
+```sh
+nb services list
+nb services start postgresql@16
+nb services restart postgresql@16
+```
+
+## brew との違い
+
+Services は macOS（launchd）では Native ですが、実際の macOS 機ではまだ検証していません。
+`--help` が説明しているのは launchd だけです。コードは Linux 向けの systemd ユニットも書きますが、
+プロジェクトはまだ Linux の services を対象にしていません。
+launchd ドメインの警告を表示しないようにするには、`NEXTBREW_SERVICES_NO_DOMAIN_WARNING=1` を設定します。

@@ -1,0 +1,30 @@
+---
+title: ソースからのビルド
+description: 合う bottle がないときに formula をソースからビルドする方法と、その注意点。
+---
+
+# ソースからのビルド
+
+nextbrew は、既定では bottle をインストールします。formula をソースからビルドしたいときは、
+`--build-from-source`（または `-s`）を渡します。
+
+```sh
+nb install --build-from-source <formula>
+nb upgrade -s <formula>
+```
+
+お使いのプラットフォーム向けの bottle がない formula では、`nb install` は勝手にビルドせず、停止してこのフラグを案内します。
+
+## ビルドの仕組み
+
+Linux では、ビルド環境は Homebrew の superenv に倣います。依存関係のパス
+（include、lib、pkg-config）を Homebrew と同じように設定し、nextbrew の prefix にある
+依存パッケージを使って formula をビルドします。ログは formula ごとのログディレクトリに出力されます
+（ビルド中は `NEXTBREW_LOGS`）。
+
+## 制限
+
+ソースビルドは zerobrew から引き継いだもので、対応範囲は限られています。
+正しくビルドできる formula がどれだけあるかは、まだ分かっていません。
+`create`、`audit`、`bottle` などの開発者向けコマンドは予定していません。
+bottle があるなら、bottle を使ってください。ビルドに失敗する formula には、`brew install --build-from-source` が引き続き代替手段になります。

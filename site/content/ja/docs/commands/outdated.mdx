@@ -1,0 +1,30 @@
+---
+title: nb outdated
+description: 新しいバージョンがあるインストール済みパッケージを一覧表示します。
+---
+
+# nb outdated
+
+```sh
+nb outdated [OPTIONS]
+```
+
+## オプション
+
+| Flag | 意味 |
+| --- | --- |
+| `--json` | JSON で出力する |
+| `--auto-init` | 確認なしで初期化する |
+| `-v`, `--verbose` | 出力を詳しくする |
+| `-q`, `--quiet` | 出力を抑え、エラーだけ表示する |
+
+## 例
+
+```sh
+nb outdated
+nb outdated --json
+```
+
+## brew との違い
+
+cask はバージョンで比較します。バージョンが `latest` の cask は、名前を指定したときだけ古いものとして扱います。

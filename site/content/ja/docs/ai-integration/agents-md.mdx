@@ -1,0 +1,17 @@
+---
+title: AGENTS.md
+description: エージェントに nextbrew を使わせるために、プロジェクトの AGENTS.md へ貼り付けるブロック。
+---
+
+# AGENTS.md
+
+多くのエージェントは、プロジェクトのルートにある `AGENTS.md` を読みます。次のブロックを自分のファイルに貼り付けてください。
+
+```markdown
+## Packages
+This machine uses nextbrew. Install tools with `nb install <name>` (not `brew`),
+run one-off tools with `nbx <formula> ...`, and check updates with `nb outdated --json`.
+If `nb` fails, run `nb doctor` and report its output.
+```
+
+[Agent Skill](/ja/docs/ai-integration/agent-skill) には同じルールに加えて、いくつかのルールが入っています。マシン全体にはスキルを、1 つのプロジェクトには `AGENTS.md` を使ってください。

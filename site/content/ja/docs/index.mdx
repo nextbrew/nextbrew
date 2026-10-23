@@ -1,9 +1,28 @@
 ---
-title: はじめに
+title: 概要
 description: nextbrew とは何か、Homebrew との関係。
 ---
 
-# はじめに
+# 概要
 
-nextbrew は Rust で書かれた Homebrew 互換のパッケージマネージャーです。
+nextbrew は Rust で書かれた、Homebrew 互換のパッケージマネージャーです。
 Ruby や Homebrew 本体がなくても、Homebrew 公式の bottle と cask をインストールできます。
+バイナリは 2 つです。パッケージマネージャーの `nb` と、formula のコマンドをリンクせずに実行する `nbx` です。
+
+## 方針
+
+- **Homebrew のコピーではなく、Homebrew のデータを使う。** nextbrew は Homebrew の公開 JSON API を読み、Homebrew 公式の bottle をインストールします。独自のパッケージ定義は持ちません。
+- **速さより正しさ。** post-install の手順を飛ばした高速なインストールや、後から削除できない cask は成果とは言えません。
+- **黙ってスキップしない。** 対応していないことがあれば、そう伝えます。成功したふりはしません。
+
+nextbrew は開発初期のソフトウェアです。1.0 までは破壊的な変更が入る可能性があります。
+
+## 次に読むページ
+
+- [インストール](/ja/docs/installation)と[クイックスタート](/ja/docs/quick-start)
+- [Homebrew からの移行](/ja/docs/migrating-from-homebrew)
+- 今何が動くかは[互換性](/ja/docs/reference/compatibility)
+
+## クレジット
+
+nextbrew は Homebrew とは無関係です。[zerobrew](https://github.com/zerobrewhq/zerobrew) のフォークとして始まり、その履歴を引き継いでいます。

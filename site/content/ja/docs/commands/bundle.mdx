@@ -1,0 +1,57 @@
+---
+title: nb bundle
+description: Brewfile からのインストール、確認、編集、書き出しをします。
+---
+
+# nb bundle
+
+```sh
+nb bundle [OPTIONS]
+nb bundle <COMMAND>
+```
+
+サブコマンドを省略すると、`nb bundle` は Brewfile からインストールします（`nb bundle install`）。
+
+## サブコマンド
+
+| サブコマンド | 意味 |
+| --- | --- |
+| `install`（別名 `upgrade`） | Brewfile にあるものをすべてインストールし、アップグレードする |
+| `check` | Brewfile にあるものがすべてインストール済みで最新かを確認する |
+| `list` | Brewfile の依存関係を一覧表示する（指定がなければ formula） |
+| `add` | Brewfile にエントリを追加する（指定がなければ formula） |
+| `remove` | 名前が一致するエントリを Brewfile から削除する |
+| `exec` | Brewfile の formula 用のビルド環境でコマンドを実行する |
+| `sh` | Brewfile の formula 用のビルド環境でシェルを起動する |
+| `env` | Brewfile の formula 用のビルド環境を、export の形で出力する |
+| `cleanup` | Brewfile に載っていないものをアンインストールする |
+| `dump` | インストール済みのものを Brewfile に書き出す |
+
+## オプション
+
+| Flag | 意味 |
+| --- | --- |
+| `--file <FILE>` | `./Brewfile` や `$HOMEBREW_BUNDLE_FILE` の代わりに、この Brewfile を読む（`-` で標準入力） |
+| `--global` | `~/.Brewfile`（または `$HOMEBREW_BUNDLE_FILE_GLOBAL`）を読む |
+| `--no-upgrade` | 古い依存関係をアップグレードしない |
+| `--upgrade` | `$HOMEBREW_BUNDLE_NO_UPGRADE` が設定されていても、古い依存関係をアップグレードする |
+| `--upgrade-formulae <FORMULAE>` | `--no-upgrade` を付けていても、カンマ区切りで指定したこれらの formula をアップグレードする（別名 `--upgrade-formula`） |
+| `--auto-init` | 確認なしで初期化する |
+| `-v`, `--verbose` | 出力を詳しくする |
+| `--quiet` | 失敗と概要だけ表示する |
+
+各サブコマンドには、それぞれ固有のオプションがあります。`nb bundle <COMMAND> --help` を実行してください。
+
+## 例
+
+```sh
+nb bundle
+nb bundle --file ~/dotfiles/Brewfile check
+nb bundle dump
+```
+
+## brew との違い
+
+Bundle は Partial で、実際の macOS 機ではまだ検証していません。コードは `vscode`、`go`、`cargo`、`uv`、`krew`、`npm`、`mas` のエントリも扱います。`flatpak` と `winget` のエントリ、
+およびビルドの `args` は、黙ってスキップせず、理由つきの失敗として報告します。
+[互換性](/ja/docs/reference/compatibility)を参照してください。

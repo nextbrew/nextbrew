@@ -1,0 +1,37 @@
+---
+title: nb uninstall
+description: インストール済みの formula と cask を削除します。
+---
+
+# nb uninstall
+
+```sh
+nb uninstall [OPTIONS] [FORMULAS]...
+```
+
+## オプション
+
+| Flag | 意味 |
+| --- | --- |
+| `--all` | インストール済みのすべてのパッケージをアンインストールする |
+| `--formula`, `--formulae` | 名前を formula として扱う |
+| `--cask`, `--casks` | 名前を cask として扱う |
+| `--zap` | cask のユーザーデータ（zap stanza）も削除する |
+| `--ignore-dependencies` | ほかのインストール済みパッケージが依存していても、アンインストールする |
+| `-f`, `--force` | pin された formula もアンインストールし、インストールされていない名前は無視する |
+| `--auto-init` | 確認なしで初期化する |
+| `-v`, `--verbose` | 出力を詳しくする |
+| `-q`, `--quiet` | 出力を抑え、エラーだけ表示する |
+
+## 例
+
+```sh
+nb uninstall jq
+nb uninstall --cask --zap ghostty
+nb uninstall --all
+```
+
+## brew との違い
+
+`brew uninstall` と同じく、`--all` を渡さない限り、そのあと [autoremove](/ja/docs/commands/autoremove) を実行します。
+無効にするには、`NEXTBREW_NO_AUTOREMOVE` に任意の値を設定します。

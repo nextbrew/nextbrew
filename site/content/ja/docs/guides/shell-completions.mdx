@@ -1,0 +1,33 @@
+---
+title: シェル補完
+description: bash、zsh、fish の補完スクリプトを生成します。
+---
+
+# シェル補完
+
+```sh
+nb completion <SHELL>
+```
+
+`<SHELL>` は `bash`、`elvish`、`fish`、`powershell`、`zsh` のいずれかです。スクリプトは標準出力に出力されます。
+
+## bash
+
+```sh
+echo 'source <(nb completion bash)' >> ~/.bashrc
+```
+
+## zsh
+
+```sh
+mkdir -p ~/.zfunc
+nb completion zsh > ~/.zfunc/_nb
+```
+
+そのうえで、`~/.zshrc` の `compinit` の前に `fpath=(~/.zfunc $fpath)` を追加します。
+
+## fish
+
+```sh
+nb completion fish > ~/.config/fish/completions/nb.fish
+```

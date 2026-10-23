@@ -1,0 +1,40 @@
+---
+title: nb upgrade
+description: インストール済みのパッケージを最新バージョンにアップグレードします。
+---
+
+# nb upgrade
+
+```sh
+nb upgrade [OPTIONS] [FORMULAS]...
+```
+
+名前を省略すると、古いものをすべてアップグレードします。pin された formula はそのままです
+（[nb pin](/ja/docs/commands/pin) を参照）。
+
+## オプション
+
+| Flag | 意味 |
+| --- | --- |
+| `-s`, `--build-from-source` | bottle を使わず、ソースからビルドする |
+| `--no-link` | インストール後にシンボリックリンクを作らない |
+| `--require-sha` | チェックサムのない cask を拒否する |
+| `--no-binaries` | cask の binary を含めない |
+| `--language <LANGUAGE>` | 未対応: cask は既定の言語でインストールされる |
+| `--auto-init` | 確認なしで初期化する |
+| `-v`, `--verbose` | 出力を詳しくする |
+| `-q`, `--quiet` | 出力を抑え、エラーだけ表示する |
+
+[nb install](/ja/docs/commands/install) と同じ cask 用ディレクトリのフラグ
+（`--appdir`、`--fontdir` など）も使えます。
+
+## 例
+
+```sh
+nb upgrade
+nb upgrade jq
+```
+
+## brew との違い
+
+自己更新する cask（`auto_updates`）は、名前を指定したときだけアップグレードします。

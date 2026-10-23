@@ -1,0 +1,38 @@
+---
+title: FAQ
+description: 安全性、Ruby、tap、インストール先、削除についての短い回答。
+---
+
+# FAQ
+
+## Homebrew と並べて使って安全ですか？
+
+はい。nextbrew は専用の prefix（macOS は `/opt/nextbrew`、Linux は `/home/nextbrew/.nextbrew`）を使い、
+Homebrew の prefix（`/opt/homebrew` か `/usr/local`）とは共有しません。
+両方に同じコマンドがある場合にどちらが実行されるかは、`PATH` の順序だけで決まります。
+
+## Ruby は必要ですか？
+
+いいえ。nextbrew 自身は Ruby を実行しません。インストールするパッケージに Ruby が含まれることはあります。
+
+## サードパーティの tap に対応していますか？
+
+`nb tap` と `nb trust` が実装されています。[nb tap / trust](/ja/docs/commands/tap) を参照してください。
+
+## なぜ `/opt/nextbrew` と `/home/nextbrew/.nextbrew` なのですか？
+
+Homebrew の prefix と分けるためです。bottle には prefix のパスが埋め込まれているので、
+場所は Homebrew より長くできません。macOS では `/opt/nextbrew`、
+Linux では `/home/linuxbrew/.linuxbrew` と同じ長さの `/home/nextbrew/.nextbrew` です。
+
+## nextbrew をアンインストールするには？
+
+`nb reset` は、root と prefix の両ディレクトリの中身をすべて削除し（先に確認があります。`-y` で省略できます）、
+空のディレクトリを作り直します。そのあと `nb` と `nbx` のバイナリ
+（`NEXTBREW_BIN` で指定していなければ、インストーラーは `~/.local/bin` に置きます）と、
+`nb init` がシェルの設定に追加した行を削除してください。
+
+```sh
+nb reset
+rm ~/.local/bin/nb ~/.local/bin/nbx
+```

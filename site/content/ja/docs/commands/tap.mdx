@@ -1,0 +1,53 @@
+---
+title: nb tap / trust
+description: サードパーティの formula リポジトリを追加し、どれを読み込んでよいか決めます。
+---
+
+# nb tap / trust
+
+```sh
+nb tap [OPTIONS] [NAME] [URL]
+nb trust [OPTIONS] [NAMES]...
+```
+
+引数なしの `nb tap` は、tap 済みのリポジトリを一覧表示します。`user/repo` を渡すと、そのリポジトリを tap します。
+`URL` を指定しなければ、`github.com/user/homebrew-repo` から取得します。`nb untap` は tap を削除します。
+
+`nb trust` は、サードパーティの tap、formula、cask、コマンドを trust 済みにして、読み込めるようにします。
+`nb untrust` はそれを元に戻します。公式の tap は常に trust 済みです。
+
+## nb tap のオプション
+
+| Flag | 意味 |
+| --- | --- |
+| `-f`, `--force` | nextbrew が API から読んでいる tap でも tap する |
+| `--custom-remote` | インストール済み tap の remote を `URL` に変更する |
+| `--auto-init` | 確認なしで初期化する |
+| `-v`, `--verbose` | 出力を詳しくする |
+| `-q`, `--quiet` | 出力を抑え、エラーだけ表示する |
+
+## nb trust のオプション
+
+| Flag | 意味 |
+| --- | --- |
+| `--tap`, `--taps` | 名前は tap |
+| `--formula`, `--formulae` | 名前は formula |
+| `--cask`, `--casks` | 名前は cask |
+| `--command`, `--commands` | 名前はコマンド |
+| `--auto-init` | 確認なしで初期化する |
+| `-v`, `--verbose` | 出力を詳しくする |
+| `-q`, `--quiet` | 出力を抑え、エラーだけ表示する |
+
+## 例
+
+```sh
+nb tap
+nb tap user/repo
+nb trust --tap user/repo
+```
+
+## brew との違い
+
+プロジェクトの仕様書ではサードパーティの tap は Unsupported ですが、`nb tap` と
+`nb trust` は実装済みで、ここに書いたとおりに動きます。Homebrew が API で配信している tap
+（homebrew/core、homebrew/cask）は、clone せず API から読みます。

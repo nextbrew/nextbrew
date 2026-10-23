@@ -13,4 +13,8 @@ for f in en.html ja.html en/docs.html ja/docs.html \
 done
 cmp -s "$out/install" "$root/install.sh" || { echo "out/install differs from install.sh" >&2; exit 1; }
 grep -q 'English' "$out/en.html" && grep -q '日本語' "$out/en.html" || { echo "no language switch" >&2; exit 1; }
+content="$root/site/content"
+diff <(cd "$content/en" && find . -name '*.mdx' -o -name '_meta.js' | sort) \
+     <(cd "$content/ja" && find . -name '*.mdx' -o -name '_meta.js' | sort) >&2 \
+  || { echo "en and ja pages differ" >&2; exit 1; }
 echo "export ok"

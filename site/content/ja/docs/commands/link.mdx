@@ -1,0 +1,49 @@
+---
+title: nb link / unlink
+description: インストール済みパッケージのシンボリックリンクを、prefix に追加または削除します。
+---
+
+# nb link / unlink
+
+```sh
+nb link [OPTIONS] <FORMULAS>...
+nb unlink [OPTIONS] <FORMULAS>...
+```
+
+`nb link` は、インストール済みの formula、または cask の binary、man ページ、補完を、
+prefix にシンボリックリンクします。`nb unlink` は、そのリンクを削除します。
+
+## nb link のオプション
+
+| Flag | 意味 |
+| --- | --- |
+| `-f`, `--force` | keg-only の formula もリンクする。cask では、自身の古いリンクを置き換える |
+| `--overwrite` | リンク時に、prefix にすでにあるファイルを削除する |
+| `-n`, `--dry-run` | リンクも削除もせず、リンクまたは削除されるファイルを一覧表示する |
+| `--formula`, `--formulae` | すべての名前を formula として扱う |
+| `--cask`, `--casks` | すべての名前を cask として扱う |
+| `--auto-init` | 確認なしで初期化する |
+| `-v`, `--verbose` | 出力を詳しくする |
+| `-q`, `--quiet` | 出力を抑え、エラーだけ表示する |
+
+## nb unlink のオプション
+
+| Flag | 意味 |
+| --- | --- |
+| `--formula`, `--formulae` | すべての名前を formula として扱う |
+| `--cask`, `--casks` | すべての名前を cask として扱う |
+| `--auto-init` | 確認なしで初期化する |
+| `-v`, `--verbose` | 出力を詳しくする |
+| `-q`, `--quiet` | 出力を抑え、エラーだけ表示する |
+
+## 例
+
+```sh
+nb link --dry-run jq
+nb link --force openssl@3
+nb unlink jq
+```
+
+## brew との違い
+
+これらのコマンドは Partial です。実際の macOS 機ではまだ検証していません。[互換性](/ja/docs/reference/compatibility)を参照してください。
