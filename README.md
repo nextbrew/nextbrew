@@ -1,8 +1,26 @@
-# nextbrew
+<p align="center">
+  <a href="https://nextbrew.dev">
+    <picture>
+      <source media="(prefers-color-scheme: dark)" srcset="site/public/brand/mark-dark.svg">
+      <img src="site/public/brand/mark.svg" alt="nextbrew" width="96">
+    </picture>
+  </a>
+</p>
 
-A Homebrew-compatible package manager written in Rust. It installs
-Homebrew's official bottles and casks without needing Ruby or Homebrew
-itself.
+<h1 align="center">nextbrew</h1>
+
+<p align="center">Homebrew, but fast. A Homebrew-compatible package manager written in Rust.</p>
+
+<p align="center"><a href="https://nextbrew.dev">Website</a> · <a href="https://nextbrew.dev/en/docs">Docs</a> · <a href="https://nextbrew.dev/ja">日本語</a></p>
+
+It installs Homebrew's official bottles and casks without needing Ruby or
+Homebrew itself, and runs alongside an existing Homebrew.
+
+## Install
+
+```bash
+curl -fsSL https://nextbrew.dev/install | bash
+```
 
 > Status: early development. Expect breaking changes before 1.0.
 
