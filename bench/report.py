@@ -66,7 +66,7 @@ for p in PHASES:
     md += [f"## {p.capitalize()}", "", "| Formula | Kegs | " + " | ".join(TOOLS.values()) + " |",
            "|---|---:|" + "---:|" * len(TOOLS)]
     md.append(f"| **Total ({len(complete)} formulae)** | | " + " | ".join(
-        f"**{cell(total[p][n])}**" + ("" if n == "brew" else f" ({total[p]['brew'] / total[p][n]:.1f}x)")
+        f"**{cell(total[p][n])}**" + ("" if n == "brew" or not total[p][n] else f" ({total[p]['brew'] / total[p][n]:.1f}x)")
         for n in TOOLS.values()) + " |")
     for f in order:
         md.append(f"| {f} | {kegs.get((f, 'brew'), '')} | " + " | ".join(cell(med.get((f, t, p))) for t in TOOLS) + " |")

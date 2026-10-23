@@ -64,6 +64,8 @@ jobs:
           cache-key: macos-latest-release
 
       - name: Build nb
+        env:
+          LZMA_API_STATIC: '1'
         run: |
           cargo build --release --locked --package nb_cli --bin nb
           mkdir -p "$HOME/bin"
