@@ -1402,7 +1402,7 @@ dependencies = [
 
 [[package]]
 name = "nb_cli"
-version = "0.4.0"
+version = "0.1.0"
 dependencies = [
  "chrono",
  "clap",
@@ -1429,7 +1429,7 @@ dependencies = [
 
 [[package]]
 name = "nb_core"
-version = "0.4.0"
+version = "0.1.0"
 dependencies = [
  "serde",
  "serde_json",
@@ -1437,7 +1437,7 @@ dependencies = [
 
 [[package]]
 name = "nb_io"
-version = "0.4.0"
+version = "0.1.0"
 dependencies = [
  "arwen",
  "bytes",

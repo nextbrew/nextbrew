@@ -9,8 +9,8 @@ We strongly recommend keeping your nextbrew dependencies up to date.
 
 **Please do not report security vulnerabilities through public GitHub issues.**
 
-If you discover a security vulnerability in nmrs or any of the related crates, please report it privately by emailing
-**lucas.gelfondATgmail.com**.
+If you discover a security vulnerability in nextbrew, please report it privately through
+[GitHub's private vulnerability reporting](https://github.com/nextbrew/nextbrew/security/advisories/new).
 
 Please include the following information in your report:
 

@@ -45,10 +45,8 @@ cargo build --release
 
 ## Credits
 
-nextbrew started as a fork of [zerobrew](https://github.com/zerobrewhq/zerobrew)
-and keeps its history. zerobrew is dual-licensed under MIT and Apache 2.0,
-and so is nextbrew. Parts derived from Homebrew are under the BSD 2-Clause
-license in [LICENSE-HOMEBREW](./LICENSE-HOMEBREW).
+nextbrew is not affiliated with Homebrew. Parts derived from Homebrew are
+under the BSD 2-Clause license in [LICENSE-HOMEBREW](./LICENSE-HOMEBREW).
 
 ## License
 

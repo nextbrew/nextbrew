@@ -3,7 +3,7 @@ members = ["nb_core", "nb_io", "nb_cli"]
 resolver = "3"
 
 [workspace.package]
-version = "0.4.0"
+version = "0.1.0"
 rust-version = "1.96"
 
 [workspace.dependencies]

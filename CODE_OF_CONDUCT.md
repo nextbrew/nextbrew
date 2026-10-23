@@ -59,8 +59,9 @@ representative at an online or offline event.
 ## Enforcement
 
 Instances of abusive, harassing, or otherwise unacceptable behavior may be
-reported to the community leaders responsible for enforcement at
-lucas.gelfond@gmail.com.
+reported to the community leaders responsible for enforcement through
+[GitHub's private vulnerability reporting](https://github.com/nextbrew/nextbrew/security/advisories/new)
+or by contacting the maintainers of the [nextbrew organization](https://github.com/nextbrew).
 All complaints will be reviewed and investigated promptly and fairly.
 
 All community leaders are obligated to respect the privacy and security of the
