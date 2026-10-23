@@ -2,10 +2,10 @@
 export function Logo() {
   return (
     <span className="nb-logo">
-      <img src="/brand/mark.svg" alt="" width="24" height="24" className="nb-light" />
-      <img src="/brand/mark-dark.svg" alt="" width="24" height="24" className="nb-dark" />
-      <img src="/brand/wordmark.svg" alt="nextbrew" height="18" className="nb-light" />
-      <img src="/brand/wordmark-dark.svg" alt="nextbrew" height="18" className="nb-dark" />
+      <img src="/brand/mark.svg" alt="" width="28" height="28" className="nb-mark nb-light" />
+      <img src="/brand/mark-dark.svg" alt="" width="28" height="28" className="nb-mark nb-dark" />
+      <img src="/brand/wordmark.svg" alt="nextbrew" height="22" className="nb-word nb-light" />
+      <img src="/brand/wordmark-dark.svg" alt="nextbrew" height="22" className="nb-word nb-dark" />
     </span>
   )
 }

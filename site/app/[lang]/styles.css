@@ -2,6 +2,9 @@ body { font-family: var(--font-geist-sans), system-ui, sans-serif; }
 code, kbd, pre { font-family: var(--font-geist-mono), ui-monospace, monospace; }
 
 .nb-logo { display: inline-flex; align-items: center; gap: 8px; }
+.nb-logo img { width: auto; max-width: none; }
+.nb-mark { height: 28px; }
+.nb-word { height: 22px; }
 .nb-dark { display: none; }
 html.dark .nb-light { display: none; }
 html.dark .nb-dark { display: inline; }
