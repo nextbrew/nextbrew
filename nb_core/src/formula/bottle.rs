@@ -298,7 +298,16 @@ mod tests {
             );
         }
 
-        #[cfg(target_os = "linux")]
+        #[cfg(all(target_os = "linux", target_arch = "aarch64"))]
+        {
+            assert_eq!(selected.tag, "arm64_linux");
+            assert_eq!(
+                selected.url,
+                "https://example.com/foo-1.2.3.arm64_linux.bottle.tar.gz"
+            );
+        }
+
+        #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
         {
             assert_eq!(selected.tag, "x86_64_linux");
             assert_eq!(
