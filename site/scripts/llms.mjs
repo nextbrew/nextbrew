@@ -11,8 +11,12 @@ export function toMarkdown(src) {
   const front = Object.fromEntries(
     (m?.[1] ?? '').split('\n').map(l => l.match(/^(\w+):\s*(.*)$/)).filter(Boolean).map(([, k, v]) => [k, v]),
   )
+  let fence = false
   const body = src.slice(m ? m[0].length : 0)
-    .split('\n').filter(l => !/^(import|export) /.test(l)).join('\n')
+    .split('\n').filter(l => {
+      if (l.startsWith('```')) fence = !fence
+      return fence || !/^(import|export) /.test(l)
+    }).join('\n')
     .replace(/^\n+/, '')
   return { title: front.title ?? '', description: front.description ?? '', body }
 }

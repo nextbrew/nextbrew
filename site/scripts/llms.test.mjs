@@ -12,3 +12,8 @@ test('llmsIndex lists pages with their .md links', () => {
   assert.match(out, /^# nextbrew\n/)
   assert.match(out, /- \[Installation\]\(https:\/\/nextbrew\.dev\/en\/docs\/installation\.md\): Install it\./)
 })
+
+test('toMarkdown keeps import/export lines inside code fences', () => {
+  const src = '---\ntitle: Env\ndescription: Vars.\n---\nexport const a = 1\n\n```sh\nexport FOO=1\n```\n'
+  assert.equal(toMarkdown(src).body, '```sh\nexport FOO=1\n```\n')
+})
