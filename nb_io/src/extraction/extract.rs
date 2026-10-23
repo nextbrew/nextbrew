@@ -124,6 +124,8 @@ pub fn extract_archive_from_reader<R: Read>(
 
 fn extract_tar_archive<R: Read>(reader: R, dest_dir: &Path) -> Result<(), Error> {
     let mut archive = Archive::new(reader);
+    #[cfg(target_os = "macos")]
+    let mut renames = Vec::new();
 
     archive.set_preserve_permissions(true);
     archive.set_unpack_xattrs(true);
@@ -144,11 +146,46 @@ fn extract_tar_archive<R: Read>(reader: R, dest_dir: &Path) -> Result<(), Error>
         // Security check: validate path doesn't escape destination
         validate_path(&entry_path, dest_dir)?;
 
+        #[cfg(target_os = "macos")]
+        renames.extend(decomposed_names(&entry_path));
         let ctx = format!("failed to unpack entry {path_display}");
         entry.unpack_in(dest_dir).map_err(Error::store(&ctx))?;
     }
 
+    #[cfg(target_os = "macos")]
+    for (path, name) in renames {
+        let from = dest_dir.join(&path);
+        let to = from.with_file_name(name);
+        // The same file to APFS, which only stores the name anew.
+        std::fs::rename(&from, &to).map_err(Error::store("failed to rename entry"))?;
+    }
+
     Ok(())
+}
+
+/// The names in `path` that macOS's tar (libarchive), which Homebrew
+/// pours bottles with, writes decomposed (NFD): each path, from the
+/// first, whose last name is not, with that name as it writes it. APFS
+/// finds a file under either form, but lists it as written.
+#[cfg(target_os = "macos")]
+fn decomposed_names(path: &Path) -> Vec<(PathBuf, String)> {
+    use unicode_normalization::UnicodeNormalization;
+    let mut names = Vec::new();
+    let mut prefix = PathBuf::new();
+    for component in path.components() {
+        prefix.push(component);
+        let Some(name) = component.as_os_str().to_str() else {
+            continue;
+        };
+        if name.is_ascii() {
+            continue;
+        }
+        let decomposed: String = name.nfd().collect();
+        if decomposed != name {
+            names.push((prefix.clone(), decomposed));
+        }
+    }
+    names
 }
 
 fn extract_zip_archive(path: &Path, dest_dir: &Path) -> Result<(), Error> {
@@ -385,6 +422,46 @@ mod reader_tests {
         assert_eq!(
             fs::read_to_string(tmp.path().join("pkg/1.0/bin/tool")).unwrap(),
             "hello"
+        );
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn names_are_written_decomposed_as_macos_tar_writes_them() {
+        let tmp = TempDir::new().unwrap();
+        let mut builder = tar::Builder::new(Vec::new());
+        for (name, kind) in [
+            ("aspell/1.0/lib/d\u{e9}j\u{e0}/", tar::EntryType::Directory),
+            (
+                "aspell/1.0/lib/d\u{e9}j\u{e0}/kasz\u{eb}bsczi.alias",
+                tar::EntryType::Regular,
+            ),
+        ] {
+            let mut header = tar::Header::new_gnu();
+            header.set_path(name).unwrap();
+            header.set_entry_type(kind);
+            header.set_size(0);
+            header.set_mode(0o755);
+            header.set_cksum();
+            builder.append(&header, &b""[..]).unwrap();
+        }
+        let tar = builder.into_inner().unwrap();
+        let mut encoder = GzEncoder::new(Vec::new(), Compression::default());
+        encoder.write_all(&tar).unwrap();
+
+        extract_archive_from_reader(&encoder.finish().unwrap()[..], tmp.path()).unwrap();
+
+        let names = |dir: &std::path::Path| -> Vec<String> {
+            fs::read_dir(dir)
+                .unwrap()
+                .map(|entry| entry.unwrap().file_name().into_string().unwrap())
+                .collect()
+        };
+        let lib = tmp.path().join("aspell/1.0/lib");
+        assert_eq!(names(&lib), ["de\u{301}ja\u{300}"]);
+        assert_eq!(
+            names(&lib.join("de\u{301}ja\u{300}")),
+            ["kasze\u{308}bsczi.alias"]
         );
     }
 
