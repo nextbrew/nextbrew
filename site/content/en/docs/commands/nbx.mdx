@@ -1,0 +1,23 @@
+---
+title: nbx
+description: Run a command from a formula without linking it into your prefix.
+---
+
+# nbx
+
+```sh
+nbx <formula> [args...]
+```
+
+`nbx` runs the command of a formula, installing the formula first if it is not
+already installed. It is a separate binary installed next to `nb`. It takes no flags of its own;
+everything after the formula name goes to the command.
+
+## Examples
+
+```sh
+nbx jq --version
+nbx wget https://example.com
+```
+
+`nb run` is the same thing from inside `nb`.

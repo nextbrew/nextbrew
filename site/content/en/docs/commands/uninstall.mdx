@@ -1,0 +1,37 @@
+---
+title: nb uninstall
+description: Remove installed formulae and casks.
+---
+
+# nb uninstall
+
+```sh
+nb uninstall [OPTIONS] [FORMULAS]...
+```
+
+## Options
+
+| Flag | Meaning |
+| --- | --- |
+| `--all` | Uninstall all installed packages |
+| `--formula`, `--formulae` | Treat the names as formulae |
+| `--cask`, `--casks` | Treat the names as casks |
+| `--zap` | Also remove the casks' user data (zap stanza) |
+| `--ignore-dependencies` | Uninstall even if other installed packages depend on these |
+| `-f`, `--force` | Uninstall pinned formulae too, and pass over names not installed |
+| `--auto-init` | Initialize without prompting |
+| `-v`, `--verbose` | Increase output verbosity |
+| `-q`, `--quiet` | Suppress output, only show errors |
+
+## Examples
+
+```sh
+nb uninstall jq
+nb uninstall --cask --zap ghostty
+nb uninstall --all
+```
+
+## Differences from brew
+
+Like `brew uninstall`, it then runs [autoremove](/en/docs/commands/autoremove)
+unless you pass `--all`. Set `NEXTBREW_NO_AUTOREMOVE` to any value to turn that off.

@@ -1,0 +1,57 @@
+---
+title: Migrating from Homebrew
+description: Run nextbrew next to Homebrew, move your packages over, and go back if you want to.
+---
+
+# Migrating from Homebrew
+
+## Coexistence
+
+nextbrew does not share a prefix with Homebrew. On macOS it uses `/opt/nextbrew`;
+Homebrew keeps `/opt/homebrew` or `/usr/local`. On Linux the installer picks
+`/opt/nextbrew` if it exists, otherwise `~/.local/share/nextbrew` if that exists,
+otherwise `/home/nextbrew/.nextbrew`. Installing nextbrew leaves Homebrew
+untouched.
+
+## PATH order
+
+`nb init` (run by the installer) adds nextbrew's `bin` directory to your shell
+config. Whichever directory comes first in `PATH` wins when both provide a
+command, so put the one you want first. Run `nb init --no-modify-path` if you
+would rather edit your shell config yourself.
+
+## Moving your packages
+
+`nb migrate` is Partial. Today it:
+
+1. lists the packages installed in Homebrew (formulae and casks, including some
+   from other taps),
+2. shows what it will do and asks for confirmation (skip with `-y`/`--yes`),
+3. taps the third-party taps those packages came from and trusts what moves from them,
+4. installs the casks and formulae with nextbrew, keeps pinned formulae pinned,
+   and stops Homebrew services and starts them with nextbrew,
+5. asks whether to uninstall the migrated formulae from Homebrew. `--force`
+   uninstalls from Homebrew even if errors occur.
+
+Formulae that cannot be planned or installed are listed and left in Homebrew.
+
+```sh
+nb migrate
+```
+
+## Brewfiles
+
+`nb bundle` reads the same `Brewfile` Homebrew uses.
+
+```sh
+nb bundle
+nb bundle dump
+```
+
+See [nb bundle](/en/docs/commands/bundle).
+
+## Going back
+
+Nothing in Homebrew needs undoing, because nextbrew never changed it. Remove
+nextbrew with `nb reset` and delete the binaries (see the [FAQ](/en/docs/reference/faq)).
+If you let `nb migrate` uninstall packages from Homebrew, reinstall them with `brew install`.

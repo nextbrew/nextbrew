@@ -1,0 +1,33 @@
+---
+title: Configuration
+description: Where nextbrew keeps its data and how to change it.
+---
+
+# Configuration
+
+nextbrew has no configuration file. It is configured with global options and
+[environment variables](/en/docs/reference/environment-variables).
+
+## Global options
+
+| Flag | Meaning |
+| --- | --- |
+| `--root <ROOT>` | Path to the nextbrew data directory (env `NEXTBREW_ROOT`) |
+| `--prefix <PREFIX>` | Path to the Homebrew-style prefix (overrides `NEXTBREW_PREFIX`) |
+| `--concurrency <CONCURRENCY>` | Number of concurrent download threads (default 20) |
+| `--auto-init` | Initialize without prompting (env `NEXTBREW_AUTO_INIT`) |
+| `-v`, `--verbose` | Increase output verbosity |
+| `-q`, `--quiet` | Suppress output, only show errors |
+| `-V`, `--version` | Print version |
+
+## Directories
+
+The root holds `store`, `db`, `cache` and `locks`. The prefix holds `bin` and `Cellar`, like a Homebrew prefix.
+
+| Platform | Root | Prefix |
+| --- | --- | --- |
+| macOS | `/opt/nextbrew` | same as root |
+| Linux, default | `/home/nextbrew/.nextbrew` | same as root |
+| Linux, other root | the root you set | `<root>/prefix` |
+
+`nb init` creates these directories and adds nextbrew to your shell config.

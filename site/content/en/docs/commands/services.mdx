@@ -1,0 +1,50 @@
+---
+title: nb services
+description: Manage background services for installed formulae.
+---
+
+# nb services
+
+```sh
+nb services [OPTIONS] [COMMAND]
+```
+
+`nb services` is `brew services` for nextbrew. On macOS it uses launchd, with
+labels of the form `dev.nextbrew.<formula>`.
+
+## Subcommands
+
+| Subcommand | Meaning |
+| --- | --- |
+| `list` (alias `ls`) | List all managed services for the current user (or root) |
+| `info` (alias `i`) | Show a service's status |
+| `run` | Run a service without registering it to launch at login (or boot) |
+| `start` (aliases `launch`, `load`, `s`, `l`) | Start a service now and register it to launch at login (or boot) |
+| `stop` (aliases `unload`, `terminate`, `term`, `t`, `u`) | Stop a service and unregister it from launching at login (or boot) |
+| `kill` (alias `k`) | Stop a service now but keep it registered |
+| `restart` (aliases `relaunch`, `reload`, `r`) | Stop (if necessary) and start a service again |
+| `cleanup` (aliases `clean`, `cl`, `rm`) | Remove all unused services |
+
+## Options
+
+| Flag | Meaning |
+| --- | --- |
+| `--sudo-service-user <SUDO_SERVICE_USER>` | When run as root on macOS, run the service(s) as this user |
+| `--auto-init` | Initialize without prompting |
+| `-v`, `--verbose` | Increase output verbosity |
+| `-q`, `--quiet` | Suppress output, only show errors |
+
+## Examples
+
+```sh
+nb services list
+nb services start postgresql@16
+nb services restart postgresql@16
+```
+
+## Differences from brew
+
+Services are Native on macOS (launchd), but not yet verified on real macOS
+hardware. `--help` describes launchd only; the code also writes systemd units on
+Linux, but the project does not list Linux services as a target yet.
+Set `NEXTBREW_SERVICES_NO_DOMAIN_WARNING=1` to hide the launchd domain warning.

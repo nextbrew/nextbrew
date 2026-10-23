@@ -1,0 +1,23 @@
+---
+title: Environment Variables
+description: Every environment variable nextbrew reads, with defaults.
+---
+
+# Environment Variables
+
+| Variable | Default | Effect |
+| --- | --- | --- |
+| `NEXTBREW_ROOT` | platform default (see [Configuration](/en/docs/reference/configuration)) | Data directory. Same as `--root` |
+| `NEXTBREW_PREFIX` | derived from the root | Prefix directory. `--prefix` overrides it. On macOS the old default `<root>/prefix` is ignored |
+| `NEXTBREW_AUTO_INIT` | unset | Initialize directories without prompting. Same as `--auto-init` |
+| `NEXTBREW_API_URL` | Homebrew's API | Use another formula API base URL |
+| `NEXTBREW_API_AUTO_UPDATE_SECS` | `600` | Seconds the cached formula index is trusted before it is revalidated |
+| `NEXTBREW_NO_AUTOREMOVE` | unset | If set to any value, `nb uninstall` does not run autoremove afterwards |
+| `NEXTBREW_SERVICES_NO_DOMAIN_WARNING` | unset | If set, hides the launchd domain warning from `nb services` |
+| `NEXTBREW_DIR` | `~/.nextbrew` | Used by `nb init` to build the shell config block, and by the installer as its source checkout directory |
+| `NEXTBREW_BIN` | `~/.local/bin` (installer) | Directory the installer puts `nb` and `nbx` in. The shell config written by `nb init` sets it to `$NEXTBREW_DIR/bin` and puts it on `PATH` |
+
+`nb bundle` also reads `HOMEBREW_BUNDLE_FILE`, `HOMEBREW_BUNDLE_FILE_GLOBAL` and `HOMEBREW_BUNDLE_NO_UPGRADE`.
+
+The installer (`install.sh`) honours `NEXTBREW_DIR`, `NEXTBREW_BIN`, `NEXTBREW_ROOT` and `NEXTBREW_PREFIX`.
+Other `NEXTBREW_*` names (`NEXTBREW_FORMULA_*`, `NEXTBREW_CELLAR`, `NEXTBREW_LOGS` and the like) are set by nextbrew for source builds; do not set them yourself.

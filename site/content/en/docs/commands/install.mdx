@@ -1,0 +1,63 @@
+---
+title: nb install
+description: Install formulae and casks from Homebrew's bottles and cask definitions.
+---
+
+# nb install
+
+```sh
+nb install [OPTIONS] <FORMULAS>...
+```
+
+Installs formulae from bottles, and casks. Prefix a name with `cask:` or pass
+`--cask` to install a cask. An installed formula is left alone, or upgraded if it is outdated.
+
+## Options
+
+| Flag | Meaning |
+| --- | --- |
+| `--no-link` | Do not create symlinks after installation |
+| `-s`, `--build-from-source` | Build from source instead of using bottles |
+| `--formula`, `--formulae` | Treat the names as formulae |
+| `--cask`, `--casks` | Treat the names as casks |
+| `--auto-init` | Initialize without prompting (env `NEXTBREW_AUTO_INIT`) |
+| `-v`, `--verbose` | Increase output verbosity (repeatable) |
+| `-q`, `--quiet` | Suppress output, only show errors |
+| `--require-sha` | Refuse a cask without a checksum |
+| `--no-binaries` | Leave out the casks' binaries |
+| `--language <LANGUAGE>` | Not supported: casks install in their default language |
+
+Cask target directories, each taking `<DIR>`:
+
+| Flag | Installs into DIR |
+| --- | --- |
+| `--appdir` | the Applications folder |
+| `--appimagedir` | AppImages |
+| `--keyboard-layoutdir` | keyboard layouts |
+| `--colorpickerdir` | color pickers |
+| `--prefpanedir` | preference panes |
+| `--qlplugindir` | QuickLook plugins |
+| `--mdimporterdir` | Spotlight importers |
+| `--dictionarydir` | dictionaries |
+| `--fontdir` | fonts |
+| `--servicedir` | services |
+| `--input-methoddir` | input methods |
+| `--internet-plugindir` | internet plugins |
+| `--audio-unit-plugindir` | audio unit plugins |
+| `--vst-plugindir` | VST plugins |
+| `--vst3-plugindir` | VST3 plugins |
+| `--screen-saverdir` | screen savers |
+
+## Examples
+
+```sh
+nb install jq wget
+nb install cask:ghostty
+nb install --build-from-source hello
+```
+
+## Differences from brew
+
+If a formula has no bottle for your platform, nextbrew stops and tells you to
+use `--build-from-source` rather than building silently. See
+[Building from Source](/en/docs/guides/building-from-source).

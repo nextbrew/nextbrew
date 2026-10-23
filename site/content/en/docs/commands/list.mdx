@@ -1,0 +1,31 @@
+---
+title: nb list
+description: List installed formulae and casks.
+---
+
+# nb list
+
+```sh
+nb list [OPTIONS]
+```
+
+## Options
+
+| Flag | Meaning |
+| --- | --- |
+| `--formula`, `--formulae` | List only formulae, by name |
+| `--cask`, `--casks` | List only casks, by token |
+| `--pinned` | List only pinned formulae, by name |
+| `--versions` | Show the version of each package, one per line |
+| `-1` | List names one per line |
+| `--auto-init` | Initialize without prompting |
+| `-v`, `--verbose` | Increase output verbosity |
+| `-q`, `--quiet` | Suppress output, only show errors |
+
+## Examples
+
+```sh
+nb list
+nb list --versions
+nb list --cask -1
+```

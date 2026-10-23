@@ -7,3 +7,28 @@ description: What nextbrew is and how it relates to Homebrew.
 
 nextbrew is a Homebrew-compatible package manager written in Rust. It installs
 Homebrew's official bottles and casks without needing Ruby or Homebrew itself.
+It ships as two binaries: `nb`, the package manager, and `nbx`, which runs a
+formula's command without linking it.
+
+## Principles
+
+- **Homebrew's data, not a copy of Homebrew.** nextbrew reads Homebrew's public
+  JSON API and installs Homebrew's official bottles. It keeps no package
+  definitions of its own.
+- **Correctness before speed.** A fast install that skips a post-install step,
+  or a cask that cannot be removed again, is not a result.
+- **Never skips silently.** If nextbrew does not support something, it says so.
+  It does not pretend the step succeeded.
+
+nextbrew is early software. Expect breaking changes before 1.0.
+
+## Where to go next
+
+- [Installation](/en/docs/installation) and [Quick Start](/en/docs/quick-start)
+- [Migrating from Homebrew](/en/docs/migrating-from-homebrew)
+- [Compatibility](/en/docs/reference/compatibility) for what works today
+
+## Credits
+
+nextbrew is not affiliated with Homebrew. It started as a fork of
+[zerobrew](https://github.com/zerobrewhq/zerobrew) and keeps its history.

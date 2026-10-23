@@ -1,0 +1,57 @@
+---
+title: nb bundle
+description: Install from, check, edit and dump a Brewfile.
+---
+
+# nb bundle
+
+```sh
+nb bundle [OPTIONS]
+nb bundle <COMMAND>
+```
+
+With no subcommand, `nb bundle` installs from the Brewfile (`nb bundle install`).
+
+## Subcommands
+
+| Subcommand | Meaning |
+| --- | --- |
+| `install` (alias `upgrade`) | Install and upgrade everything in a Brewfile |
+| `check` | Check that everything in a Brewfile is installed and up to date |
+| `list` | List the dependencies in a Brewfile (formulae unless told otherwise) |
+| `add` | Add entries to a Brewfile (formulae unless told otherwise) |
+| `remove` | Remove entries matching the names from a Brewfile |
+| `exec` | Run a command in the build environment for the Brewfile's formulae |
+| `sh` | Start a shell in the build environment for the Brewfile's formulae |
+| `env` | Print the build environment for the Brewfile's formulae as exports |
+| `cleanup` | Uninstall what a Brewfile does not list |
+| `dump` | Write what is installed into a Brewfile |
+
+## Options
+
+| Flag | Meaning |
+| --- | --- |
+| `--file <FILE>` | Read this Brewfile (`-` for standard input) instead of `./Brewfile` or `$HOMEBREW_BUNDLE_FILE` |
+| `--global` | Read `~/.Brewfile` (or `$HOMEBREW_BUNDLE_FILE_GLOBAL`) |
+| `--no-upgrade` | Do not upgrade outdated dependencies |
+| `--upgrade` | Upgrade outdated dependencies even if `$HOMEBREW_BUNDLE_NO_UPGRADE` is set |
+| `--upgrade-formulae <FORMULAE>` | Upgrade these comma-separated formulae even with `--no-upgrade` (alias `--upgrade-formula`) |
+| `--auto-init` | Initialize without prompting |
+| `-v`, `--verbose` | Increase output verbosity |
+| `--quiet` | Print only failures and the summary |
+
+Each subcommand has further options of its own; run `nb bundle <COMMAND> --help`.
+
+## Examples
+
+```sh
+nb bundle
+nb bundle --file ~/dotfiles/Brewfile check
+nb bundle dump
+```
+
+## Differences from brew
+
+Bundle is Partial and not yet verified on real macOS hardware. The code also
+handles `vscode`, `go`, `cargo`, `uv`, `flatpak`, `winget`, `krew`, `npm` and `mas` entries.
+See [Compatibility](/en/docs/reference/compatibility).

@@ -1,0 +1,40 @@
+---
+title: nb upgrade
+description: Upgrade installed packages to their latest versions.
+---
+
+# nb upgrade
+
+```sh
+nb upgrade [OPTIONS] [FORMULAS]...
+```
+
+With no names, upgrades everything that is outdated. Pinned formulae are kept
+(see [nb pin](/en/docs/commands/pin)).
+
+## Options
+
+| Flag | Meaning |
+| --- | --- |
+| `-s`, `--build-from-source` | Build from source instead of using bottles |
+| `--no-link` | Do not create symlinks after installation |
+| `--require-sha` | Refuse a cask without a checksum |
+| `--no-binaries` | Leave out the casks' binaries |
+| `--language <LANGUAGE>` | Not supported: casks install in their default language |
+| `--auto-init` | Initialize without prompting |
+| `-v`, `--verbose` | Increase output verbosity |
+| `-q`, `--quiet` | Suppress output, only show errors |
+
+It accepts the same cask directory flags as [nb install](/en/docs/commands/install)
+(`--appdir`, `--fontdir` and so on).
+
+## Examples
+
+```sh
+nb upgrade
+nb upgrade jq
+```
+
+## Differences from brew
+
+Casks that update themselves (`auto_updates`) are upgraded only when you name them.

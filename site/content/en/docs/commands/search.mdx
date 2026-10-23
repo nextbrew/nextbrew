@@ -1,0 +1,30 @@
+---
+title: nb search
+description: Search formulae and casks by name, or by regular expression.
+---
+
+# nb search
+
+```sh
+nb search [OPTIONS] <QUERY>
+```
+
+Wrap the query in slashes to search with a regular expression.
+
+## Options
+
+| Flag | Meaning |
+| --- | --- |
+| `--formula` | Only search formulae |
+| `--cask` | Only search casks |
+| `--auto-init` | Initialize without prompting |
+| `-v`, `--verbose` | Increase output verbosity |
+| `-q`, `--quiet` | Suppress output, only show errors |
+
+## Examples
+
+```sh
+nb search ripgrep
+nb search --cask firefox
+nb search '/^python@3\./'
+```

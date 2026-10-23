@@ -1,0 +1,44 @@
+---
+title: Quick Start
+description: Install nextbrew, then install, run, upgrade and remove a package.
+---
+
+# Quick Start
+
+Install nextbrew:
+
+```sh
+curl -fsSL https://nextbrew.dev/install | bash
+```
+
+Install a formula:
+
+```sh
+nb install jq
+```
+
+Run a formula's command without linking it into your prefix:
+
+```sh
+nbx jq --version
+```
+
+See what is installed, what is outdated, and upgrade it:
+
+```sh
+nb list
+nb outdated
+nb upgrade
+```
+
+Remove the package:
+
+```sh
+nb uninstall jq
+```
+
+To install a cask, prefix the name with `cask:` or pass `--cask`:
+
+```sh
+nb install cask:ghostty
+```

@@ -1,0 +1,30 @@
+---
+title: Building from Source
+description: Build a formula from source when no bottle fits, and what to expect.
+---
+
+# Building from Source
+
+nextbrew installs bottles by default. To build a formula from its source
+instead, pass `--build-from-source` (or `-s`):
+
+```sh
+nb install --build-from-source <formula>
+nb upgrade -s <formula>
+```
+
+When a formula has no bottle for your platform, `nb install` stops and suggests this flag rather than building on its own.
+
+## How it builds
+
+The build environment follows Homebrew's superenv on Linux: dependency paths
+(include, lib, pkg-config) are set up the way Homebrew sets them, and the
+formula is built with its dependencies from the nextbrew prefix. Logs go to a
+per-formula log directory (`NEXTBREW_LOGS` inside the build).
+
+## Limits
+
+Source builds were inherited from zerobrew, and their coverage is limited. The
+project does not yet know how many formulae build correctly, and developer
+commands such as `create`, `audit` and `bottle` are not planned.
+Prefer a bottle when one exists. For a formula that fails to build, `brew install --build-from-source` remains the fallback.

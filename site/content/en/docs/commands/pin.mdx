@@ -1,0 +1,29 @@
+---
+title: nb pin / unpin
+description: Hold formulae at their installed versions, or release them.
+---
+
+# nb pin / unpin
+
+```sh
+nb pin [OPTIONS] <FORMULAS>...
+nb unpin [OPTIONS] <FORMULAS>...
+```
+
+`nb pin` keeps installed formulae at their versions on upgrade. `nb unpin` lets
+them be upgraded again. Neither has options beyond the shared `--auto-init`,
+`-v`/`--verbose` and `-q`/`--quiet`.
+
+## Examples
+
+```sh
+nb pin postgresql@16
+nb list --pinned
+nb unpin postgresql@16
+```
+
+`nb uninstall` refuses pinned formulae unless you pass `--force`.
+
+## Differences from brew
+
+These commands are Partial: not yet verified on real macOS hardware. See [Compatibility](/en/docs/reference/compatibility).

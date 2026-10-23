@@ -1,0 +1,30 @@
+---
+title: Compatibility
+description: What works like Homebrew today, what is partial, and what is not supported.
+---
+
+# Compatibility
+
+- **Native**: behaves like Homebrew.
+- **Partial**: some options or packages have limits.
+- **Unsupported**: fails with an explicit error.
+
+Cask, bundle, services and `nb migrate` have not yet been verified on real macOS hardware.
+
+| Feature | Status |
+| --- | --- |
+| Formulae: install, uninstall, upgrade, outdated, list, info | Native |
+| Formulae: link, unlink, pin, autoremove, deps, uses, search | Partial (not yet verified on real macOS hardware) |
+| Casks: app, suite, dmg, zip, tar, binary | Native (not yet verified on real macOS hardware) |
+| Casks: hooks (`*_steps`) | Native; an unknown step or a failure rolls the install back |
+| Casks: pkg and installer | Native (not yet verified on real macOS hardware) |
+| Casks: upgrade | Native; self-updating casks only when named |
+| Casks: uninstall stanza and `--zap` | Native; casks that only install a binary are not yet supported |
+| Bundle (Brewfile) | Partial |
+| Services | Native on macOS (launchd), labels `dev.nextbrew.<formula>`; Linux (systemd) is planned |
+| Taps | Implemented (`nb tap`, `nb trust`); the spec still lists them as Unsupported |
+| Migrating from Homebrew (`nb migrate`) | Partial |
+| Building from source | Limited coverage; developer commands (create, audit, bottle) are not planned |
+
+Command names, options and exit codes follow Homebrew. nextbrew never runs
+Ruby itself. A step it does not understand is reported, not skipped silently.

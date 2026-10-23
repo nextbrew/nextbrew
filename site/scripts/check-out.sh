@@ -4,6 +4,7 @@ set -euo pipefail
 out="${1:-out}"
 root="$(cd "$(dirname "$0")/../.." && pwd)"
 for f in en.html ja.html en/docs.html ja/docs.html \
+         en/docs/quick-start.html en/docs/commands/install.html en/docs/reference/compatibility.html \
          en/docs/installation.html ja/docs/installation.html \
          en/benchmarks.html ja/benchmarks.html \
          install _redirects _headers favicon.svg brand/mark.svg _pagefind/pagefind.js \

@@ -1,0 +1,33 @@
+---
+title: Shell Completions
+description: Generate completion scripts for bash, zsh and fish.
+---
+
+# Shell Completions
+
+```sh
+nb completion <SHELL>
+```
+
+`<SHELL>` is one of `bash`, `elvish`, `fish`, `powershell` or `zsh`. The script is printed to standard output.
+
+## bash
+
+```sh
+echo 'source <(nb completion bash)' >> ~/.bashrc
+```
+
+## zsh
+
+```sh
+mkdir -p ~/.zfunc
+nb completion zsh > ~/.zfunc/_nb
+```
+
+Then add `fpath=(~/.zfunc $fpath)` before `compinit` in `~/.zshrc`.
+
+## fish
+
+```sh
+nb completion fish > ~/.config/fish/completions/nb.fish
+```

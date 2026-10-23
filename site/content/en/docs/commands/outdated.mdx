@@ -1,0 +1,30 @@
+---
+title: nb outdated
+description: List installed packages that have newer versions available.
+---
+
+# nb outdated
+
+```sh
+nb outdated [OPTIONS]
+```
+
+## Options
+
+| Flag | Meaning |
+| --- | --- |
+| `--json` | Output as JSON |
+| `--auto-init` | Initialize without prompting |
+| `-v`, `--verbose` | Increase output verbosity |
+| `-q`, `--quiet` | Suppress output, only show errors |
+
+## Examples
+
+```sh
+nb outdated
+nb outdated --json
+```
+
+## Differences from brew
+
+Casks are compared by version. A cask whose version is `latest` counts as outdated only when you name it.

@@ -1,0 +1,36 @@
+---
+title: FAQ
+description: Short answers about safety, Ruby, taps, the install location and removal.
+---
+
+# FAQ
+
+## Is it safe next to Homebrew?
+
+Yes. nextbrew uses its own prefix (`/opt/nextbrew`) and never shares one with
+Homebrew (`/opt/homebrew` or `/usr/local`). Only `PATH` order decides which
+program runs when both provide a command.
+
+## Does it need Ruby?
+
+No. nextbrew does not run Ruby itself. Packages it installs may contain Ruby.
+
+## Does it support third-party taps?
+
+`nb tap` and `nb trust` are implemented. See [nb tap / trust](/en/docs/commands/tap).
+
+## Why `/opt/nextbrew`?
+
+It keeps nextbrew apart from Homebrew's prefixes. Bottles hard-code their prefix
+path, and the length of `/opt/nextbrew` lets them be relocated without trouble.
+
+## How do I uninstall nextbrew?
+
+`nb reset` deletes everything inside the root and prefix directories (it asks
+first; `-y` skips the prompt), then re-creates the empty directories. Then delete the `nb` and `nbx` binaries
+(the installer puts them in `~/.local/bin` unless `NEXTBREW_BIN` says otherwise) and the lines `nb init` added to your shell config.
+
+```sh
+nb reset
+rm ~/.local/bin/nb ~/.local/bin/nbx
+```

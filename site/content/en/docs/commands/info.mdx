@@ -1,0 +1,30 @@
+---
+title: nb info
+description: Show information about an installed package, or about a cask.
+---
+
+# nb info
+
+```sh
+nb info [OPTIONS] [FORMULA]...
+```
+
+## Options
+
+| Flag | Meaning |
+| --- | --- |
+| `--json[=<v1\|v2>]` | Print JSON: `v1` (the default) for formulae, `v2` for formulae and casks |
+| `--installed` | Print JSON for every installed formula and, with `v2`, cask |
+| `--formula`, `--formulae` | Treat the name as a formula |
+| `--cask`, `--casks` | Treat the name as a cask |
+| `--auto-init` | Initialize without prompting |
+| `-v`, `--verbose` | Increase output verbosity |
+| `-q`, `--quiet` | Suppress output, only show errors |
+
+## Examples
+
+```sh
+nb info jq
+nb info --json=v2 --cask ghostty
+nb info --json --installed
+```

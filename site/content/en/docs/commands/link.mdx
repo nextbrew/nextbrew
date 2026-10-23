@@ -1,0 +1,49 @@
+---
+title: nb link / unlink
+description: Add or remove an installed package's symlinks in the prefix.
+---
+
+# nb link / unlink
+
+```sh
+nb link [OPTIONS] <FORMULAS>...
+nb unlink [OPTIONS] <FORMULAS>...
+```
+
+`nb link` symlinks installed formulae, or casks' binaries, man pages and
+completions, into the prefix. `nb unlink` removes those symlinks.
+
+## nb link options
+
+| Flag | Meaning |
+| --- | --- |
+| `-f`, `--force` | Also link keg-only formulae; for casks, replace their own old links |
+| `--overwrite` | Delete files that already exist in the prefix while linking |
+| `-n`, `--dry-run` | List files which would be linked or deleted without linking or deleting any |
+| `--formula`, `--formulae` | Treat all names as formulae |
+| `--cask`, `--casks` | Treat all names as casks |
+| `--auto-init` | Initialize without prompting |
+| `-v`, `--verbose` | Increase output verbosity |
+| `-q`, `--quiet` | Suppress output, only show errors |
+
+## nb unlink options
+
+| Flag | Meaning |
+| --- | --- |
+| `--formula`, `--formulae` | Treat all names as formulae |
+| `--cask`, `--casks` | Treat all names as casks |
+| `--auto-init` | Initialize without prompting |
+| `-v`, `--verbose` | Increase output verbosity |
+| `-q`, `--quiet` | Suppress output, only show errors |
+
+## Examples
+
+```sh
+nb link --dry-run jq
+nb link --force openssl@3
+nb unlink jq
+```
+
+## Differences from brew
+
+These commands are Partial: not yet verified on real macOS hardware. See [Compatibility](/en/docs/reference/compatibility).

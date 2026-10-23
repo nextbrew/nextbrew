@@ -1,0 +1,48 @@
+---
+title: nb deps / uses
+description: Show what formulae depend on, and what depends on them.
+---
+
+# nb deps / uses
+
+```sh
+nb deps [OPTIONS] <FORMULAS>...
+nb uses [OPTIONS] <FORMULAS>...
+```
+
+`nb deps` shows the runtime dependencies of formulae. `nb uses` shows the
+formulae and casks that depend on them.
+
+## nb deps options
+
+| Flag | Meaning |
+| --- | --- |
+| `-1`, `--direct` | Only the dependencies the formulae name themselves |
+| `--union` | Show the dependencies of any of the formulae, not only shared ones |
+| `--auto-init` | Initialize without prompting |
+| `-v`, `--verbose` | Increase output verbosity |
+| `-q`, `--quiet` | Suppress output, only show errors |
+
+## nb uses options
+
+| Flag | Meaning |
+| --- | --- |
+| `--installed` | Only list installed formulae and casks |
+| `--recursive` | Also count dependencies of dependencies |
+| `--formula`, `--formulae` | Only list formulae |
+| `--cask`, `--casks` | Only list casks |
+| `--auto-init` | Initialize without prompting |
+| `-v`, `--verbose` | Increase output verbosity |
+| `-q`, `--quiet` | Suppress output, only show errors |
+
+## Examples
+
+```sh
+nb deps ffmpeg
+nb deps --direct --union git curl
+nb uses --installed --recursive openssl@3
+```
+
+## Differences from brew
+
+These commands are Partial: not yet verified on real macOS hardware. See [Compatibility](/en/docs/reference/compatibility).
