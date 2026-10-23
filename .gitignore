@@ -7,3 +7,4 @@ test_nb/
 /site/public/install
 /site/next-env.d.ts
 /site/.wrangler
+/results/
