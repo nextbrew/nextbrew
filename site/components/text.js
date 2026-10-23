@@ -16,7 +16,7 @@ export const text = {
       allBenchmarks: 'See all benchmarks →',
       features: [
         ['Homebrew compatible', 'Same formulae, same bottles, same commands and exit codes.'],
-        ['Runs alongside Homebrew', 'Lives in /opt/nextbrew and never touches your brew setup. Try it risk-free.'],
+        ['Runs alongside Homebrew', 'Uses its own prefix (/opt/nextbrew on macOS) and never touches your brew setup. Try it risk-free.'],
         ['Never skips silently', 'Anything unsupported fails by name. Skipped post-install steps are reported.'],
         ['Verified', 'Every bottle is checked against its SHA-256. Releases ship with build provenance.'],
         ['macOS and Linux', 'Apple Silicon, Intel, and Linux on x86_64 and arm64.'],
@@ -42,7 +42,7 @@ export const text = {
       allBenchmarks: 'すべてのベンチマーク →',
       features: [
         ['Homebrew 互換', '同じ formula、同じ bottle、同じコマンドと終了コード。'],
-        ['Homebrew と共存', '/opt/nextbrew に入り、brew の環境には触れません。気軽に試せます。'],
+        ['Homebrew と共存', '専用の場所（macOS では /opt/nextbrew）に入り、brew の環境には触れません。気軽に試せます。'],
         ['黙ってスキップしない', '対応していない処理は名前を出して失敗します。スキップした post-install も報告します。'],
         ['検証つき', 'bottle はすべて SHA-256 で検証。リリースにはビルド元の証明が付きます。'],
         ['macOS と Linux', 'Apple Silicon、Intel、Linux の x86_64 と arm64。'],

@@ -13,7 +13,12 @@ nextbrew runs on macOS (Apple Silicon and Intel) and Linux (x86_64 and arm64).
 curl -fsSL https://nextbrew.dev/install | bash
 ```
 
-Homebrew, if you have it, is left untouched: nextbrew lives in `/opt/nextbrew`.
+Homebrew, if you have it, is left untouched. nextbrew uses its own location:
+
+| Platform | Location |
+| --- | --- |
+| macOS | `/opt/nextbrew` |
+| Linux | `/home/nextbrew/.nextbrew`, or an existing `/opt/nextbrew` or `~/.local/share/nextbrew` |
 
 ## Manual download
 

@@ -17,6 +17,8 @@ description: Every environment variable nextbrew reads, with defaults.
 | `NEXTBREW_DIR` | `~/.nextbrew` | Used by `nb init` to build the shell config block, and by the installer as its source checkout directory |
 | `NEXTBREW_BIN` | `~/.local/bin` (installer) | Directory the installer puts `nb` and `nbx` in. The shell config written by `nb init` sets it to `$NEXTBREW_DIR/bin` and puts it on `PATH` |
 
+Note: `nb init` sets `NEXTBREW_BIN` to `$NEXTBREW_DIR/bin` in your shell config, independently of the installer's `~/.local/bin` default.
+
 `nb bundle` also reads `HOMEBREW_BUNDLE_FILE`, `HOMEBREW_BUNDLE_FILE_GLOBAL` and `HOMEBREW_BUNDLE_NO_UPGRADE`.
 
 The installer (`install.sh`) honours `NEXTBREW_DIR`, `NEXTBREW_BIN`, `NEXTBREW_ROOT` and `NEXTBREW_PREFIX`.

@@ -7,7 +7,7 @@ description: Short answers about safety, Ruby, taps, the install location and re
 
 ## Is it safe next to Homebrew?
 
-Yes. nextbrew uses its own prefix (`/opt/nextbrew`) and never shares one with
+Yes. nextbrew uses its own prefix (`/opt/nextbrew` on macOS, `/home/nextbrew/.nextbrew` on Linux) and never shares one with
 Homebrew (`/opt/homebrew` or `/usr/local`). Only `PATH` order decides which
 program runs when both provide a command.
 
@@ -19,10 +19,11 @@ No. nextbrew does not run Ruby itself. Packages it installs may contain Ruby.
 
 `nb tap` and `nb trust` are implemented. See [nb tap / trust](/en/docs/commands/tap).
 
-## Why `/opt/nextbrew`?
+## Why `/opt/nextbrew` and `/home/nextbrew/.nextbrew`?
 
-It keeps nextbrew apart from Homebrew's prefixes. Bottles hard-code their prefix
-path, and the length of `/opt/nextbrew` lets them be relocated without trouble.
+They keep nextbrew apart from Homebrew's prefixes. Bottles hard-code their prefix
+path, so the location must be no longer than Homebrew's: `/opt/nextbrew` on macOS,
+and on Linux `/home/nextbrew/.nextbrew`, which is as long as `/home/linuxbrew/.linuxbrew`.
 
 ## How do I uninstall nextbrew?
 

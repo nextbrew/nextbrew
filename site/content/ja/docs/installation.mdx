@@ -13,7 +13,12 @@ nextbrew は macOS（Apple Silicon と Intel）と Linux（x86_64 と arm64）�
 curl -fsSL https://nextbrew.dev/install | bash
 ```
 
-Homebrew が入っていても、そのまま残ります。nextbrew は `/opt/nextbrew` に入ります。
+Homebrew が入っていても、そのまま残ります。nextbrew は専用の場所に入ります。
+
+| 環境 | 場所 |
+| --- | --- |
+| macOS | `/opt/nextbrew` |
+| Linux | `/home/nextbrew/.nextbrew`（すでに `/opt/nextbrew` か `~/.local/share/nextbrew` がある場合はそちらを使います） |
 
 ## 手動でダウンロード
 

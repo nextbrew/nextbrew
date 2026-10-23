@@ -53,5 +53,6 @@ nb bundle dump
 ## Differences from brew
 
 Bundle is Partial and not yet verified on real macOS hardware. The code also
-handles `vscode`, `go`, `cargo`, `uv`, `flatpak`, `winget`, `krew`, `npm` and `mas` entries.
+handles `vscode`, `go`, `cargo`, `uv`, `krew`, `npm` and `mas` entries. `flatpak` and `winget` entries,
+and build `args`, are reported as failures with the reason, never skipped silently.
 See [Compatibility](/en/docs/reference/compatibility).
