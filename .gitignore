@@ -2,4 +2,7 @@
 **/*.rs.bk
 test_nb/
 /site/node_modules
-/site/_site
+/site/.next
+/site/out
+/site/public/install
+/site/next-env.d.ts

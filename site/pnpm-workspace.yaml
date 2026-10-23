@@ -1,0 +1,10 @@
+allowBuilds:
+  esbuild: true
+  workerd: true
+minimumReleaseAgeExclude:
+  - miniflare@5.20261019.2-beta
+  - wrangler@4.152.0
+# zod 4.6 makes nextra-theme-docs 4.6.1's LayoutPropsSchema reject `children`
+# ("expected nonoptional"), failing the build. Drop once Nextra handles it.
+overrides:
+  zod: 4.1.12

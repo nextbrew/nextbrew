@@ -1,0 +1,21 @@
+---
+title: インストール
+description: コマンド 1 つで、またはリリースのバイナリでインストールします。
+---
+
+# インストール
+
+nextbrew は macOS（Apple Silicon と Intel）と Linux（x86_64 と arm64）で動きます。
+
+## インストールスクリプト
+
+```sh
+curl -fsSL https://nextbrew.dev/install | bash
+```
+
+Homebrew が入っていても、そのまま残ります。nextbrew は `/opt/nextbrew` に入ります。
+
+## 手動でダウンロード
+
+[GitHub Releases](https://github.com/nextbrew/nextbrew/releases) から、使っている環境の
+`nb` と `nbx` をダウンロードし、`SHA256SUMS` と照合してください。

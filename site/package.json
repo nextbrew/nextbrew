@@ -1,20 +1,27 @@
 {
-  "name": "site",
-  "version": "1.0.0",
+  "name": "nextbrew-site",
+  "private": true,
   "type": "module",
   "scripts": {
-    "build": "eleventy",
-    "dev": "eleventy --serve",
-    "deploy": "wrangler pages deploy _site --project-name zerobrew-site"
+    "prebuild": "cp ../install.sh public/install",
+    "build": "next build",
+    "postbuild": "pagefind --site .next/server/app --output-path out/_pagefind && node scripts/llms.mjs && scripts/check-out.sh",
+    "dev": "cp ../install.sh public/install && next dev",
+    "test": "node --test scripts/",
+    "deploy": "wrangler pages deploy out --project-name nextbrew"
   },
-  "packageManager": "pnpm@10.29.1",
   "dependencies": {
-    "@11ty/eleventy": "^3.1.2"
+    "geist": "1.8.2",
+    "next": "16.4.2",
+    "nextra": "4.6.1",
+    "nextra-theme-docs": "4.6.1",
+    "react": "19.3.1",
+    "react-dom": "19.3.1"
   },
   "devDependencies": {
-    "wrangler": "^4"
+    "pagefind": "1.5.2",
+    "wrangler": "4.152.0"
   },
-  "pnpm": {
-    "onlyBuiltDependencies": ["esbuild", "workerd"]
-  }
+  "packageManager": "pnpm@11.24.0",
+  "engines": { "node": ">=24" }
 }
