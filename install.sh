@@ -358,9 +358,9 @@ try_release_install() {
 
 print_logo() {
     printf "\n"
-    printf "%b▄▄▄▄▄ ▄▄▄▄▄ ▄▄▄▄   ▄▄▄ %b ▄▄▄▄  ▄▄▄▄  ▄▄▄▄▄ ▄▄   ▄▄\n" "$NC" "$ORANGE"
-    printf "%b  ▄█▀ ██▄▄  ██▄█▄ ██▀██%b ██▄██ ██▄█▄ ██▄▄  ██ ▄ ██\n" "$NC" "$ORANGE"
-    printf "%b▄██▄▄ ██▄▄▄ ██ ██ ▀███▀%b ██▄█▀ ██ ██ ██▄▄▄  ▀█▀█▀ \n" "$NC" "$ORANGE"
+    printf "%b▄▄  ▄▄ ▄▄▄▄▄ ▄▄  ▄▄ ▄▄▄▄▄▄%b ▄▄▄▄  ▄▄▄▄  ▄▄▄▄▄ ▄▄   ▄▄\n" "$NC" "$ORANGE"
+    printf "%b███▄██ ██▄▄   ▀██▀    ██  %b ██▄██ ██▄█▄ ██▄▄  ██ ▄ ██\n" "$NC" "$ORANGE"
+    printf "%b██ ▀██ ██▄▄▄ ▄█▀▀█▄   ██  %b ██▄█▀ ██ ██ ██▄▄▄  ▀█▀█▀ \n" "$NC" "$ORANGE"
     printf "\n"
 
     printf "%bStart installing %bPackages%b with %bnextbrew%b:\n\n" "$MUTED" "$NC" "$MUTED" "$ORANGE" "$NC"
