@@ -24,6 +24,7 @@ require "uri"
 require "set"
 require "find"
 require "digest/sha2"
+require "time"
 
 module NextBrewChecksum
   module_function
@@ -877,6 +878,8 @@ class Formula
   end
 
   def name; self.class.formula_name; end
+  # `Formula#tap`, which would otherwise be `Kernel#tap`.
+  def tap; NextBrewTap.new(ENV.fetch("NEXTBREW_FORMULA_TAP", "homebrew/core")); end
   # `version` without the revision, `pkg_version` with it (the keg's).
   def version
     FormulaVersion.new(ENV.fetch("NEXTBREW_FORMULA_STABLE_VERSION", self.class.formula_version))
@@ -1117,8 +1120,62 @@ class Formula
     ["--prefix=#{prefix}", "--libdir=lib", "--buildtype=release", "--wrap-mode=nofallback"]
   end
 
-  # Homebrew's: the arguments after `go build`, always stripping symbols.
+  # `Utils::Git.get_tar_commit_id` of the downloaded source, which it reads
+  # only from a `.tar` or `.tar.gz` (by the URL's name).
+  def nextbrew_tar_commit_id
+    archive = ENV["NEXTBREW_SOURCE_ARCHIVE"].to_s
+    return if archive.empty? || !File.file?(archive)
+
+    url = self.class.stable_spec.url.to_s
+    header = if url.end_with?(".tar.gz", ".tgz")
+      IO.popen(["gunzip", "-c", "-q", "--", archive], "rb", err: File::NULL) { |io| io.read(1024) }
+    elsif url.end_with?(".tar")
+      File.binread(archive, 1024)
+    end
+    return if header.nil? || header.bytesize < 1024
+
+    commit = IO.popen(["git", "get-tar-commit-id"], "r+b", err: File::NULL) do |io|
+      io.write(header)
+      io.close_write
+      io.read
+    end
+    return unless $?.success?
+
+    commit = commit.to_s.chomp
+    commit.empty? ? nil : commit
+  end
+
+  # `Utils.git_head` of the build's directory.
+  def nextbrew_git_head
+    head = IO.popen(["git", "-C", buildpath.to_s, "rev-parse", "--verify", "-q", "HEAD"],
+                    err: File::NULL, &:read).to_s.chomp
+    $?.success? && !head.empty? ? head : nil
+  end
+
+  # `Formula#time`: when the build is, or `SOURCE_DATE_EPOCH`.
+  def time
+    epoch = ENV["SOURCE_DATE_EPOCH"].to_s
+    epoch.empty? ? Time.now.utc : Time.at(epoch.to_i).utc
+  end
+
+  # Homebrew's: the arguments after `go build`, always stripping symbols;
+  # `ldflags: :goreleaser` gives the variables GoReleaser would set.
   def std_go_args(output: bin + name, ldflags: nil, gcflags: nil, tags: nil)
+    case ldflags
+    when :goreleaser
+      built_by = tap.user
+      # The commit a `git archive` tarball records, or the checkout's, or
+      # the tap owner in their place.
+      commit = nextbrew_tar_commit_id || nextbrew_git_head || built_by
+      ldflags = %W[
+        -X 'main.version=#{version}'
+        -X 'main.commit=#{commit}'
+        -X 'main.date=#{time.iso8601}'
+        -X 'main.builtBy=#{built_by}'
+      ]
+    when Symbol
+      raise ArgumentError, "Invalid ldflags: #{ldflags.inspect}"
+    end
     ldflags = ["-s", "-w"].concat(Array(ldflags))
     args = ["-trimpath", "-o=#{output}"]
     args << "-tags=#{Array(tags).join(",")}" if tags
@@ -1175,6 +1232,23 @@ class Formula
   def self.respond_to_missing?(method_name, include_private = false)
     true
   end
+end
+
+# Homebrew's `Tap`, as far as formulae read it: homebrew/core's user is
+# `Homebrew`, as its GitHub organisation is spelt.
+class NextBrewTap
+  attr_reader :user, :repo, :name
+
+  def initialize(name)
+    @name = name
+    user, @repo = name.split("/", 2)
+    @user = name == "homebrew/core" ? "Homebrew" : user
+  end
+
+  def full_name; name; end
+  def core_tap?; name == "homebrew/core"; end
+  def official?; name.start_with?("homebrew/"); end
+  def to_s; name; end
 end
 
 class FormulaRef
