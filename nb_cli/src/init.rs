@@ -95,7 +95,7 @@ pub fn run_init(
             format!("{}/.nextbrew", home)
         }
     };
-    let nextbrew_bin = format!("{}/bin", nextbrew_dir);
+    let nextbrew_bin = bin_dir(&nextbrew_dir, std::env::var("NEXTBREW_BIN").ok());
 
     let dirs_to_create: Vec<PathBuf> = vec![
         root.to_path_buf(),
@@ -248,6 +248,14 @@ fn fish_shell_quote(value: &str) -> String {
             .replace('"', "\\\"")
             .replace('$', "\\$")
     )
+}
+
+/// Where nb and nbx live: `NEXTBREW_BIN` (install.sh exports the directory it
+/// installed into), else `$NEXTBREW_DIR/bin`.
+fn bin_dir(nextbrew_dir: &str, env_bin: Option<String>) -> String {
+    env_bin
+        .filter(|b| !b.is_empty())
+        .unwrap_or_else(|| format!("{nextbrew_dir}/bin"))
 }
 
 fn add_to_path(
@@ -588,6 +596,14 @@ mod tests {
     use crate::ui::Ui;
     use std::fs;
     use std::path::Path;
+
+    #[test]
+    fn bin_dir_prefers_nextbrew_bin() {
+        let dir = "/home/user/.nextbrew";
+        assert_eq!(bin_dir(dir, Some("/home/user/.local/bin".into())), "/home/user/.local/bin");
+        assert_eq!(bin_dir(dir, Some(String::new())), "/home/user/.nextbrew/bin");
+        assert_eq!(bin_dir(dir, None), "/home/user/.nextbrew/bin");
+    }
 
     fn add_to_path(
         prefix: &Path,

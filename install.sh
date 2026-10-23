@@ -58,6 +58,7 @@ trap cleanup EXIT
 NEXTBREW_REPO="https://github.com/nextbrew/nextbrew.git"
 : "${NEXTBREW_DIR:=$HOME/.nextbrew}"
 : "${NEXTBREW_BIN:=$HOME/.local/bin}"
+export NEXTBREW_DIR NEXTBREW_BIN  # nb init writes these into the shell config
 ORIGINAL_PATH="$PATH"
 PREVIOUS_ZB_VERSION=""
 

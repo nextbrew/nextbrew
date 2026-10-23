@@ -15,9 +15,7 @@ description: nextbrew が読むすべての環境変数と、その既定値。
 | `NEXTBREW_NO_AUTOREMOVE` | 未設定 | 何らかの値を設定すると、`nb uninstall` が後で autoremove を実行しない |
 | `NEXTBREW_SERVICES_NO_DOMAIN_WARNING` | 未設定 | 設定すると、`nb services` の launchd ドメインの警告を表示しない |
 | `NEXTBREW_DIR` | `~/.nextbrew` | `nb init` がシェル設定のブロックを作るときに使う。インストーラーではソースのチェックアウト先になる |
-| `NEXTBREW_BIN` | `~/.local/bin`（インストーラー） | インストーラーが `nb` と `nbx` を置くディレクトリ。`nb init` が書くシェル設定では `$NEXTBREW_DIR/bin` に設定し、`PATH` に追加する |
-
-注意: `nb init` は、インストーラーの既定値 `~/.local/bin` とは別に、シェル設定で `NEXTBREW_BIN` を `$NEXTBREW_DIR/bin` に設定します。
+| `NEXTBREW_BIN` | `~/.local/bin`（インストーラー） | インストーラーが `nb` と `nbx` を置くディレクトリ。`nb init` がシェル設定に書き込み、`PATH` に追加する（未設定なら `$NEXTBREW_DIR/bin`） |
 
 `nb bundle` は、`HOMEBREW_BUNDLE_FILE`、`HOMEBREW_BUNDLE_FILE_GLOBAL`、`HOMEBREW_BUNDLE_NO_UPGRADE` も読みます。
 
