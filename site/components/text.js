@@ -9,7 +9,7 @@ export const text = {
     },
     landing: {
       title: 'Homebrew, but fast.',
-      subtitle: 'Same formulae. Same bottles. Many times faster. A single Rust binary for macOS and Linux.',
+      subtitle: 'Same formulae. Same bottles. Built for speed. A single Rust binary for macOS and Linux.',
       start: 'Get Started', why: 'Why nextbrew?',
       speedTitle: 'Installs in seconds.',
       speedBody: 'The same packages as brew, downloaded and unpacked in parallel.',
@@ -35,7 +35,7 @@ export const text = {
     },
     landing: {
       title: 'Homebrew, but fast.',
-      subtitle: '同じ formula、同じ bottle のまま、何倍も速く。macOS と Linux に対応した、Rust 製の単一バイナリです。',
+      subtitle: '同じ formula、同じ bottle のまま、速さにこだわりました。macOS と Linux に対応した、Rust 製の単一バイナリです。',
       start: 'はじめる', why: 'nextbrew を選ぶ理由',
       speedTitle: '数秒でインストール。',
       speedBody: 'brew と同じパッケージを、並列にダウンロードして展開します。',
