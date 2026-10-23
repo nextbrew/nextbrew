@@ -1,5 +1,10 @@
 ---
 title: ベンチマーク
 ---
+import { BenchmarkTable } from '../../components/benchmarks'
 
 # ベンチマーク
+
+キャッシュのない状態で、同じ formula を nextbrew と Homebrew でインストールした時間です。計測には `install_timings` テスト（`.github/workflows/timing.yml`）を使います。
+
+<BenchmarkTable lang="ja" />
