@@ -6,7 +6,7 @@ description: Use when installing, running, upgrading or removing command-line to
 # nextbrew
 
 nextbrew (`nb`) is a fast, Homebrew-compatible package manager. It installs
-Homebrew's formulae and bottles into its own prefix (`/opt/nextbrew` on macOS, `/home/nextbrew/.nextbrew` on Linux), next to any existing Homebrew.
+Homebrew's formulae and bottles into its own prefix (`/opt/nextbrew` on macOS, `/home/nextbrew/.nextbrew` by default on Linux; `NEXTBREW_ROOT` overrides it), next to any existing Homebrew.
 
 ## Rules
 
