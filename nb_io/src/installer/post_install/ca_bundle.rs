@@ -9,8 +9,9 @@
 //! anything that depends on it, copies the bundle instead of rebuilding
 //! it.
 //!
-//! On a miss, a script nextbrew knows (by its SHA-256) is followed step by
-//! step: what it asks `openssl` is read from each certificate as LibreSSL
+//! On a miss, a script nextbrew knows (by its SHA-256, with the list of
+//! public keys it excludes taken out, so a new list is still known) is
+//! followed step by step: what it asks `openssl` is read from each certificate as LibreSSL
 //! would answer, `security verify-cert` still decides trust, the checks run
 //! concurrently and their results are taken in the script's order, so the
 //! bundle is the script's own bytes in a fraction of the time. Any other
@@ -42,11 +43,17 @@ const TRUST_SOURCES: &[&str] = &[
 ];
 
 /// SHA-256 of the `libexec/post-install` scripts whose macOS branch
-/// [`CaBundle::build_in_parallel`] follows.
+/// [`CaBundle::build_in_parallel`] follows, after [`excluded_keys`] puts
+/// [`EXCLUDED`] in place of the excluded public keys.
 const KNOWN_SCRIPTS: &[&str] = &[
     // ca-certificates 2026-09-25
     "0d382c7231f5f0378947729c5815f7fb8f6c12c16396172513109b13bd59b900",
+    // ca-certificates 2026-09-25_1 and 2026-10-20
+    "043a5039c58b98710b07840982ee04c3abe9732c15ce66cba863b47d897eedeb",
 ];
+
+/// What the formula writes into the script in place of the excluded keys.
+const EXCLUDED: &str = "@EXCLUDED_SPKI_HASHES@";
 
 pub(super) struct CaBundle {
     source: PathBuf,
@@ -72,6 +79,8 @@ impl CaBundle {
 
         let mut hasher = Sha256::new();
         hasher.update(&mozilla);
+        // A new script (say, more excluded keys) builds a new bundle.
+        hasher.update(fs::read(program).unwrap_or_default());
         for source in TRUST_SOURCES {
             hasher.update(source.as_bytes());
             match fs::metadata(source) {
@@ -117,10 +126,10 @@ impl CaBundle {
     /// checks run concurrently. `false` when the script is not a known one or
     /// something unexpected happens; the caller then runs the script.
     pub(super) fn build_in_parallel(&self, script: &Path) -> Result<bool, StepError> {
-        if !known_script(script) {
+        let Some(excluded) = known_script(script) else {
             return Ok(false);
-        }
-        let Some(bundle) = build(&self.source) else {
+        };
+        let Some(bundle) = build(&self.source, &excluded) else {
             return Ok(false);
         };
         if let Some(parent) = self.destination.parent() {
@@ -137,10 +146,13 @@ impl CaBundle {
     /// dependencies are still downloading, so its time is hidden. Failures
     /// are left for the step to meet.
     pub(super) fn prebuild(&self, script: &Path) {
-        if self.cached.exists() || !known_script(script) {
+        if self.cached.exists() {
             return;
         }
-        if let Some(bundle) = build(&self.source) {
+        let Some(excluded) = known_script(script) else {
+            return;
+        };
+        if let Some(bundle) = build(&self.source, &excluded) {
             if let Some(parent) = self.cached.parent() {
                 let _ = fs::create_dir_all(parent);
             }
@@ -164,16 +176,56 @@ fn hex(bytes: &[u8]) -> String {
     bytes.iter().map(|byte| format!("{byte:02x}")).collect()
 }
 
-fn known_script(script: &Path) -> bool {
-    cfg!(target_os = "macos")
-        && fs::read(script)
-            .is_ok_and(|content| KNOWN_SCRIPTS.contains(&hex(&Sha256::digest(content)).as_str()))
+/// The public keys a known script excludes; `None` for any other script.
+fn known_script(script: &Path) -> Option<Vec<String>> {
+    if !cfg!(target_os = "macos") {
+        return None;
+    }
+    let (template, excluded) = excluded_keys(&fs::read_to_string(script).ok()?);
+    KNOWN_SCRIPTS
+        .contains(&hex(&Sha256::digest(template)).as_str())
+        .then_some(excluded)
+}
+
+/// The script with its `case` line of excluded key hashes
+/// (`HASH|HASH) return 0 ;;`) turned back into the formula's [`EXCLUDED`]
+/// placeholder, and those hashes.
+fn excluded_keys(script: &str) -> (String, Vec<String>) {
+    let mut excluded = Vec::new();
+    let template = script
+        .split_inclusive('\n')
+        .map(|line| {
+            let body = line.trim_start();
+            let hashes = body
+                .trim_end()
+                .strip_suffix(") return 0 ;;")
+                .map(|list| list.split('|').collect::<Vec<_>>())
+                .filter(|list| {
+                    list.iter().all(|hash| {
+                        hash.len() == 64
+                            && hash
+                                .bytes()
+                                .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+                    })
+                });
+            match hashes {
+                Some(list) => {
+                    excluded.extend(list.iter().map(|hash| hash.to_string()));
+                    let indent = &line[..line.len() - body.len()];
+                    let end = &body[body.trim_end().len()..];
+                    format!("{indent}{EXCLUDED}) return 0 ;;{end}")
+                }
+                None => line.to_string(),
+            }
+        })
+        .collect();
+    (template, excluded)
 }
 
 /// The script's macOS branch: trusted, unexpired server CAs from the two
 /// system keychains, then the Mozilla bundle, each certificate once.
 #[cfg(target_os = "macos")]
-fn build(source: &Path) -> Option<Vec<u8>> {
+fn build(source: &Path, excluded: &[String]) -> Option<Vec<u8>> {
     use rayon::prelude::*;
     use std::collections::HashSet;
 
@@ -181,10 +233,11 @@ fn build(source: &Path) -> Option<Vec<u8>> {
     let now = chrono::Utc::now();
     let mut seen = HashSet::new();
     let mut bundle = Vec::new();
-    let mut append = |certificates: &[Vec<u8>], fingerprints: Vec<Option<String>>| {
-        for (certificate, fingerprint) in certificates.iter().zip(fingerprints) {
-            if let Some(fingerprint) = fingerprint
-                && seen.insert(fingerprint)
+    let mut append = |certificates: &[Vec<u8>], facts: Vec<Option<super::x509::Facts>>| {
+        for (certificate, facts) in certificates.iter().zip(facts) {
+            if let Some(facts) = facts
+                && !excluded.contains(&facts.spki_sha256)
+                && seen.insert(facts.fingerprint)
             {
                 bundle.extend_from_slice(certificate);
                 bundle.push(b'\n');
@@ -207,42 +260,42 @@ fn build(source: &Path) -> Option<Vec<u8>> {
             .ok()
             .filter(|output| output.status.success())?;
         let certificates = split_certificates(&pem.stdout);
-        let fingerprints = certificates
+        let facts = certificates
             .par_iter()
             .enumerate()
             .map(|(i, certificate)| {
                 let file = work.path().join(format!("{purpose}-{i}.pem"));
-                trusted_fingerprint(certificate, purpose, &file, now)
+                trusted(certificate, purpose, &file, now)
             })
             .collect();
-        append(&certificates, fingerprints);
+        append(&certificates, facts);
     }
 
     let certificates = split_certificates(&fs::read(source).ok()?);
-    let fingerprints = certificates
+    let facts = certificates
         .par_iter()
-        .map(|c| super::x509::inspect(c, now).map(|facts| facts.fingerprint))
+        .map(|c| super::x509::inspect(c, now))
         .collect();
-    append(&certificates, fingerprints);
+    append(&certificates, facts);
     Some(bundle)
 }
 
 #[cfg(not(target_os = "macos"))]
-fn build(_source: &Path) -> Option<Vec<u8>> {
+fn build(_source: &Path, _excluded: &[String]) -> Option<Vec<u8>> {
     None
 }
 
-/// `append_keychain`'s checks, then the fingerprint. What the script asks
+/// `append_keychain`'s checks, then what is known of the certificate. What the script asks
 /// `openssl x509` (expiry, purpose, fingerprint) is read from the
 /// certificate here, the way LibreSSL answers it (see [`super::x509`]);
 /// the trust decision is still `security verify-cert`'s.
 #[cfg(target_os = "macos")]
-fn trusted_fingerprint(
+fn trusted(
     certificate: &[u8],
     purpose: &str,
     file: &Path,
     now: chrono::DateTime<chrono::Utc>,
-) -> Option<String> {
+) -> Option<super::x509::Facts> {
     let facts = super::x509::inspect(certificate, now)?;
     if !facts.unexpired || !facts.ssl_server_ca {
         return None;
@@ -257,7 +310,7 @@ fn trusted_fingerprint(
         .status()
         .ok()
         .filter(|status| status.success())?;
-    Some(facts.fingerprint)
+    Some(facts)
 }
 
 #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
@@ -454,7 +507,7 @@ mod tests {
         let script = std::env::var_os("NB_TEST_CA_SCRIPT")
             .map(PathBuf::from)
             .unwrap_or_else(|| "/opt/homebrew/opt/ca-certificates/libexec/post-install".into());
-        if !known_script(&script) {
+        if known_script(&script).is_none() {
             eprintln!(
                 "skipping: no known ca-certificates script at {}",
                 script.display()
@@ -492,7 +545,7 @@ mod tests {
         let script = std::env::var_os("NB_TEST_CA_SCRIPT")
             .map(PathBuf::from)
             .unwrap_or_else(|| "/opt/homebrew/opt/ca-certificates/libexec/post-install".into());
-        if !known_script(&script) {
+        if known_script(&script).is_none() {
             eprintln!(
                 "skipping: no known ca-certificates script at {}",
                 script.display()
@@ -545,6 +598,31 @@ mod tests {
         let bundle = CaBundle::detect(&ctx, script.as_os_str(), &args).unwrap();
         assert!(!bundle.build_in_parallel(&script).unwrap());
         assert!(!ctx.prefix.join("cert.pem").exists());
+    }
+
+    #[test]
+    fn excluded_keys_are_read_out_of_the_case_line() {
+        let a = "a".repeat(64);
+        let b = "0".repeat(64);
+        let script = format!("x\n  case \"$h\" in\n    {a}|{b}) return 0 ;;\n  esac\n");
+        let (template, excluded) = excluded_keys(&script);
+        assert_eq!(
+            template,
+            "x\n  case \"$h\" in\n    @EXCLUDED_SPKI_HASHES@) return 0 ;;\n  esac\n"
+        );
+        assert_eq!(excluded, [a, b]);
+        assert_eq!(excluded_keys("x\n").0, "x\n");
+    }
+
+    /// `NB_TEST_CA_SCRIPT` names a real script to check against [`KNOWN_SCRIPTS`].
+    #[test]
+    fn a_real_script_is_known() {
+        let Some(script) = std::env::var_os("NB_TEST_CA_SCRIPT") else {
+            return;
+        };
+        let (template, excluded) = excluded_keys(&fs::read_to_string(script).unwrap());
+        assert!(KNOWN_SCRIPTS.contains(&hex(&Sha256::digest(template)).as_str()));
+        assert_eq!(excluded.len(), 3);
     }
 
     #[test]

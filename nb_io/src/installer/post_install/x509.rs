@@ -1,6 +1,7 @@
 //! Just enough X.509 to answer what ca-certificates' bundle script asks
 //! `openssl x509` about each certificate: has it expired (`-checkend 0`),
-//! is it an SSL server CA (`-purpose`), and its SHA-256 fingerprint. Each
+//! is it an SSL server CA (`-purpose`), its SHA-256 fingerprint and the
+//! SHA-256 of its public key (`-pubkey | openssl pkey -outform der`). Each
 //! answer follows LibreSSL, the macOS `/usr/bin/openssl`; a certificate it
 //! cannot read gets no answers, as openssl's failure skips it.
 
@@ -13,6 +14,9 @@ pub(super) struct Facts {
     pub(super) ssl_server_ca: bool,
     /// The line `openssl x509 -fingerprint -sha256` prints.
     pub(super) fingerprint: String,
+    /// Lower-case hex SHA-256 of the DER public key, as the script's
+    /// `-pubkey | pkey -pubin -outform der | dgst -sha256` prints it.
+    pub(super) spki_sha256: String,
 }
 
 /// Read one PEM certificate as the script's openssl calls would; `None` when
@@ -31,6 +35,10 @@ pub(super) fn inspect(pem: &[u8], now: chrono::DateTime<chrono::Utc>) -> Option<
         unexpired: cert.not_after.is_some_and(|end| end >= now.naive_utc()),
         ssl_server_ca: cert.is_ssl_server_ca(),
         fingerprint: format!("SHA256 Fingerprint={fingerprint}"),
+        spki_sha256: Sha256::digest(cert.spki)
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect(),
     })
 }
 
@@ -149,6 +157,7 @@ struct Certificate<'a> {
     serial: &'a [u8],
     issuer: &'a [u8],
     subject: &'a [u8],
+    spki: &'a [u8],
     /// `None` when LibreSSL would not read the time, which `-checkend`
     /// takes as expired.
     not_after: Option<chrono::NaiveDateTime>,
@@ -186,7 +195,7 @@ impl<'a> Certificate<'a> {
         validity.next()?;
         cert.not_after = time(&validity.next()?);
         cert.subject = tbs.expect(SEQUENCE)?.whole;
-        tbs.expect(SEQUENCE)?;
+        cert.spki = tbs.expect(SEQUENCE)?.whole;
         tbs.next_if(0x81);
         tbs.next_if(0xa1);
         tbs.next_if(0x82);
@@ -354,6 +363,16 @@ mod tests {
             return None;
         }
         let text = String::from_utf8_lossy(&printed.stdout).into_owned();
+        let mut pipeline = Command::new("/bin/sh")
+            .arg("-c")
+            .arg("/usr/bin/openssl x509 -inform pem -pubkey -noout | /usr/bin/openssl pkey -pubin -outform der | /usr/bin/openssl dgst -sha256 -r")
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null())
+            .spawn()
+            .unwrap();
+        let _ = pipeline.stdin.take().unwrap().write_all(pem);
+        let spki = pipeline.wait_with_output().unwrap();
         Some(Facts {
             unexpired: run(&["-checkend", "0"]).status.success(),
             ssl_server_ca: text.contains("SSL server CA : Yes"),
@@ -361,6 +380,11 @@ mod tests {
                 .lines()
                 .find(|line| line.contains(" Fingerprint="))
                 .unwrap()
+                .to_string(),
+            spki_sha256: String::from_utf8_lossy(&spki.stdout)
+                .split_whitespace()
+                .next()
+                .unwrap_or_default()
                 .to_string(),
         })
     }

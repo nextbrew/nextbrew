@@ -7,6 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- Installing anything that depends on `ca-certificates` (openssl, curl, git, node, ...) on macOS no longer takes about 12 seconds longer since its 2026-10-20 release
+
 ## [0.1.1] - 2026-10-23
 
 ### Fixed
