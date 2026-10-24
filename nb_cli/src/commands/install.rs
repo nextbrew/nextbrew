@@ -52,6 +52,7 @@ pub async fn execute(
         }
     }
     let normalized_names = fresh;
+    nb_core::timing::mark("names resolved");
     if !to_upgrade.is_empty() {
         super::upgrade::execute(installer, to_upgrade, build_from_source, no_link, ui).await?;
     }
@@ -90,9 +91,12 @@ pub async fn execute(
             }
         };
 
+        nb_core::timing::mark("planned");
         let result = execute_formula_plan(installer, &formulas, plan, no_link, ui).await;
+        nb_core::timing::mark("executed");
         // Also when some failed.
         messages.record_installed(installer).await;
+        nb_core::timing::mark("caveats gathered");
         let result = match result {
             Ok(result) => result,
             Err(e) if messages.render().is_empty() => return Err(e),
@@ -327,6 +331,9 @@ pub async fn execute_formula_plan(
     let done_style_clone = done_style.clone();
 
     let progress_callback: Arc<ProgressCallback> = Arc::new(Box::new(move |event| {
+        if !matches!(event, InstallProgress::DownloadProgress { .. }) {
+            nb_core::timing::mark(format_args!("{event:?}"));
+        }
         let mut bars = bars_clone.lock().unwrap();
         match event {
             InstallProgress::DownloadStarted { name, total_bytes } => {

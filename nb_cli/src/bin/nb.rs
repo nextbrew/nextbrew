@@ -12,11 +12,15 @@ use nb_io::create_installer;
 
 #[tokio::main]
 async fn main() {
+    nb_core::timing::start();
     // An unknown command may be a tap's (`brew <name>`).
     let cli = Cli::try_parse().unwrap_or_else(|e| commands::external::dispatch(e));
     logging::init(cli.verbose, cli.quiet);
+    nb_core::timing::mark("args parsed");
 
-    if let Err(e) = run(cli).await {
+    let result = run(cli).await;
+    nb_core::timing::mark("done");
+    if let Err(e) = result {
         eprintln!("{} {}", style("error:").red().bold(), e);
         std::process::exit(1);
     }
@@ -39,8 +43,10 @@ async fn run(cli: Cli) -> Result<(), nb_core::Error> {
     if !matches!(cli.command, Commands::Reset { .. }) {
         ensure_init(&root, &prefix, cli.auto_init, &mut ui)?;
     }
+    nb_core::timing::mark("init checked");
 
     let mut installer = create_installer(&root, &prefix, cli.concurrency)?;
+    nb_core::timing::mark("installer created");
 
     match cli.command {
         Commands::Init { .. } => unreachable!(),

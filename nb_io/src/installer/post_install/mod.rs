@@ -135,7 +135,9 @@ pub fn run_steps(
             continue;
         }
 
-        if let Some(notice) = steps::run_step(ctx, &step.action).map_err(failure)? {
+        let notice = steps::run_step(ctx, &step.action).map_err(failure)?;
+        nb_core::timing::mark(format_args!("{}: step {:?}", ctx.name, step.action));
+        if let Some(notice) = notice {
             notices.push(notice);
         }
     }

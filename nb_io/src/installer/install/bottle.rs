@@ -40,6 +40,7 @@ impl Installer {
         let keg_path = self
             .cellar
             .materialize(formula_name, &version, store_entry)?;
+        nb_core::timing::mark(format_args!("{formula_name}: materialized"));
 
         // Before recording the install, so a failure doesn't leave the
         // package marked installed without its config files.
@@ -66,12 +67,14 @@ impl Installer {
             Self::cleanup_materialized(&self.cellar, formula_name, &version);
         })?;
         self.record_tap(install_name, &item.formula)?;
+        nb_core::timing::mark(format_args!("{formula_name}: recorded"));
 
         // Aliases only: Homebrew refreshes an old name's opt link that a
         // rename left behind, but never makes a new one.
         if let Err(e) = self.linker.link_opt(&keg_path, &item.formula.aliases) {
             warn!(formula = %install_name, error = %e, "failed to create opt link");
         }
+        nb_core::timing::mark(format_args!("{formula_name}: opt linked"));
 
         let keg_only = item.formula.is_keg_only() && !item.link_keg_only;
         if link && !keg_only && self.make_room_to_link(item, report)? {
@@ -84,6 +87,10 @@ impl Installer {
                         name: formula_name.clone(),
                     });
                     self.record_linked_files(install_name, &version, &linked_files);
+                    nb_core::timing::mark(format_args!(
+                        "{formula_name}: {} links recorded",
+                        linked_files.len()
+                    ));
                 }
                 Err(e) => {
                     let _ = self.linker.unlink_keg(&keg_path);

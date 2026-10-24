@@ -160,6 +160,8 @@ pub struct ApiClient {
     /// caller that needs it; see [`ApiClient::ensure_index`].
     index_usable: OnceCell<bool>,
     formula_candidates: RwLock<Option<Arc<[String]>>>,
+    /// [`ApiClient::formula_names`] from the index, read once per run.
+    formula_names: RwLock<Option<Arc<[String]>>>,
     /// Third-party taps, read for formulae the API does not have.
     taps: Option<Arc<TapSource>>,
 }
@@ -339,6 +341,7 @@ impl ApiClient {
             cache: None,
             index_usable: OnceCell::new(),
             formula_candidates: RwLock::new(None),
+            formula_names: RwLock::new(None),
             taps: None,
         }
     }
@@ -770,12 +773,20 @@ impl ApiClient {
 
     /// Every formula's name, without its aliases and old names.
     pub async fn formula_names(&self) -> Result<Vec<String>, Error> {
+        if let Some(names) = self.formula_names.read().ok().and_then(|n| n.clone()) {
+            return Ok(names.to_vec());
+        }
         if let Some(cache) = &self.cache
             && self.ensure_index().await
         {
-            return cache
+            let names: Arc<[String]> = cache
                 .index_formula_names()
-                .map_err(Error::store("failed to read the formula index"));
+                .map_err(Error::store("failed to read the formula index"))?
+                .into();
+            if let Ok(mut cached) = self.formula_names.write() {
+                *cached = Some(Arc::clone(&names));
+            }
+            return Ok(names.to_vec());
         }
         let body = self.bulk_formula_body().await?;
         Ok(index_entries(&body, &[])?

@@ -43,6 +43,11 @@ impl Database {
 
     pub fn open(path: &Path) -> Result<Self, Error> {
         let conn = Connection::open(path).map_err(Error::store("failed to open database"))?;
+        // WAL with NORMAL sync: one fsync per checkpoint instead of several
+        // per commit, and a crash can lose only the last commits, never
+        // corrupt the file.
+        conn.execute_batch("PRAGMA journal_mode = WAL; PRAGMA synchronous = NORMAL;")
+            .map_err(Error::store("failed to configure database"))?;
         Self::migrate(&conn)?;
         Ok(Self { conn })
     }

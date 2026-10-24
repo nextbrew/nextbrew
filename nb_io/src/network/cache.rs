@@ -42,6 +42,10 @@ impl ApiCache {
 
     pub fn open(path: &Path) -> Result<Self, rusqlite::Error> {
         let conn = Connection::open(path)?;
+        // WAL with NORMAL sync: one fsync per checkpoint instead of several
+        // per commit, and a crash can lose only the last commits, never
+        // corrupt the file.
+        conn.execute_batch("PRAGMA journal_mode = WAL; PRAGMA synchronous = NORMAL;")?;
         Self::migrate(&conn)?;
         Ok(Self { conn })
     }

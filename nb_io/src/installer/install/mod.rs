@@ -267,6 +267,7 @@ impl Installer {
                     .collect();
             }
         }
+        nb_core::timing::mark("link candidates found");
 
         // Post-install runs once everything is installed, in plan order, so
         // a step can rely on a dependency that is still downloading here.
@@ -405,6 +406,7 @@ impl Installer {
         for task in ahead {
             let _ = task.await;
         }
+        nb_core::timing::mark("post-install prepared ahead");
         let mut by_rank: Vec<&PlannedInstall> = finished.clone();
         by_rank.sort_by_key(|item| item.link_rank);
         self.last_installed = by_rank
