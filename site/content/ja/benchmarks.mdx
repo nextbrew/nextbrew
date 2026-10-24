@@ -11,6 +11,7 @@ import { BenchmarkTable } from '../../components/benchmarks'
 - **Warm**: formula をもう一度アンインストールし、cold で落としたダウンロードは残した状態です。
 - クライアントの順番は formula ごとに入れ替え、どれかがいつも最初に CDN を叩くことがないようにしています。
 - nanobrew は `NANOBREW_DISABLE_UPSTREAM=1` で動かし、upstream のリリースバイナリではなく、ほかと同じ Homebrew の bottle を入れるようにしています。nanobrew は `post_install` を実行しません。ほかのクライアントは実行します。
+- zerobrew は `openssl@3` のような keg-only の versioned formula をリンクしません。Homebrew と nextbrew は、ほかのバージョンが入っていなければリンクします。`openssl@3` では6529本のリンクになります。
 - wax はダウンロードした bottle を残さないため、warm でも再びダウンロードします。
 - 合計は、すべてのクライアントがインストールできた formula だけで数えます。
 

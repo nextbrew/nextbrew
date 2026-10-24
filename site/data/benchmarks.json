@@ -1,1 +1,442 @@
-{ "measured": null, "machine": null, "results": [] }
+{
+  "measured": "2026-10-24",
+  "machine": "GitHub Actions macos-latest runner (Apple M1 (Virtual) 3 cores 7GB), macOS 26.6.2 arm64, ~195 Mbit/s",
+  "rounds": 3,
+  "tools": [
+    {
+      "id": "nextbrew",
+      "version": "0.1.1"
+    },
+    {
+      "id": "brew",
+      "version": "7.0.10"
+    },
+    {
+      "id": "zerobrew",
+      "version": "0.4.2"
+    },
+    {
+      "id": "nanobrew",
+      "version": "0.1.212"
+    },
+    {
+      "id": "wax",
+      "version": "0.20.31"
+    }
+  ],
+  "total": {
+    "formulae": 22,
+    "cold": {
+      "nextbrew": 31.492,
+      "brew": 306.024,
+      "zerobrew": 37.311,
+      "nanobrew": 68.269,
+      "wax": 127.082
+    },
+    "warm": {
+      "nextbrew": 4.196,
+      "brew": 280.274,
+      "zerobrew": 9.459,
+      "nanobrew": 25.667,
+      "wax": 120.84
+    }
+  },
+  "results": [
+    {
+      "formula": "jq",
+      "deps": 1,
+      "cold": {
+        "nextbrew": 0.517,
+        "brew": 5.085,
+        "zerobrew": 0.599,
+        "nanobrew": 0.771,
+        "wax": 3.272
+      },
+      "warm": {
+        "nextbrew": 0.032,
+        "brew": 3.467,
+        "zerobrew": 0.183,
+        "nanobrew": 0.128,
+        "wax": 1.134
+      }
+    },
+    {
+      "formula": "tree",
+      "deps": 0,
+      "cold": {
+        "nextbrew": 0.453,
+        "brew": 2.931,
+        "zerobrew": 0.497,
+        "nanobrew": 0.651,
+        "wax": 0.898
+      },
+      "warm": {
+        "nextbrew": 0.02,
+        "brew": 1.983,
+        "zerobrew": 0.173,
+        "nanobrew": 0.164,
+        "wax": 0.891
+      }
+    },
+    {
+      "formula": "htop",
+      "deps": 1,
+      "cold": {
+        "nextbrew": 0.949,
+        "brew": 5.503,
+        "zerobrew": 1.221,
+        "nanobrew": 2.246,
+        "wax": 2.754
+      },
+      "warm": {
+        "nextbrew": 0.042,
+        "brew": 3.818,
+        "zerobrew": 0.173,
+        "nanobrew": 1.187,
+        "wax": 2.688
+      }
+    },
+    {
+      "formula": "bat",
+      "deps": 6,
+      "cold": {
+        "nextbrew": 1.651,
+        "brew": 24.243,
+        "zerobrew": 2.234,
+        "nanobrew": 3.488,
+        "wax": 4.883
+      },
+      "warm": {
+        "nextbrew": 0.363,
+        "brew": 24.643,
+        "zerobrew": 0.805,
+        "nanobrew": 1.007,
+        "wax": 4.232
+      }
+    },
+    {
+      "formula": "fd",
+      "deps": 0,
+      "cold": {
+        "nextbrew": 0.509,
+        "brew": 2.786,
+        "zerobrew": 0.614,
+        "nanobrew": 0.66,
+        "wax": 0.943
+      },
+      "warm": {
+        "nextbrew": 0.022,
+        "brew": 1.75,
+        "zerobrew": 0.149,
+        "nanobrew": 0.084,
+        "wax": 0.899
+      }
+    },
+    {
+      "formula": "ripgrep",
+      "deps": 1,
+      "cold": {
+        "nextbrew": 0.581,
+        "brew": 4.521,
+        "zerobrew": 0.707,
+        "nanobrew": 1.533,
+        "wax": 1.56
+      },
+      "warm": {
+        "nextbrew": 0.032,
+        "brew": 3.33,
+        "zerobrew": 0.166,
+        "nanobrew": 0.74,
+        "wax": 1.796
+      }
+    },
+    {
+      "formula": "fzf",
+      "deps": 0,
+      "cold": {
+        "nextbrew": 0.517,
+        "brew": 2.861,
+        "zerobrew": 0.637,
+        "nanobrew": 2.068,
+        "wax": 0.927
+      },
+      "warm": {
+        "nextbrew": 0.023,
+        "brew": 1.688,
+        "zerobrew": 0.167,
+        "nanobrew": 1.111,
+        "wax": 0.987
+      }
+    },
+    {
+      "formula": "wget",
+      "deps": 7,
+      "cold": {
+        "nextbrew": 1.98,
+        "brew": 25.037,
+        "zerobrew": 2.361,
+        "nanobrew": 6.014,
+        "wax": 8.367
+      },
+      "warm": {
+        "nextbrew": 0.487,
+        "brew": 30.599,
+        "zerobrew": 0.79,
+        "nanobrew": 2.75,
+        "wax": 7.919
+      }
+    },
+    {
+      "formula": "curl",
+      "deps": 11,
+      "cold": {
+        "nextbrew": 1.972,
+        "brew": 41.211,
+        "zerobrew": 2.225,
+        "nanobrew": 3.319,
+        "wax": 7.547
+      },
+      "warm": {
+        "nextbrew": 0.391,
+        "brew": 39.902,
+        "zerobrew": 0.819,
+        "nanobrew": 1.636,
+        "wax": 7.578
+      }
+    },
+    {
+      "formula": "git",
+      "deps": 4,
+      "cold": {
+        "nextbrew": 1.645,
+        "brew": 12.276,
+        "zerobrew": 1.962,
+        "nanobrew": 9.112,
+        "wax": 10.382
+      },
+      "warm": {
+        "nextbrew": 0.087,
+        "brew": 10.801,
+        "zerobrew": 0.328,
+        "nanobrew": 2.929,
+        "wax": 10.894
+      }
+    },
+    {
+      "formula": "tmux",
+      "deps": 6,
+      "cold": {
+        "nextbrew": 2.403,
+        "brew": 30.973,
+        "zerobrew": 3.414,
+        "nanobrew": 2.558,
+        "wax": 7.426
+      },
+      "warm": {
+        "nextbrew": 0.478,
+        "brew": 30.596,
+        "zerobrew": 1.05,
+        "nanobrew": 1.293,
+        "wax": 6.417
+      }
+    },
+    {
+      "formula": "zoxide",
+      "deps": 0,
+      "cold": {
+        "nextbrew": 0.52,
+        "brew": 4.196,
+        "zerobrew": 0.547,
+        "nanobrew": 0.732,
+        "wax": 0.883
+      },
+      "warm": {
+        "nextbrew": 0.024,
+        "brew": 2.163,
+        "zerobrew": 0.175,
+        "nanobrew": 0.112,
+        "wax": 1.027
+      }
+    },
+    {
+      "formula": "openssl@3",
+      "deps": 1,
+      "cold": {
+        "nextbrew": 1.802,
+        "brew": 24.005,
+        "zerobrew": 2.185,
+        "nanobrew": 3.441,
+        "wax": 4.811
+      },
+      "warm": {
+        "nextbrew": 0.392,
+        "brew": 21.286,
+        "zerobrew": 0.299,
+        "nanobrew": 0.696,
+        "wax": 4.501
+      }
+    },
+    {
+      "formula": "sqlite",
+      "deps": 1,
+      "cold": {
+        "nextbrew": 0.698,
+        "brew": 5.03,
+        "zerobrew": 0.616,
+        "nanobrew": 2.107,
+        "wax": 1.249
+      },
+      "warm": {
+        "nextbrew": 0.021,
+        "brew": 3.842,
+        "zerobrew": 0.179,
+        "nanobrew": 1.014,
+        "wax": 1.268
+      }
+    },
+    {
+      "formula": "readline",
+      "deps": 0,
+      "cold": {
+        "nextbrew": 0.484,
+        "brew": 3.765,
+        "zerobrew": 0.684,
+        "nanobrew": 1.602,
+        "wax": 1.009
+      },
+      "warm": {
+        "nextbrew": 0.022,
+        "brew": 2.512,
+        "zerobrew": 0.189,
+        "nanobrew": 0.943,
+        "wax": 1.008
+      }
+    },
+    {
+      "formula": "pcre2",
+      "deps": 0,
+      "cold": {
+        "nextbrew": 0.623,
+        "brew": 4.068,
+        "zerobrew": 0.682,
+        "nanobrew": 1.362,
+        "wax": 1.647
+      },
+      "warm": {
+        "nextbrew": 0.036,
+        "brew": 2.968,
+        "zerobrew": 0.186,
+        "nanobrew": 0.822,
+        "wax": 1.53
+      }
+    },
+    {
+      "formula": "zstd",
+      "deps": 2,
+      "cold": {
+        "nextbrew": 0.578,
+        "brew": 5.927,
+        "zerobrew": 0.63,
+        "nanobrew": 2.292,
+        "wax": 1.73
+      },
+      "warm": {
+        "nextbrew": 0.043,
+        "brew": 5.005,
+        "zerobrew": 0.208,
+        "nanobrew": 1.311,
+        "wax": 1.692
+      }
+    },
+    {
+      "formula": "lz4",
+      "deps": 0,
+      "cold": {
+        "nextbrew": 0.458,
+        "brew": 3.545,
+        "zerobrew": 0.56,
+        "nanobrew": 0.719,
+        "wax": 1.071
+      },
+      "warm": {
+        "nextbrew": 0.023,
+        "brew": 2.428,
+        "zerobrew": 0.178,
+        "nanobrew": 0.346,
+        "wax": 1.057
+      }
+    },
+    {
+      "formula": "node",
+      "deps": 24,
+      "cold": {
+        "nextbrew": 2.594,
+        "brew": 55.403,
+        "zerobrew": 3.486,
+        "nanobrew": 7.253,
+        "wax": 28.013
+      },
+      "warm": {
+        "nextbrew": 0.699,
+        "brew": 50.811,
+        "zerobrew": 1.263,
+        "nanobrew": 2.69,
+        "wax": 26.753
+      }
+    },
+    {
+      "formula": "go",
+      "deps": 0,
+      "cold": {
+        "nextbrew": 4.866,
+        "brew": 8.283,
+        "zerobrew": 4.378,
+        "nanobrew": 5.842,
+        "wax": 11.7
+      },
+      "warm": {
+        "nextbrew": 0.161,
+        "brew": 6.317,
+        "zerobrew": 0.322,
+        "nanobrew": 0.461,
+        "wax": 10.896
+      }
+    },
+    {
+      "formula": "ruby",
+      "deps": 3,
+      "cold": {
+        "nextbrew": 4.847,
+        "brew": 30.561,
+        "zerobrew": 6.217,
+        "nanobrew": 9.087,
+        "wax": 24.472
+      },
+      "warm": {
+        "nextbrew": 0.758,
+        "brew": 28.414,
+        "zerobrew": 1.475,
+        "nanobrew": 4.09,
+        "wax": 24.216
+      }
+    },
+    {
+      "formula": "gh",
+      "deps": 0,
+      "cold": {
+        "nextbrew": 0.845,
+        "brew": 3.814,
+        "zerobrew": 0.855,
+        "nanobrew": 1.412,
+        "wax": 1.538
+      },
+      "warm": {
+        "nextbrew": 0.04,
+        "brew": 1.951,
+        "zerobrew": 0.182,
+        "nanobrew": 0.153,
+        "wax": 1.457
+      }
+    }
+  ]
+}
