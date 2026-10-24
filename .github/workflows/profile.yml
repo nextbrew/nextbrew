@@ -63,6 +63,15 @@ jobs:
             "${t%%:*}" install openssl@3 >/dev/null 2>&1
             echo "$t links: $(find /opt/${t#*:} -type l | wc -l)"
           done | tee "$out/links.txt"
+          python3 - <<'PY' | tee -a "$out/links.txt"
+          import os, time
+          d = "/opt/nextbrew/linkbench"
+          os.makedirs(d)
+          t = time.perf_counter()
+          for i in range(6529):
+              os.symlink(f"/opt/nextbrew/Cellar/x/1/share/man/man3/X{i}.3ssl", f"{d}/X{i}.3ssl")
+          print(f"6529 symlinks: {(time.perf_counter() - t) * 1000:.0f}ms")
+          PY
           grep -h '' "$out/results.tsv" >> "$GITHUB_STEP_SUMMARY"
 
       - name: Upload

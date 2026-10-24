@@ -460,6 +460,7 @@ impl Linker {
 
     pub fn link_keg(&self, keg_path: &Path) -> Result<Vec<LinkedFile>, Error> {
         self.check_conflicts(keg_path)?;
+        nb_core::timing::mark(format_args!("link conflicts checked"));
         self.link_into_prefix(keg_path, false)
     }
 
