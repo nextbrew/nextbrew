@@ -4,7 +4,7 @@ pub mod linux;
 #[cfg(target_os = "macos")]
 pub mod macos;
 
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", test))]
 pub(crate) mod macho;
 mod phar;
 pub(crate) mod text;

@@ -58,6 +58,11 @@ jobs:
           for t in nb zb; do
             /usr/bin/time -p zsh -c "repeat 20 $t --version >/dev/null" 2>&1 | sed "s/^/$t --version x20: /"
           done | tee "$out/startup.txt"
+          # How many links each tool leaves for one keg, and how long that takes.
+          for t in nb:nextbrew zb:zerobrew; do
+            "${t%%:*}" install openssl@3 >/dev/null 2>&1
+            echo "$t links: $(find /opt/${t#*:} -type l | wc -l)"
+          done | tee "$out/links.txt"
           grep -h '' "$out/results.tsv" >> "$GITHUB_STEP_SUMMARY"
 
       - name: Upload

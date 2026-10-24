@@ -5,8 +5,9 @@
 //! files and Mach-O load commands; pinned ones carry the literal build prefix
 //! in binaries too. Every file in the keg is read once and the changed bytes
 //! are written back in place, so the keg keeps sharing unchanged blocks with
-//! the store entry it was cloned from. Mach-O files whose bytes changed, or
-//! that arrived unsigned, are ad-hoc signed in one `codesign` run per keg.
+//! the store entry it was cloned from. Ad-hoc signatures of changed Mach-O
+//! files are rehashed in place; other changed files, and ones that arrived
+//! unsigned, are ad-hoc signed by `codesign`.
 
 use std::ffi::CString;
 use std::fs;
@@ -229,6 +230,13 @@ fn relocate_binary(path: &Path, relocation: &Relocation) -> Result<BinaryOutcome
         return Ok(BinaryOutcome::Untouched);
     }
 
+    // Rehashing an ad-hoc signature in place saves a `codesign` run.
+    let rehashed = is_macho
+        && signed
+        && unfit.is_empty()
+        && macho::rehash_adhoc(&mut contents, &written)
+            .map(|hashes| written.extend(hashes))
+            .is_some();
     let writable = Writable::lift(path, &metadata)?;
     write_ranges(path, &contents, &written)?;
     if let Some(change) = unfit.first() {
@@ -237,7 +245,7 @@ fn relocate_binary(path: &Path, relocation: &Relocation) -> Result<BinaryOutcome
 
     Ok(BinaryOutcome::Changed {
         writable,
-        sign: is_macho,
+        sign: is_macho && !rehashed,
     })
 }
 

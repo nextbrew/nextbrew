@@ -488,6 +488,129 @@ fn first_section_data(
         .min()
 }
 
+const CSMAGIC_EMBEDDED_SIGNATURE: u32 = 0xfade_0cc0;
+const CSMAGIC_CODEDIRECTORY: u32 = 0xfade_0c02;
+const CSSLOT_CODEDIRECTORY: u32 = 0;
+const CSSLOT_ALTERNATE_CODEDIRECTORIES: u32 = 0x1000;
+const CSSLOT_SIGNATURESLOT: u32 = 0x10000;
+const CS_ADHOC: u32 = 0x2;
+const CS_HASHTYPE_SHA256: u8 = 2;
+const CS_HASHTYPE_SHA256_TRUNCATED: u8 = 3;
+
+/// Bring an ad-hoc signature up to date with the patched code by rehashing
+/// its pages in place, as `codesign` would, without running it. The special
+/// slots (requirements, entitlements, Info.plist) cover blobs patching does
+/// not touch, so only the page hashes change. Returns the hash bytes that
+/// changed, or `None` when the file needs `codesign`: it is unsigned, signed
+/// with a certificate, uses SHA-1, or `patched` reaches into the signature.
+pub(crate) fn rehash_adhoc(data: &mut [u8], patched: &[Range<usize>]) -> Option<Vec<Range<usize>>> {
+    let mut written = Vec::new();
+    for slice in slices(data).ok()? {
+        let (sig_start, sig_end) = signature_range(data, slice)?;
+        if patched
+            .iter()
+            .any(|r| r.start < sig_end && sig_start < r.end)
+        {
+            return None;
+        }
+        let be = |data: &[u8], at: usize| read_u32(data, at, Endian::Big);
+        if be(data, sig_start)? != CSMAGIC_EMBEDDED_SIGNATURE {
+            return None;
+        }
+        let mut directories = Vec::new();
+        for i in 0..be(data, sig_start + 8)? as usize {
+            let kind = be(data, sig_start + 12 + i * 8)?;
+            let blob = sig_start + be(data, sig_start + 16 + i * 8)? as usize;
+            match kind {
+                CSSLOT_CODEDIRECTORY => directories.push(blob),
+                k if (CSSLOT_ALTERNATE_CODEDIRECTORIES..CSSLOT_ALTERNATE_CODEDIRECTORIES + 5)
+                    .contains(&k) =>
+                {
+                    directories.push(blob)
+                }
+                // An empty CMS wrapper is what ad-hoc signing leaves.
+                CSSLOT_SIGNATURESLOT if be(data, blob + 4)? > 8 => return None,
+                _ => {}
+            }
+        }
+        if directories.is_empty() {
+            return None;
+        }
+        for cd in directories {
+            written.extend(rehash_directory(data, slice, cd, sig_end)?);
+        }
+    }
+    Some(written)
+}
+
+/// `dataoff..dataoff + datasize` of the slice's `LC_CODE_SIGNATURE`.
+fn signature_range(data: &[u8], slice: Slice) -> Option<(usize, usize)> {
+    let header = thin_header(data, slice.start)?;
+    let endian = header.endian;
+    let mut offset = slice.start + header.size;
+    for _ in 0..read_u32(data, slice.start + 16, endian)? {
+        let cmd = read_u32(data, offset, endian)?;
+        let cmdsize = read_u32(data, offset + 4, endian)? as usize;
+        if cmd == macho::LC_CODE_SIGNATURE {
+            let start = slice.start + read_u32(data, offset + 8, endian)? as usize;
+            let end = start + read_u32(data, offset + 12, endian)? as usize;
+            return (end <= slice.end).then_some((start, end));
+        }
+        offset += cmdsize.max(8);
+    }
+    None
+}
+
+fn rehash_directory(
+    data: &mut [u8],
+    slice: Slice,
+    cd: usize,
+    sig_end: usize,
+) -> Option<Vec<Range<usize>>> {
+    use sha2::{Digest, Sha256};
+    let be = |data: &[u8], at: usize| read_u32(data, at, Endian::Big);
+    if be(data, cd)? != CSMAGIC_CODEDIRECTORY || be(data, cd + 12)? & CS_ADHOC == 0 {
+        return None;
+    }
+    let version = be(data, cd + 8)?;
+    let hash_offset = be(data, cd + 16)? as usize;
+    let slots = be(data, cd + 28)? as usize;
+    let code_limit = be(data, cd + 32)? as usize;
+    let header = data.get(cd + 36..cd + 40)?;
+    let (hash_size, hash_type, page_shift) = (header[0] as usize, header[1], header[3]);
+    let scatter = version >= 0x20100 && be(data, cd + 44)? != 0;
+    let limit64 = version >= 0x20300 && read_u64(data, cd + 56, Endian::Big)? != 0;
+    if scatter
+        || limit64
+        || !matches!(hash_type, CS_HASHTYPE_SHA256 | CS_HASHTYPE_SHA256_TRUNCATED)
+        || hash_size > 32
+        || slice.start + code_limit > slice.end
+    {
+        return None;
+    }
+    let page = if page_shift == 0 {
+        code_limit.max(1)
+    } else {
+        1 << page_shift
+    };
+    if slots != code_limit.div_ceil(page) || cd + hash_offset + slots * hash_size > sig_end {
+        return None;
+    }
+
+    let code = slice.start..slice.start + code_limit;
+    let mut written = Vec::new();
+    for i in 0..slots {
+        let start = code.start + i * page;
+        let digest = Sha256::digest(&data[start..(start + page).min(code.end)]);
+        let at = cd + hash_offset + i * hash_size;
+        if data[at..at + hash_size] != digest[..hash_size] {
+            data[at..at + hash_size].copy_from_slice(&digest[..hash_size]);
+            written.push(at..at + hash_size);
+        }
+    }
+    Some(written)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -920,6 +1043,7 @@ mod tests {
 
     /// A real signed system binary: what we read must match `otool -L`.
     #[test]
+    #[cfg(target_os = "macos")]
     fn matches_otool_on_a_system_binary() {
         use std::process::Command;
 
@@ -965,5 +1089,116 @@ mod tests {
         assert!(has_macho_magic(b"\xca\xfe\xba\xbe"));
         assert!(!has_macho_magic(b"\x7fELF"));
         assert!(!has_macho_magic(b"\xcf\xfa"));
+    }
+
+    /// A 64-bit file of `pages` 4K pages, then an ad-hoc signature whose
+    /// SHA-256 code directory hashes them.
+    fn adhoc_signed(pages: usize, flags: u32, cms: usize) -> Vec<u8> {
+        use sha2::{Digest, Sha256};
+        let code_limit = pages * 4096;
+        let mut out = vec![0u8; code_limit];
+        let le =
+            |out: &mut [u8], at: usize, v: u32| out[at..at + 4].copy_from_slice(&v.to_le_bytes());
+        le(&mut out, 0, macho::MH_MAGIC_64);
+        le(&mut out, 16, 1);
+        le(&mut out, 20, 16);
+        le(&mut out, 32, macho::LC_CODE_SIGNATURE);
+        le(&mut out, 36, 16);
+        le(&mut out, 40, code_limit as u32);
+        for (i, b) in out[48..].iter_mut().enumerate() {
+            *b = (i % 251) as u8;
+        }
+
+        let mut cd = Vec::new();
+        for v in [
+            CSMAGIC_CODEDIRECTORY,
+            0,
+            0x20400,
+            flags,
+            88,
+            0,
+            0,
+            pages as u32,
+            code_limit as u32,
+        ] {
+            cd.extend_from_slice(&v.to_be_bytes());
+        }
+        cd.extend_from_slice(&[32, CS_HASHTYPE_SHA256, 0, 12]);
+        cd.resize(88, 0);
+        cd.resize(88 + 32 * pages, 0);
+        let cd_len = cd.len() as u32;
+        cd[4..8].copy_from_slice(&cd_len.to_be_bytes());
+
+        let mut sig = Vec::new();
+        let header = 12 + 2 * 8;
+        let blob = [0xfade_0b01u32.to_be_bytes(), (8 + cms as u32).to_be_bytes()].concat();
+        for v in [
+            CSMAGIC_EMBEDDED_SIGNATURE,
+            (header + cd.len() + 8 + cms) as u32,
+            2,
+            CSSLOT_CODEDIRECTORY,
+            header as u32,
+            CSSLOT_SIGNATURESLOT,
+            (header + cd.len()) as u32,
+        ] {
+            sig.extend_from_slice(&v.to_be_bytes());
+        }
+        sig.extend_from_slice(&cd);
+        sig.extend_from_slice(&blob);
+        sig.resize(sig.len() + cms, 0);
+        le(&mut out, 44, sig.len() as u32);
+        out.extend_from_slice(&sig);
+        for i in 0..pages {
+            let digest = Sha256::digest(&out[i * 4096..(i + 1) * 4096]);
+            let at = code_limit + header + 88 + 32 * i;
+            out[at..at + 32].copy_from_slice(&digest);
+        }
+        out
+    }
+
+    #[test]
+    #[allow(clippy::single_range_in_vec_init)]
+    fn rehashes_the_pages_an_adhoc_signature_covers() {
+        let original = adhoc_signed(3, CS_ADHOC, 0);
+        assert_eq!(rehash_adhoc(&mut original.clone(), &[]), Some(vec![]));
+
+        let mut patched = original.clone();
+        patched[5000] ^= 1;
+        let written = rehash_adhoc(&mut patched, &[5000..5001]).unwrap();
+        let hash_at = 3 * 4096 + 28 + 88 + 32;
+        assert_eq!(written, vec![hash_at..hash_at + 32]);
+
+        use sha2::{Digest, Sha256};
+        assert_eq!(
+            patched[hash_at..hash_at + 32],
+            Sha256::digest(&patched[4096..8192])[..]
+        );
+    }
+
+    #[test]
+    #[allow(clippy::single_range_in_vec_init)]
+    fn leaves_other_signatures_to_codesign() {
+        assert_eq!(
+            rehash_adhoc(&mut adhoc_signed(2, 0, 0), &[]),
+            None,
+            "not ad-hoc"
+        );
+        assert_eq!(
+            rehash_adhoc(&mut adhoc_signed(2, CS_ADHOC, 64), &[]),
+            None,
+            "has a CMS signature"
+        );
+        let mut data = adhoc_signed(2, CS_ADHOC, 0);
+        let sig = 2 * 4096;
+        assert_eq!(
+            rehash_adhoc(&mut data, &[sig + 40..sig + 41]),
+            None,
+            "patched the signature"
+        );
+        assert_eq!(
+            rehash_adhoc(&mut thin(Endian::Little, true, &[Cmd::Other]), &[]),
+            None,
+            "unsigned"
+        );
     }
 }
