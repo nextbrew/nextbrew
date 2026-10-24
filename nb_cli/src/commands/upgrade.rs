@@ -299,8 +299,6 @@ pub(crate) async fn replace_packages(
     let mut messages = crate::caveats::Messages::default();
 
     for name in names {
-        ui.step_start(name).map_err(ui_error)?;
-
         let progress = Some(progress_callback.clone());
         let result = match mode {
             Replace::Upgrade => {
@@ -314,6 +312,13 @@ pub(crate) async fn replace_packages(
                     .await
             }
         };
+        // The bars only show the work in progress, on stderr; the step line
+        // on stdout is what stays. Written after them, so they don't
+        // redraw over it.
+        for (_, pb) in bars.lock().unwrap().drain() {
+            pb.finish_and_clear();
+        }
+        ui.step_start(name).map_err(ui_error)?;
         match result {
             Ok(result) => {
                 ui.step_ok().map_err(ui_error)?;
@@ -329,15 +334,6 @@ pub(crate) async fn replace_packages(
                 ui.step_fail().map_err(ui_error)?;
                 messages.record_installed(installer).await;
                 errors.push((name.clone(), e));
-            }
-        }
-    }
-
-    {
-        let bars = bars.lock().unwrap();
-        for (_, pb) in bars.iter() {
-            if !pb.is_finished() {
-                pb.finish();
             }
         }
     }
