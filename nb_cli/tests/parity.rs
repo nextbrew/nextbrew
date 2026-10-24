@@ -657,6 +657,25 @@ fn links_into(prefix: &Path, keg: &Path) -> BTreeMap<String, String> {
                 continue;
             }
             let rel = entry.path().strip_prefix(prefix).unwrap();
+            // nextbrew links an unshared man directory whole; Homebrew
+            // links each page, so count the pages.
+            if rel.starts_with("share/man") && target.is_dir() {
+                for page in walkdir::WalkDir::new(&target) {
+                    let page = page.expect("failed to walk man directory");
+                    if page.file_type().is_dir() {
+                        continue;
+                    }
+                    let inner = page.path().strip_prefix(&target).unwrap();
+                    links.insert(
+                        rel.join(inner).to_string_lossy().into_owned(),
+                        format!(
+                            "<keg>/{}",
+                            page.path().strip_prefix(keg).unwrap().to_string_lossy()
+                        ),
+                    );
+                }
+                continue;
+            }
             let target_rel = target.strip_prefix(keg).unwrap();
             links.insert(
                 rel.to_string_lossy().into_owned(),

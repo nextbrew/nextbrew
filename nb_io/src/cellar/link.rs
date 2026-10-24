@@ -163,6 +163,11 @@ fn dir_mode(top: &str, rel: &str) -> DirMode {
     }
 }
 
+/// `share/man` and the directories in it.
+fn is_man_dir(top: &str, rel: &str) -> bool {
+    top == "share" && (rel == "man" || rel.starts_with("man/"))
+}
+
 /// Files Homebrew leaves out of the prefix: generated caches that every keg
 /// ships its own copy of.
 fn is_skipped_file(top: &str, rel: &str) -> bool {
@@ -670,6 +675,19 @@ impl Linker {
                     continue;
                 }
 
+                // A man directory no other keg uses yet is linked whole,
+                // saving a link per page (6529 for openssl@3); a keg linked
+                // into it later expands it like any directory link.
+                if dst_meta.is_none() && is_man_dir(top, &entry_rel) {
+                    std::os::unix::fs::symlink(&src_path, &dst_path)
+                        .map_err(Error::store("failed to create symlink"))?;
+                    linked.push(LinkedFile {
+                        link_path: dst_path,
+                        target_path: src_path,
+                    });
+                    continue;
+                }
+
                 if dst_is_dir || mode == DirMode::Mkpath {
                     linked.extend(Self::link_recursive(
                         &src_path, &dst_path, top, &entry_rel, overwrite,
@@ -1066,16 +1084,16 @@ mod tests {
         linker.link_keg(&keg).unwrap();
 
         let prefix = tmp.path();
-        // Whole directories.
+        // Whole directories; nextbrew links an unused man directory whole too.
         assert!(prefix.join("include/lzma").is_symlink());
         assert!(prefix.join("share/doc/xz").is_symlink());
+        assert!(prefix.join("share/man").is_symlink());
         assert!(prefix.join("include/lzma/base.h").exists());
         // Shared directories are real, with their files linked.
         for dir in [
             "include",
             "lib/pkgconfig",
             "share/doc",
-            "share/man/man1",
             "share/locale/de",
             "etc/xz",
         ] {
@@ -1088,7 +1106,7 @@ mod tests {
         }
         assert!(prefix.join("include/lzma.h").is_symlink());
         assert!(prefix.join("lib/pkgconfig/liblzma.pc").is_symlink());
-        assert!(prefix.join("share/man/man1/xz.1").is_symlink());
+        assert!(prefix.join("share/man/man1/xz.1").exists());
         assert!(prefix.join("etc/xz/xz.conf").is_symlink());
         assert!(
             prefix
@@ -1569,6 +1587,34 @@ mod tests {
                 "{link} must point at 2.0.0, got {target}"
             );
         }
+    }
+
+    #[test]
+    fn a_second_keg_expands_a_whole_man_directory_link() {
+        let tmp = TempDir::new().unwrap();
+        let prefix = tmp.path();
+        let linker = Linker::new(prefix).unwrap();
+        let mut kegs = Vec::new();
+        for name in ["a", "b"] {
+            let keg = prefix.join(format!("cellar/{name}/1.0"));
+            fs::create_dir_all(keg.join("share/man/man1")).unwrap();
+            fs::write(keg.join(format!("share/man/man1/{name}.1")), name).unwrap();
+            linker.link_keg(&keg).unwrap();
+            kegs.push(keg);
+        }
+
+        for dir in ["share/man", "share/man/man1"] {
+            assert!(!prefix.join(dir).is_symlink(), "{dir} should be real");
+        }
+        for page in ["a", "b"] {
+            assert!(prefix.join(format!("share/man/man1/{page}.1")).is_symlink());
+        }
+
+        linker.unlink_keg(&kegs[1]).unwrap();
+        assert!(prefix.join("share/man/man1/a.1").exists());
+        assert!(!prefix.join("share/man/man1/b.1").exists());
+        linker.unlink_keg(&kegs[0]).unwrap();
+        assert!(!prefix.join("share/man/man1/a.1").exists());
     }
 
     #[test]
