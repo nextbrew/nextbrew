@@ -150,7 +150,9 @@ impl Store {
         let tmp_dir = tempfile::tempdir_in(&self.store_dir)
             .map_err(Error::store("failed to create temp directory"))?;
         unpack(tmp_dir.path())?;
+        nb_core::timing::mark(format_args!("{store_key}: unpacked"));
         prepare(tmp_dir.path())?;
+        nb_core::timing::mark(format_args!("{store_key}: prepared"));
         Ok(StagedEntry {
             store: self.clone(),
             store_key: store_key.to_string(),

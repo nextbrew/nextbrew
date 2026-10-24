@@ -473,6 +473,11 @@ pub fn relocate_keg(
         }
     }
 
+    nb_core::timing::mark(format_args!(
+        "{pkg_name}: walked {} binaries, {} texts",
+        binaries.len(),
+        texts.len()
+    ));
     let (changed, failures): (Vec<_>, Vec<_>) = binaries
         .par_iter()
         .map(|path| relocate_binary(path, &relocation))
@@ -490,7 +495,12 @@ pub fn relocate_keg(
         .filter(|(_, sign)| *sign)
         .map(|(writable, _)| writable.path.as_path())
         .collect();
+    nb_core::timing::mark(format_args!(
+        "{pkg_name}: patched {} binaries",
+        changed.len()
+    ));
     sign(&to_sign);
+    nb_core::timing::mark(format_args!("{pkg_name}: signed {}", to_sign.len()));
     for (writable, _) in &changed {
         writable.restore()?;
     }
@@ -511,6 +521,7 @@ pub fn relocate_keg(
             warn!(path = %path.display(), error = %e, "failed to patch text file");
         }
     });
+    nb_core::timing::mark(format_args!("{pkg_name}: texts rewritten"));
 
     Ok(())
 }

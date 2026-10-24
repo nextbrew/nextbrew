@@ -295,6 +295,12 @@ impl Installer {
         let mut ahead = Vec::new();
 
         if !bottle_items.is_empty() {
+            if bottle_items.iter().any(|item| match &item.method {
+                InstallMethod::Bottle(bottle) => !self.store.has_entry(&bottle.sha256),
+                _ => false,
+            }) {
+                crate::network::tls::preload_roots();
+            }
             let requests: Vec<DownloadRequest> = bottle_items
                 .iter()
                 .enumerate()

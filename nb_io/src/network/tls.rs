@@ -33,10 +33,7 @@ fn build_rustls_config() -> rustls::ClientConfig {
         // reqwest's system-root TLS, which would reintroduce the sandbox CA-cert panic.
         .expect("aws-lc-rs provider supports TLS 1.2 and 1.3")
         .dangerous()
-        .with_custom_certificate_verifier(Arc::new(LazyRoots {
-            provider,
-            verifier: OnceLock::new(),
-        }))
+        .with_custom_certificate_verifier(Arc::new(LazyRoots { provider }))
         .with_no_client_auth();
     // reqwest only negotiates HTTP/2 when the TLS config it is handed offers
     // it; without this every connection is HTTP/1.1 and nothing multiplexes.
@@ -50,20 +47,30 @@ fn build_rustls_config() -> rustls::ClientConfig {
 #[derive(Debug)]
 struct LazyRoots {
     provider: Arc<CryptoProvider>,
-    verifier: OnceLock<Arc<WebPkiServerVerifier>>,
 }
+
+static ROOTS: OnceLock<Arc<WebPkiServerVerifier>> = OnceLock::new();
 
 impl LazyRoots {
     fn verifier(&self) -> &WebPkiServerVerifier {
-        self.verifier.get_or_init(|| {
-            WebPkiServerVerifier::builder_with_provider(
-                Arc::new(native_root_store()),
-                self.provider.clone(),
-            )
+        roots(&self.provider)
+    }
+}
+
+fn roots(provider: &Arc<CryptoProvider>) -> &'static WebPkiServerVerifier {
+    ROOTS.get_or_init(|| {
+        WebPkiServerVerifier::builder_with_provider(Arc::new(native_root_store()), provider.clone())
             .build()
             .expect("the root store is never empty")
-        })
-    }
+    })
+}
+
+/// Start reading the system roots in the background, for a command about
+/// to download: the first handshake then waits for less of it.
+pub(crate) fn preload_roots() {
+    std::thread::spawn(|| {
+        roots(&Arc::new(rustls::crypto::aws_lc_rs::default_provider()));
+    });
 }
 
 impl ServerCertVerifier for LazyRoots {

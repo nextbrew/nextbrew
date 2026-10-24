@@ -4,6 +4,7 @@ use std::ops::ControlFlow;
 use std::path::{Component, Path, PathBuf};
 
 use nb_core::{ConflictedLink, Error};
+use rayon::prelude::*;
 
 /// Keg directories linked into the prefix. Like Homebrew, `libexec` is not
 /// linked: it holds files private to a keg, like the Python formulae's
@@ -582,6 +583,7 @@ impl Linker {
         overwrite: bool,
     ) -> Result<Vec<LinkedFile>, Error> {
         let mut linked = Vec::new();
+        let mut files = Vec::new();
         // A directory made here is empty, so nothing in it needs checking.
         let created = !dst.exists();
         if created {
@@ -686,67 +688,71 @@ impl Linker {
                 continue;
             }
 
-            // Most links go where nothing is yet, so look only when
-            // something turns out to be.
-            #[cfg(unix)]
-            match std::os::unix::fs::symlink(&src_path, &dst_path) {
-                Ok(()) => {
-                    linked.push(LinkedFile {
-                        link_path: dst_path,
-                        target_path: src_path,
-                    });
-                    continue;
+            files.push((src_path, dst_path));
+        }
+
+        // Most links go where nothing is yet, so make them all, several at
+        // a time, and look only where something turns out to be.
+        let made: Vec<_> = files
+            .into_par_iter()
+            .map(|(src_path, dst_path)| {
+                let made = std::os::unix::fs::symlink(&src_path, &dst_path);
+                (made, src_path, dst_path)
+            })
+            .collect();
+        for (made, src_path, dst_path) in made {
+            match made {
+                Ok(()) => {}
+                Err(e) if e.kind() == io::ErrorKind::AlreadyExists && !created => {
+                    Self::link_over(&src_path, &dst_path, overwrite)?;
                 }
-                Err(e) if e.kind() == io::ErrorKind::AlreadyExists && !created => {}
                 Err(e) => return Err(Error::store("failed to create symlink")(e)),
             }
-
-            if let Ok(target) = fs::read_link(&dst_path) {
-                let resolved = if target.is_relative() {
-                    dst_path.parent().unwrap_or(Path::new("")).join(&target)
-                } else {
-                    target
-                };
-                if same_file(&resolved, &src_path) {
-                    if resolved.exists() {
-                        linked.push(LinkedFile {
-                            link_path: dst_path,
-                            target_path: src_path,
-                        });
-                        continue;
-                    } else {
-                        let _ = fs::remove_file(&dst_path);
-                    }
-                } else if can_replace_existing_link(&src_path, &dst_path)
-                    || (overwrite && remove_in_the_way(&dst_path))
-                {
-                    let _ = fs::remove_file(&dst_path);
-                } else {
-                    return Err(Error::LinkConflict {
-                        conflicts: vec![ConflictedLink {
-                            path: dst_path.clone(),
-                            owned_by: keg_name_from_symlink(&dst_path),
-                        }],
-                    });
-                }
-            } else if !(overwrite && remove_in_the_way(&dst_path)) {
-                return Err(Error::LinkConflict {
-                    conflicts: vec![ConflictedLink {
-                        path: dst_path,
-                        owned_by: None,
-                    }],
-                });
-            }
-
-            #[cfg(unix)]
-            std::os::unix::fs::symlink(&src_path, &dst_path)
-                .map_err(Error::store("failed to create symlink"))?;
             linked.push(LinkedFile {
                 link_path: dst_path,
                 target_path: src_path,
             });
         }
         Ok(linked)
+    }
+
+    /// Link `src` at `dst`, where something already is: a link to it
+    /// already, one that can be replaced, or a conflict.
+    fn link_over(src_path: &Path, dst_path: &Path, overwrite: bool) -> Result<(), Error> {
+        if let Ok(target) = fs::read_link(dst_path) {
+            let resolved = if target.is_relative() {
+                dst_path.parent().unwrap_or(Path::new("")).join(&target)
+            } else {
+                target
+            };
+            if same_file(&resolved, src_path) {
+                if resolved.exists() {
+                    return Ok(());
+                }
+                let _ = fs::remove_file(dst_path);
+            } else if can_replace_existing_link(src_path, dst_path)
+                || (overwrite && remove_in_the_way(dst_path))
+            {
+                let _ = fs::remove_file(dst_path);
+            } else {
+                return Err(Error::LinkConflict {
+                    conflicts: vec![ConflictedLink {
+                        path: dst_path.to_path_buf(),
+                        owned_by: keg_name_from_symlink(dst_path),
+                    }],
+                });
+            }
+        } else if !(overwrite && remove_in_the_way(dst_path)) {
+            return Err(Error::LinkConflict {
+                conflicts: vec![ConflictedLink {
+                    path: dst_path.to_path_buf(),
+                    owned_by: None,
+                }],
+            });
+        }
+
+        std::os::unix::fs::symlink(src_path, dst_path)
+            .map_err(Error::store("failed to create symlink"))
     }
 
     pub fn unlink_keg(&self, keg_path: &Path) -> Result<Vec<PathBuf>, Error> {
