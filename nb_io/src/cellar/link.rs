@@ -1,5 +1,6 @@
 use std::fs;
 use std::io;
+use std::ops::ControlFlow;
 use std::path::{Component, Path, PathBuf};
 
 use nb_core::{ConflictedLink, Error};
@@ -222,6 +223,12 @@ fn resolve_link_target(dst: &Path) -> Option<PathBuf> {
     })
 }
 
+/// Whether a link's target is `src`: the path nextbrew writes, or one
+/// that resolves to the same file.
+fn same_file(target: &Path, src: &Path) -> bool {
+    target == src || fs::canonicalize(target).ok() == fs::canonicalize(src).ok()
+}
+
 fn keg_name_from_symlink(dst: &Path) -> Option<String> {
     let resolved = resolve_link_target(dst)?;
     match fs::canonicalize(&resolved) {
@@ -305,6 +312,10 @@ impl Linker {
         rel: &str,
         conflicts: &mut Vec<ConflictedLink>,
     ) {
+        // Nothing can be in the way below a directory the prefix lacks.
+        if dst.symlink_metadata().is_err() {
+            return;
+        }
         let entries = match fs::read_dir(src) {
             Ok(e) => e,
             Err(_) => return,
@@ -320,9 +331,13 @@ impl Linker {
                 format!("{rel}/{}", file_name.to_string_lossy())
             };
 
-            // Use src_path.is_dir() which follows symlinks, so that keg entries
-            // like `man -> ../gnuman` (symlinks to directories) are treated as dirs.
-            if src_path.is_dir() {
+            // Follow symlinks, so that keg entries like `man -> ../gnuman`
+            // (symlinks to directories) are treated as dirs.
+            let is_dir = match entry.file_type() {
+                Ok(t) if !t.is_symlink() => t.is_dir(),
+                _ => src_path.is_dir(),
+            };
+            if is_dir {
                 if dir_mode(top, &entry_rel) == DirMode::Skip {
                     continue;
                 }
@@ -365,7 +380,7 @@ impl Linker {
                     } else {
                         target
                     };
-                    if fs::canonicalize(&resolved).ok() == fs::canonicalize(&src_path).ok() {
+                    if same_file(&resolved, &src_path) {
                         continue;
                     }
                     if can_replace_existing_link(&src_path, &dst_path) {
@@ -375,11 +390,6 @@ impl Linker {
                 conflicts.push(ConflictedLink {
                     path: dst_path.clone(),
                     owned_by: keg_name_from_symlink(&dst_path),
-                });
-            } else if dst_path.exists() {
-                conflicts.push(ConflictedLink {
-                    path: dst_path,
-                    owned_by: None,
                 });
             }
         }
@@ -572,7 +582,9 @@ impl Linker {
         overwrite: bool,
     ) -> Result<Vec<LinkedFile>, Error> {
         let mut linked = Vec::new();
-        if !dst.exists() {
+        // A directory made here is empty, so nothing in it needs checking.
+        let created = !dst.exists();
+        if created {
             fs::create_dir_all(dst).map_err(Error::store("failed to create directory"))?;
         }
 
@@ -588,15 +600,27 @@ impl Linker {
                 format!("{rel}/{}", file_name.to_string_lossy())
             };
 
-            // Use src_path.is_dir() which follows symlinks, so that keg entries
-            // like `man -> ../gnuman` (symlinks to directories) can be merged
-            // into a directory the prefix already has.
-            if src_path.is_dir() {
+            // Follow symlinks, so that keg entries like `man -> ../gnuman`
+            // (symlinks to directories) can be merged into a directory the
+            // prefix already has. Other entries' type comes with read_dir.
+            let file_type = entry
+                .file_type()
+                .map_err(Error::store("failed to read directory entry"))?;
+            let is_dir = if file_type.is_symlink() {
+                src_path.is_dir()
+            } else {
+                file_type.is_dir()
+            };
+            if is_dir {
                 let mode = dir_mode(top, &entry_rel);
                 if mode == DirMode::Skip {
                     continue;
                 }
-                let dst_meta = dst_path.symlink_metadata().ok();
+                let dst_meta = if created {
+                    None
+                } else {
+                    dst_path.symlink_metadata().ok()
+                };
                 let dst_is_symlink = dst_meta
                     .as_ref()
                     .is_some_and(|m| m.file_type().is_symlink());
@@ -662,44 +686,50 @@ impl Linker {
                 continue;
             }
 
-            if dst_path.symlink_metadata().is_ok() {
-                if let Ok(target) = fs::read_link(&dst_path) {
-                    let resolved = if target.is_relative() {
-                        dst_path.parent().unwrap_or(Path::new("")).join(&target)
-                    } else {
-                        target
-                    };
-                    if fs::canonicalize(&resolved).ok() == fs::canonicalize(&src_path).ok() {
-                        if resolved.exists() {
-                            linked.push(LinkedFile {
-                                link_path: dst_path,
-                                target_path: src_path,
-                            });
-                            continue;
-                        } else {
-                            let _ = fs::remove_file(&dst_path);
-                        }
-                    } else if can_replace_existing_link(&src_path, &dst_path)
-                        || (overwrite && remove_in_the_way(&dst_path))
-                    {
-                        let _ = fs::remove_file(&dst_path);
-                    } else {
-                        return Err(Error::LinkConflict {
-                            conflicts: vec![ConflictedLink {
-                                path: dst_path.clone(),
-                                owned_by: keg_name_from_symlink(&dst_path),
-                            }],
+            // Most links go where nothing is yet, so look only when
+            // something turns out to be.
+            #[cfg(unix)]
+            match std::os::unix::fs::symlink(&src_path, &dst_path) {
+                Ok(()) => {
+                    linked.push(LinkedFile {
+                        link_path: dst_path,
+                        target_path: src_path,
+                    });
+                    continue;
+                }
+                Err(e) if e.kind() == io::ErrorKind::AlreadyExists && !created => {}
+                Err(e) => return Err(Error::store("failed to create symlink")(e)),
+            }
+
+            if let Ok(target) = fs::read_link(&dst_path) {
+                let resolved = if target.is_relative() {
+                    dst_path.parent().unwrap_or(Path::new("")).join(&target)
+                } else {
+                    target
+                };
+                if same_file(&resolved, &src_path) {
+                    if resolved.exists() {
+                        linked.push(LinkedFile {
+                            link_path: dst_path,
+                            target_path: src_path,
                         });
+                        continue;
+                    } else {
+                        let _ = fs::remove_file(&dst_path);
                     }
-                } else if !(overwrite && remove_in_the_way(&dst_path)) {
+                } else if can_replace_existing_link(&src_path, &dst_path)
+                    || (overwrite && remove_in_the_way(&dst_path))
+                {
+                    let _ = fs::remove_file(&dst_path);
+                } else {
                     return Err(Error::LinkConflict {
                         conflicts: vec![ConflictedLink {
-                            path: dst_path,
-                            owned_by: None,
+                            path: dst_path.clone(),
+                            owned_by: keg_name_from_symlink(&dst_path),
                         }],
                     });
                 }
-            } else if dst_path.exists() {
+            } else if !(overwrite && remove_in_the_way(&dst_path)) {
                 return Err(Error::LinkConflict {
                     conflicts: vec![ConflictedLink {
                         path: dst_path,
@@ -740,14 +770,35 @@ impl Linker {
 
     pub fn collect_linked_files(&self, keg_path: &Path) -> Result<Vec<LinkedFile>, Error> {
         let mut linked = Vec::new();
+        let _ = self.visit_linked(keg_path, &mut |file| {
+            linked.push(file);
+            ControlFlow::Continue(())
+        })?;
+        Ok(linked)
+    }
+
+    /// Whether any of the keg's files is linked, without finding them all.
+    pub fn has_linked_files(&self, keg_path: &Path) -> Result<bool, Error> {
+        Ok(self
+            .visit_linked(keg_path, &mut |_| ControlFlow::Break(()))?
+            .is_break())
+    }
+
+    fn visit_linked(
+        &self,
+        keg_path: &Path,
+        visit: &mut impl FnMut(LinkedFile) -> ControlFlow<()>,
+    ) -> Result<ControlFlow<()>, Error> {
         for dir_name in LINK_DIRS.iter().chain(LEGACY_LINK_DIRS) {
             let src_dir = keg_path.join(dir_name);
             let dst_dir = self.prefix.join(dir_name);
-            if src_dir.exists() {
-                linked.extend(Self::collect_linked_recursive(&src_dir, &dst_dir)?);
+            if src_dir.exists()
+                && Self::visit_linked_recursive(&src_dir, &dst_dir, visit)?.is_break()
+            {
+                return Ok(ControlFlow::Break(()));
             }
         }
-        Ok(linked)
+        Ok(ControlFlow::Continue(()))
     }
 
     fn unlink_recursive(src: &Path, dst: &Path) -> Result<Vec<PathBuf>, Error> {
@@ -776,7 +827,7 @@ impl Linker {
                 } else {
                     target
                 };
-                if fs::canonicalize(&resolved).ok() == fs::canonicalize(&src_path).ok() {
+                if same_file(&resolved, &src_path) {
                     let _ = fs::remove_file(&dst_path);
                     unlinked.push(dst_path);
                 }
@@ -785,10 +836,13 @@ impl Linker {
         Ok(unlinked)
     }
 
-    fn collect_linked_recursive(src: &Path, dst: &Path) -> Result<Vec<LinkedFile>, Error> {
-        let mut linked = Vec::new();
+    fn visit_linked_recursive(
+        src: &Path,
+        dst: &Path,
+        visit: &mut impl FnMut(LinkedFile) -> ControlFlow<()>,
+    ) -> Result<ControlFlow<()>, Error> {
         if !src.exists() || !dst.exists() {
-            return Ok(linked);
+            return Ok(ControlFlow::Continue(()));
         }
         for entry in fs::read_dir(src).map_err(Error::store("failed to read directory"))? {
             let entry = entry.map_err(Error::store("failed to read directory entry"))?;
@@ -798,7 +852,9 @@ impl Linker {
             let dst_path = dst.join(file_name);
 
             if src_path.is_dir() && dst_path.is_dir() && !dst_path.is_symlink() {
-                linked.extend(Self::collect_linked_recursive(&src_path, &dst_path)?);
+                if Self::visit_linked_recursive(&src_path, &dst_path, visit)?.is_break() {
+                    return Ok(ControlFlow::Break(()));
+                }
                 continue;
             }
 
@@ -808,15 +864,18 @@ impl Linker {
                 } else {
                     target
                 };
-                if fs::canonicalize(&resolved).ok() == fs::canonicalize(&src_path).ok() {
-                    linked.push(LinkedFile {
+                if same_file(&resolved, &src_path)
+                    && visit(LinkedFile {
                         link_path: dst_path,
                         target_path: src_path,
-                    });
+                    })
+                    .is_break()
+                {
+                    return Ok(ControlFlow::Break(()));
                 }
             }
         }
-        Ok(linked)
+        Ok(ControlFlow::Continue(()))
     }
 
     /// Remove every `opt/` entry that points at this keg: its own name and

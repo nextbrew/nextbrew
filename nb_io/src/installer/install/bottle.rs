@@ -19,13 +19,12 @@ use super::cask_app::{app_dir, is_dmg, remove_cask_apps, stage_cask};
 use super::{Installer, MAX_CORRUPTION_RETRIES, PlannedInstall};
 
 impl Installer {
-    /// Clone a prepared store entry into the Cellar, record it, and link it.
-    /// Runs on the install task, one bottle at a time, once
-    /// [`prepare_bottle`] has produced the entry.
+    /// Record a keg [`prepare_bottle`] has put in the Cellar, and link it.
+    /// Runs on the install task, one bottle at a time.
     pub(super) fn finish_bottle_item(
         &mut self,
         item: &PlannedInstall,
-        store_entry: &Path,
+        keg_path: &Path,
         link: bool,
         report: &impl Fn(InstallProgress),
     ) -> Result<(), Error> {
@@ -37,10 +36,7 @@ impl Installer {
         let version = item.formula.effective_version();
         let store_key = &bottle.sha256;
 
-        let keg_path = self
-            .cellar
-            .materialize(formula_name, &version, store_entry)?;
-        nb_core::timing::mark(format_args!("{formula_name}: materialized"));
+        let keg_path = keg_path.to_path_buf();
 
         // Before recording the install, so a failure doesn't leave the
         // package marked installed without its config files.
@@ -495,9 +491,10 @@ pub(super) fn stream_into_store(store: &Store, cellar: &Cellar, job: BottleJob) 
     }
 }
 
-/// Unpack and relocate a downloaded bottle into the store. The blocking
-/// work runs off the async runtime, so several bottles can be prepared at
-/// once while others are still downloading. A blob that turns out corrupt
+/// Unpack and relocate a downloaded bottle into the store, and clone it
+/// into the Cellar; returns the keg. The blocking work runs off the async
+/// runtime, so several bottles can be prepared at once while others are
+/// still downloading or being linked. A blob that turns out corrupt
 /// is downloaded again, up to [`MAX_CORRUPTION_RETRIES`] times.
 pub(super) async fn prepare_bottle(
     store: Store,
@@ -511,7 +508,7 @@ pub(super) async fn prepare_bottle(
     let mut last_error = None;
 
     for attempt in 0..MAX_CORRUPTION_RETRIES {
-        let (store, cellar, job_for_task, fingerprint, blob) = (
+        let (store, task_cellar, job_for_task, fingerprint, blob) = (
             store.clone(),
             cellar.clone(),
             job.clone(),
@@ -521,7 +518,7 @@ pub(super) async fn prepare_bottle(
         let outcome = tokio::task::spawn_blocking(move || {
             let job = job_for_task;
             store.ensure_entry(&job.sha256, &blob, &fingerprint, |extracted| {
-                cellar
+                task_cellar
                     .relocate_extracted(
                         extracted,
                         &job.formula_name,
@@ -537,7 +534,18 @@ pub(super) async fn prepare_bottle(
         })?;
 
         match outcome {
-            Ok(entry) => return Ok(entry),
+            Ok(entry) => {
+                let (cellar, job) = (cellar.clone(), job.clone());
+                return tokio::task::spawn_blocking(move || {
+                    let keg = cellar.materialize(&job.formula_name, &job.version, &entry);
+                    nb_core::timing::mark(format_args!("{}: materialized", job.formula_name));
+                    keg
+                })
+                .await
+                .map_err(|e| Error::ExecutionError {
+                    message: format!("bottle preparation task failed: {e}"),
+                })?;
+            }
             Err(Error::StoreCorruption { message }) => {
                 downloader.remove_blob(&job.sha256);
 

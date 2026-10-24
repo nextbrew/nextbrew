@@ -319,10 +319,10 @@ impl Installer {
                 .downloader
                 .download_streaming(requests, download_progress.clone());
 
-            // Bottles are unpacked and relocated as they arrive, several at
-            // a time, while the rest are still downloading. Only the final
-            // step (clone into the Cellar, record, link) runs here, one
-            // bottle at a time.
+            // Bottles are unpacked, relocated and cloned into the Cellar as
+            // they arrive, several at a time, while the rest are still
+            // downloading. Only recording and linking runs here, one bottle
+            // at a time.
             let prepare_limit = Arc::new(Semaphore::new(ConcurrencyLimits::default().materialize));
             let mut preparing = FuturesUnordered::new();
             let mut downloads_open = true;
@@ -359,8 +359,8 @@ impl Installer {
                         }
                     },
                     Some(joined) = preparing.next() => match joined {
-                        Ok((index, Ok(entry))) => {
-                            match self.finish_bottle_item(&bottle_items[index], &entry, link, &report) {
+                        Ok((index, Ok(keg))) => {
+                            match self.finish_bottle_item(&bottle_items[index], &keg, link, &report) {
                                 Ok(()) => {
                                     installed += 1;
                                     finished.push(&bottle_items[index]);

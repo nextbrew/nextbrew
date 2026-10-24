@@ -41,7 +41,7 @@ impl Installer {
         overwrite: bool,
     ) -> Result<LinkOutcome, Error> {
         let (keg, version) = self.formula_keg(name)?;
-        if !self.linker.collect_linked_files(&keg)?.is_empty() {
+        if self.linker.has_linked_files(&keg)? {
             return Ok(LinkOutcome::AlreadyLinked);
         }
         let formula = self.api_client.get_formula(name).await?;
@@ -77,7 +77,7 @@ impl Installer {
         overwrite: bool,
     ) -> Result<Option<LinkDryRun>, Error> {
         let (keg, _) = self.formula_keg(name)?;
-        if !self.linker.collect_linked_files(&keg)?.is_empty() {
+        if self.linker.has_linked_files(&keg)? {
             return Ok(None);
         }
         let formula = self.api_client.get_formula(name).await?;
@@ -236,7 +236,7 @@ impl Installer {
     /// Whether an installed formula's keg is linked into the prefix.
     pub fn is_linked(&self, name: &str) -> Result<bool, Error> {
         let (keg, _) = self.formula_keg(name)?;
-        Ok(!self.linker.collect_linked_files(&keg)?.is_empty())
+        self.linker.has_linked_files(&keg)
     }
 
     /// Whether a formula is keg-only here.
