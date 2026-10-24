@@ -1,6 +1,8 @@
+use std::collections::HashSet;
 use std::fs;
 use std::io;
 use std::ops::ControlFlow;
+use std::os::unix::ffi::OsStrExt;
 use std::path::{Component, Path, PathBuf};
 
 use nb_core::{ConflictedLink, Error};
@@ -313,16 +315,25 @@ impl Linker {
         rel: &str,
         conflicts: &mut Vec<ConflictedLink>,
     ) {
-        // Nothing can be in the way below a directory the prefix lacks.
-        if dst.symlink_metadata().is_err() {
+        // Nothing can be in the way below a directory the prefix lacks, or
+        // of a name it lacks. One listing saves a lookup per keg entry; names
+        // are compared without ASCII case, as APFS finds them.
+        let Ok(existing) = fs::read_dir(dst) else {
             return;
-        }
+        };
+        let existing: HashSet<Vec<u8>> = existing
+            .flatten()
+            .map(|e| e.file_name().as_bytes().to_ascii_lowercase())
+            .collect();
         let entries = match fs::read_dir(src) {
             Ok(e) => e,
             Err(_) => return,
         };
         for entry in entries.flatten() {
             let file_name = entry.file_name();
+            if !existing.contains(&file_name.as_bytes().to_ascii_lowercase()) {
+                continue;
+            }
 
             let src_path = entry.path();
             let dst_path = dst.join(&file_name);
