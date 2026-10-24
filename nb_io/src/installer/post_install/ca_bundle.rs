@@ -11,8 +11,9 @@
 //!
 //! On a miss, a script nextbrew knows (by its SHA-256, with the list of
 //! public keys it excludes taken out, so a new list is still known) is
-//! followed step by step: what it asks `openssl` is read from each certificate as LibreSSL
-//! would answer, `security verify-cert` still decides trust, the checks run
+//! followed step by step: what it asks `openssl` is read from each
+//! certificate as LibreSSL would answer, trust is decided by the
+//! Security.framework calls `security verify-cert` makes, the checks run
 //! concurrently and their results are taken in the script's order, so the
 //! bundle is the script's own bytes in a fraction of the time. Any other
 //! script, or anything unexpected, runs the script unchanged.
@@ -229,7 +230,6 @@ fn build(source: &Path, excluded: &[String]) -> Option<Vec<u8>> {
     use rayon::prelude::*;
     use std::collections::HashSet;
 
-    let work = tempfile::tempdir().ok()?;
     let now = chrono::Utc::now();
     let mut seen = HashSet::new();
     let mut bundle = Vec::new();
@@ -262,11 +262,7 @@ fn build(source: &Path, excluded: &[String]) -> Option<Vec<u8>> {
         let certificates = split_certificates(&pem.stdout);
         let facts = certificates
             .par_iter()
-            .enumerate()
-            .map(|(i, certificate)| {
-                let file = work.path().join(format!("{purpose}-{i}.pem"));
-                trusted(certificate, purpose, &file, now)
-            })
+            .map(|certificate| trusted(certificate, purpose, now))
             .collect();
         append(&certificates, facts);
     }
@@ -285,32 +281,50 @@ fn build(_source: &Path, _excluded: &[String]) -> Option<Vec<u8>> {
     None
 }
 
-/// `append_keychain`'s checks, then what is known of the certificate. What the script asks
-/// `openssl x509` (expiry, purpose, fingerprint) is read from the
-/// certificate here, the way LibreSSL answers it (see [`super::x509`]);
-/// the trust decision is still `security verify-cert`'s.
+/// `append_keychain`'s checks, then what is known of the certificate. What
+/// the script asks `openssl x509` (expiry, purpose, fingerprint) is read
+/// from the certificate here, the way LibreSSL answers it (see
+/// [`super::x509`]); the trust decision is [`verify_cert`]'s.
 #[cfg(target_os = "macos")]
 fn trusted(
     certificate: &[u8],
     purpose: &str,
-    file: &Path,
     now: chrono::DateTime<chrono::Utc>,
 ) -> Option<super::x509::Facts> {
     let facts = super::x509::inspect(certificate, now)?;
     if !facts.unexpired || !facts.ssl_server_ca {
         return None;
     }
-    fs::write(file, certificate).ok()?;
-    std::process::Command::new("/usr/bin/security")
-        .args(["verify-cert", "-l", "-L", "-c"])
-        .arg(file)
-        .args(["-p", purpose, "-R", "offline"])
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .status()
-        .ok()
-        .filter(|status| status.success())?;
-    Some(facts)
+    verify_cert(&super::x509::pem_body(certificate)?, purpose).then_some(facts)
+}
+
+/// `security verify-cert -l -L -c CERT -p PURPOSE -R offline`, without the
+/// process: the Security.framework calls that tool makes
+/// (SecurityTool/macOS/verify_cert.c), a trust over the certificate alone
+/// with the named policy and revocation checks kept off the network.
+#[cfg(target_os = "macos")]
+fn verify_cert(der: &[u8], purpose: &str) -> bool {
+    use security_framework::certificate::SecCertificate;
+    use security_framework::policy::{RevocationPolicy, SecPolicy};
+    use security_framework::secure_transport::SslProtocolSide;
+    use security_framework::trust::{SecTrust, TrustOptions};
+
+    let Ok(certificate) = SecCertificate::from_der(der) else {
+        return false;
+    };
+    let policy = match purpose {
+        "ssl" => SecPolicy::create_ssl(SslProtocolSide::SERVER, None),
+        _ => SecPolicy::create_x509(),
+    };
+    let Ok(revocation) = SecPolicy::create_revocation(RevocationPolicy::NETWORK_ACCESS_DISABLED)
+    else {
+        return false;
+    };
+    let Ok(mut trust) = SecTrust::create_with_certificates(&[certificate], &[policy, revocation])
+    else {
+        return false;
+    };
+    trust.set_options(TrustOptions::LEAF_IS_CA).is_ok() && trust.evaluate_with_error().is_ok()
 }
 
 #[cfg_attr(not(target_os = "macos"), allow(dead_code))]

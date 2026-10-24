@@ -43,7 +43,7 @@ pub(super) fn inspect(pem: &[u8], now: chrono::DateTime<chrono::Utc>) -> Option<
 }
 
 /// The DER inside the first `CERTIFICATE` block.
-fn pem_body(pem: &[u8]) -> Option<Vec<u8>> {
+pub(super) fn pem_body(pem: &[u8]) -> Option<Vec<u8>> {
     let text = std::str::from_utf8(pem).ok()?;
     let start = text.find("-----BEGIN CERTIFICATE-----")? + "-----BEGIN CERTIFICATE-----".len();
     let end = start + text[start..].find("-----END CERTIFICATE-----")?;
