@@ -541,7 +541,7 @@ pub struct CaskOptions {
     #[arg(
         long,
         value_name = "LANGUAGE",
-        help = "Not supported: casks install in their default language"
+        help = "Install casks in the first of these comma-separated languages they have (the system's by default)"
     )]
     pub language: Option<String>,
     #[arg(long, help = "Refuse a cask without a checksum")]
@@ -983,6 +983,14 @@ pub struct ExtensionFlags {
     pub uv: bool,
     #[arg(long, help = "Leave out uv tools")]
     pub no_uv: bool,
+    #[arg(long, help = "Include Flatpak packages (Linux only)")]
+    pub flatpak: bool,
+    #[arg(long, help = "Leave out Flatpak packages")]
+    pub no_flatpak: bool,
+    #[arg(long, help = "Include WinGet packages (WSL only)")]
+    pub winget: bool,
+    #[arg(long, help = "Leave out WinGet packages")]
+    pub no_winget: bool,
     #[arg(long, help = "Include Krew plugins")]
     pub krew: bool,
     #[arg(long, help = "Leave out Krew plugins")]
@@ -1002,6 +1010,8 @@ impl ExtensionFlags {
             "go" => (self.go, self.no_go),
             "cargo" => (self.cargo, self.no_cargo),
             "uv" => (self.uv, self.no_uv),
+            "flatpak" => (self.flatpak, self.no_flatpak),
+            "winget" => (self.winget, self.no_winget),
             "krew" => (self.krew, self.no_krew),
             "npm" => (self.npm, self.no_npm),
             _ => (false, false),
@@ -1010,6 +1020,14 @@ impl ExtensionFlags {
 
     /// Whether any extension was asked for by name.
     pub fn any(&self) -> bool {
-        self.mas || self.vscode || self.go || self.cargo || self.uv || self.krew || self.npm
+        self.mas
+            || self.vscode
+            || self.go
+            || self.cargo
+            || self.uv
+            || self.flatpak
+            || self.winget
+            || self.krew
+            || self.npm
     }
 }

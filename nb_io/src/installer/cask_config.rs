@@ -64,6 +64,9 @@ pub struct CaskConfig {
     /// `--no-binaries`: leave out the cask's `binary` artifacts.
     #[serde(default)]
     pub no_binaries: bool,
+    /// `--language`: the languages asked for, the most wanted first.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub languages: Vec<String>,
 }
 
 impl CaskConfig {
@@ -81,16 +84,14 @@ impl CaskConfig {
     }
 
     /// Read one switch or `--key=value` option as `brew install --cask`
-    /// takes it. `--language` is refused: nextbrew installs the cask's
-    /// default language only. An unknown switch is an error when `strict`
+    /// takes it. An unknown switch is an error when `strict`
     /// (a Brewfile's `args:`), and ignored otherwise (`$HOMEBREW_CASK_OPTS`
     /// may hold `brew install`'s own switches).
     pub fn apply_option(&mut self, option: &str, strict: bool) -> Result<(), Error> {
         match option.split_once('=') {
-            Some((key, _)) if key.trim_start_matches("--") == "language" => {
-                Err(Error::InvalidArgument {
-                    message: "`--language` is not supported by nextbrew".to_string(),
-                })
+            Some((key, value)) if key.trim_start_matches("--") == "language" => {
+                self.languages = value.split(',').map(str::to_string).collect();
+                Ok(())
             }
             Some((key, value)) => self.set_dir(key, value),
             None => {
@@ -129,7 +130,20 @@ impl CaskConfig {
         merged.dirs.extend(over.dirs.clone());
         merged.require_sha |= over.require_sha;
         merged.no_binaries |= over.no_binaries;
+        merged.languages = [over.languages.clone(), self.languages.clone()].concat();
+        merged.languages.dedup();
         merged
+    }
+
+    /// `Cask::Config#languages`: those asked for, then the system's.
+    pub fn languages(&self) -> Vec<String> {
+        let mut languages = self.languages.clone();
+        for language in system_languages() {
+            if !languages.contains(&language) {
+                languages.push(language);
+            }
+        }
+        languages
     }
 
     /// The Applications folder, if set.
@@ -185,6 +199,31 @@ impl CaskConfig {
         std::fs::write(keg.join(CONFIG_JSON), json)
             .map_err(Error::store("failed to save the cask config"))
     }
+}
+
+/// `MacOS.languages`: the user's `AppleLanguages`, else the system's.
+#[cfg(target_os = "macos")]
+fn system_languages() -> Vec<String> {
+    let read = |domain: &str| {
+        std::process::Command::new("defaults")
+            .args(["read", domain, "AppleLanguages"])
+            .output()
+            .map(|o| String::from_utf8_lossy(&o.stdout).into_owned())
+            .unwrap_or_default()
+    };
+    let mut text = read("-g");
+    if text.trim().is_empty() {
+        text = read("/Library/Preferences/.GlobalPreferences");
+    }
+    text.split([' ', '\n', '"', '(', ')', ','])
+        .filter(|s| !s.is_empty())
+        .map(str::to_string)
+        .collect()
+}
+
+#[cfg(not(target_os = "macos"))]
+fn system_languages() -> Vec<String> {
+    Vec::new()
 }
 
 /// `Pathname#expand_path`: `~` is the home folder, a relative path is taken
@@ -245,7 +284,8 @@ mod tests {
         }
         assert_eq!(config.appdir(), Some(Path::new("/tmp/Apps")));
         assert!(config.require_sha && !config.no_binaries);
-        assert!(config.apply_option("--language=ja", false).is_err());
+        config.apply_option("--language=ja,en-GB", false).unwrap();
+        assert_eq!(config.languages, ["ja", "en-GB"]);
         assert!(config.apply_option("--nonsense-dir=/x", false).is_err());
         // Homebrew dropped --no-quarantine; a Brewfile asking for it fails.
         assert!(config.apply_option("--no_quarantine", true).is_err());

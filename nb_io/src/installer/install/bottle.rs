@@ -12,7 +12,9 @@ use super::quarantine::{propagate, quarantine_download};
 use crate::cellar::link::Linker;
 use crate::cellar::materialize::Cellar;
 use crate::extraction::patch::RelocationFiles;
-use crate::installer::cask::{check_deprecate_disable, for_current_platform, resolve_cask};
+use crate::installer::cask::{
+    check_deprecate_disable, for_current_platform, localise, resolve_cask,
+};
 use crate::network::download::{
     BodyConsumer, Commit, DownloadProgressCallback, DownloadRequest, ParallelDownloader,
 };
@@ -204,7 +206,10 @@ impl Installer {
     /// not kept, so it is not fetched ahead. `name` may be `user/repo/token`
     /// for a cask from that tap, which must be tapped and trusted.
     pub async fn prepare_cask(&self, name: &str) -> Result<(), Error> {
-        let json = for_current_platform(&self.api_client.get_cask(name).await?);
+        let json = localise(
+            &for_current_platform(&self.api_client.get_cask(name).await?),
+            &self.cask_config.languages(),
+        );
         let token = json["token"]
             .as_str()
             .unwrap_or_else(|| name.rsplit('/').next().unwrap_or(name));
@@ -229,7 +234,10 @@ impl Installer {
     ) -> Result<String, Error> {
         // `user/repo/token` is read from that tap; the cask is installed
         // under its token, as Homebrew's Caskroom has it.
-        let cask_json = for_current_platform(&self.api_client.get_cask(name).await?);
+        let cask_json = localise(
+            &for_current_platform(&self.api_client.get_cask(name).await?),
+            &self.cask_config.languages(),
+        );
         let token = cask_json["token"]
             .as_str()
             .unwrap_or_else(|| name.rsplit('/').next().unwrap_or(name))

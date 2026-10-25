@@ -148,6 +148,79 @@ pub fn merge_variations(cask: &Value, tag: Option<&str>) -> Value {
     merged
 }
 
+/// Homebrew's `Locale`: language, script and region, any of them absent.
+type Locale<'a> = [Option<&'a str>; 3];
+
+/// `Locale.try_parse`: `ja`, `zh-Hant`, `pt-BR`, `es-419`, ….
+fn parse_locale(text: &str) -> Option<Locale<'_>> {
+    let lower = |p: &str| p.bytes().all(|b| b.is_ascii_lowercase());
+    let checks: [&dyn Fn(&str) -> bool; 3] = [
+        &|p| (2..=3).contains(&p.len()) && lower(p),
+        &|p| p.len() == 4 && p.as_bytes()[0].is_ascii_uppercase() && lower(&p[1..]),
+        &|p| {
+            (p.len() == 2 && p.bytes().all(|b| b.is_ascii_uppercase()))
+                || (p.len() == 3 && p.bytes().all(|b| b.is_ascii_digit()))
+        },
+    ];
+    let mut parts = text.split('-').peekable();
+    let mut locale = [None; 3];
+    for (slot, check) in checks.iter().enumerate() {
+        if parts.peek().is_some_and(|p| check(p)) {
+            locale[slot] = parts.next();
+        }
+    }
+    (parts.next().is_none() && locale.iter().any(Option::is_some)).then_some(locale)
+}
+
+/// `Locale#detect`: the first group naming `locale` exactly, else the
+/// first naming a locale that includes it (`ja` for `ja-JP`).
+fn detect(locale: &Locale, groups: &[Vec<&str>]) -> Option<usize> {
+    let matches = |other: &str, exact: bool| {
+        parse_locale(other)
+            .is_some_and(|o| (0..3).all(|i| (!exact && o[i].is_none()) || o[i] == locale[i]))
+    };
+    groups
+        .iter()
+        .position(|group| group.iter().any(|l| matches(l, true)))
+        .or_else(|| {
+            groups
+                .iter()
+                .position(|group| group.iter().any(|l| matches(l, false)))
+        })
+}
+
+/// `CaskStruct#localise`: the cask with the fields of the language
+/// variation the first of `languages` to have one picks, else the default's.
+pub fn localise(cask: &Value, languages: &[String]) -> Value {
+    let mut localised = cask.clone();
+    let Some(variations) = cask["language_variations"].as_array() else {
+        return localised;
+    };
+    let groups: Vec<Vec<&str>> = variations
+        .iter()
+        .map(|v| {
+            v["languages"]
+                .as_array()
+                .map(|l| l.iter().filter_map(Value::as_str).collect())
+                .unwrap_or_default()
+        })
+        .collect();
+    let chosen = languages
+        .iter()
+        .filter_map(|language| parse_locale(language))
+        .find_map(|locale| detect(&locale, &groups))
+        .map(|i| &variations[i])
+        .or_else(|| variations.iter().find(|v| v["default"] == true));
+    if let (Some(fields), Some(Value::Object(variation))) = (localised.as_object_mut(), chosen) {
+        for (key, value) in variation {
+            if !["languages", "default", "value"].contains(&key.as_str()) {
+                fields.insert(key.clone(), value.clone());
+            }
+        }
+    }
+    localised
+}
+
 /// [`merge_variations`] for the running system.
 pub fn for_current_platform(cask: &Value) -> Value {
     merge_variations(cask, nb_core::current_platform_tag().as_deref())
@@ -823,6 +896,28 @@ mod tests {
                 }
             }
         })
+    }
+
+    #[test]
+    fn localise_picks_the_variation_of_the_first_language_that_has_one() {
+        let cask = serde_json::json!({
+            "url": "en-US.dmg",
+            "language_variations": [
+                {"languages": ["en", "en-US"], "default": true, "value": "en-US", "url": "en-US.dmg"},
+                {"languages": ["en-GB"], "default": false, "value": "en-GB", "url": "en-GB.dmg"},
+                {"languages": ["ja"], "default": false, "value": "ja", "url": "ja.dmg"},
+            ]
+        });
+        let url = |languages: &[&str]| {
+            let languages: Vec<String> = languages.iter().map(|l| l.to_string()).collect();
+            localise(&cask, &languages)["url"].clone()
+        };
+        assert_eq!(url(&["ja-JP", "en-JP"]), "ja.dmg");
+        assert_eq!(url(&["en-GB"]), "en-GB.dmg");
+        assert_eq!(url(&["en-AU"]), "en-US.dmg");
+        assert_eq!(url(&["fr", "bogus_", "ja"]), "ja.dmg");
+        assert_eq!(url(&["fr"]), "en-US.dmg");
+        assert_eq!(localise(&cask, &[])["url"], "en-US.dmg");
     }
 
     #[test]
