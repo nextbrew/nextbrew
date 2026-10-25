@@ -1,3 +1,4 @@
+use crate::extraction::patch::RelocationFiles;
 use nb_core::Error;
 use std::fs;
 use std::io;
@@ -108,19 +109,28 @@ impl Cellar {
 
     /// Rewrite the bottle unpacked at `extracted_root` so it runs from this
     /// Cellar. `build_prefix` is the Homebrew prefix the bottle was built in;
-    /// see [`nb_core::SelectedBottle::build_prefix`]. Runs once per store
-    /// entry, before it is published.
+    /// see [`nb_core::SelectedBottle::build_prefix`]. `files` are the tab's
+    /// lists, when the registry gave them. Runs once per store entry, before
+    /// it is published.
     pub fn relocate_extracted(
         &self,
         extracted_root: &Path,
         name: &str,
         version: &str,
         build_prefix: &str,
+        files: Option<&RelocationFiles>,
     ) -> Result<(), Error> {
         let content = find_bottle_content(extracted_root, name, version)?;
 
         #[cfg(target_os = "macos")]
-        relocate_keg(&content, &self.cellar_dir, name, version, build_prefix)?;
+        relocate_keg(
+            &content,
+            &self.cellar_dir,
+            name,
+            version,
+            build_prefix,
+            files,
+        )?;
 
         #[cfg(target_os = "linux")]
         {
@@ -137,11 +147,11 @@ impl Cellar {
                         self.cellar_dir.display()
                     ),
                 })?;
-            patch_placeholders(&content, prefix, name, version)?;
+            patch_placeholders(&content, prefix, name, version, files)?;
         }
 
         #[cfg(not(any(target_os = "macos", target_os = "linux")))]
-        let _ = (content, build_prefix);
+        let _ = (content, build_prefix, files);
 
         Ok(())
     }
@@ -443,7 +453,7 @@ mod tests {
         .unwrap();
 
         cellar
-            .relocate_extracted(&extracted, "foo", "1.2.3", "/opt/homebrew")
+            .relocate_extracted(&extracted, "foo", "1.2.3", "/opt/homebrew", None)
             .unwrap();
 
         assert_eq!(

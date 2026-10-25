@@ -9,7 +9,7 @@ use nb_core::Error;
 use rayon::prelude::*;
 use tracing::warn;
 
-use super::text;
+use super::{RelocationFiles, in_keg, text};
 
 const LINUX_HOMEBREW_PREFIX: &str = "/home/linuxbrew/.linuxbrew";
 
@@ -20,11 +20,34 @@ pub fn patch_placeholders(
     prefix_dir: &Path,
     _pkg_name: &str,
     _pkg_version: &str,
+    files: Option<&RelocationFiles>,
 ) -> Result<(), Error> {
+    // The interpreter of every ELF file is set, placeholder or not, so that
+    // walk stays; the tab's lists spare the other two.
     patch_elf_placeholders(keg_path, prefix_dir)?;
-    patch_text_placeholders(keg_path, prefix_dir)?;
-    patch_binary_prefixes(keg_path, prefix_dir);
+    let (texts, binaries) = match files {
+        Some(files) => (
+            in_keg(keg_path, &files.text),
+            in_keg(keg_path, &files.binary),
+        ),
+        None => {
+            let all = regular_files(keg_path);
+            (all.clone(), all)
+        }
+    };
+    patch_text_placeholders(&texts, prefix_dir);
+    patch_binary_prefixes(&binaries, prefix_dir);
     Ok(())
+}
+
+fn regular_files(keg_path: &Path) -> Vec<PathBuf> {
+    walkdir::WalkDir::new(keg_path)
+        .follow_links(false)
+        .into_iter()
+        .filter_map(|e| e.ok())
+        .filter(|e| e.file_type().is_file())
+        .map(|e| e.into_path())
+        .collect()
 }
 
 fn rewrite_homebrew_prefixes(input: &str, prefix_dir: &Path) -> String {
@@ -319,7 +342,7 @@ fn patch_elf_placeholders(keg_path: &Path, prefix_dir: &Path) -> Result<(), Erro
 }
 
 /// Patch text files containing @@HOMEBREW_...@@ placeholders
-fn patch_text_placeholders(keg_path: &Path, prefix_dir: &Path) -> Result<(), Error> {
+fn patch_text_placeholders(files: &[PathBuf], prefix_dir: &Path) {
     let prefix_str = prefix_dir.to_string_lossy().into_owned();
     let cellar_str = prefix_dir.join("Cellar").to_string_lossy().into_owned();
     let library_str = format!("{prefix_str}/Library");
@@ -333,14 +356,6 @@ fn patch_text_placeholders(keg_path: &Path, prefix_dir: &Path) -> Result<(), Err
         ("@@HOMEBREW_JAVA@@", "/usr/bin/java"),
     ];
 
-    let files: Vec<PathBuf> = walkdir::WalkDir::new(keg_path)
-        .follow_links(false)
-        .into_iter()
-        .filter_map(|e| e.ok())
-        .filter(|e| e.file_type().is_file())
-        .map(|e| e.path().to_path_buf())
-        .collect();
-
     files.par_iter().for_each(|path| {
         if let Err(e) = text::rewrite_text_file(path, &replacements) {
             warn!(
@@ -350,27 +365,18 @@ fn patch_text_placeholders(keg_path: &Path, prefix_dir: &Path) -> Result<(), Err
             );
         }
     });
-
-    Ok(())
 }
 
 /// Rewrite the Linux Homebrew prefix in place in binary files, static ELF
 /// executables included: bottles pinned to its Cellar hardcode it. The
 /// planner does not pour those into a longer prefix, so only a relocatable
 /// bottle's stray reference can be left behind.
-fn patch_binary_prefixes(keg_path: &Path, prefix_dir: &Path) {
+fn patch_binary_prefixes(files: &[PathBuf], prefix_dir: &Path) {
     let old = LINUX_HOMEBREW_PREFIX.as_bytes();
     let new = prefix_dir.as_os_str().as_encoded_bytes();
     if old == new {
         return;
     }
-    let files: Vec<PathBuf> = walkdir::WalkDir::new(keg_path)
-        .follow_links(false)
-        .into_iter()
-        .filter_map(|e| e.ok())
-        .filter(|e| e.file_type().is_file())
-        .map(|e| e.into_path())
-        .collect();
     files.par_iter().for_each(|path| {
         let result = (|| -> std::io::Result<()> {
             if !text::is_binary(path)? {
@@ -437,7 +443,7 @@ mod tests {
         let data = b"\x7fELF\0/home/linuxbrew/.linuxbrew/Cellar/glibc/2.39/share/i18n\0".to_vec();
         fs::write(keg.join("localedef"), &data).unwrap();
 
-        patch_binary_prefixes(&keg, Path::new("/opt/nb"));
+        patch_binary_prefixes(&regular_files(&keg), Path::new("/opt/nb"));
         let patched = fs::read(keg.join("localedef")).unwrap();
         assert_eq!(patched.len(), data.len());
         assert!(patched.starts_with(b"\x7fELF\0/opt/nb////////////////////Cellar/glibc/"));
@@ -445,7 +451,7 @@ mod tests {
         // A longer prefix is left alone.
         fs::write(keg.join("localedef"), &data).unwrap();
         patch_binary_prefixes(
-            &keg,
+            &regular_files(&keg),
             Path::new("/home/someone/.local/share/nextbrew/prefix"),
         );
         assert_eq!(fs::read(keg.join("localedef")).unwrap(), data);
@@ -488,7 +494,7 @@ mod tests {
         )
         .unwrap();
 
-        let result = patch_placeholders(&pkg_dir, &prefix, "testpkg", "1.0.0");
+        let result = patch_placeholders(&pkg_dir, &prefix, "testpkg", "1.0.0", None);
         assert!(result.is_ok());
 
         let content = fs::read_to_string(&script_path).unwrap();
@@ -530,7 +536,7 @@ mod tests {
             "compiled binary should be executable"
         );
 
-        let result = patch_placeholders(&pkg_dir, &prefix, "testpkg", "1.0.0");
+        let result = patch_placeholders(&pkg_dir, &prefix, "testpkg", "1.0.0", None);
         assert!(result.is_ok());
 
         // Verify permissions are preserved after patching

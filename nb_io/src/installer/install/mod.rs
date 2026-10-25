@@ -49,7 +49,9 @@ use crate::storage::store::Store;
 
 use nb_core::{ConcurrencyLimits, Error, Formula, InstallMethod};
 
-use bottle::{BottleJob, dependency_cellar_path, prepare_bottle, stream_into_store};
+use bottle::{
+    BottleJob, Tab, dependency_cellar_path, fetch_tab, prepare_bottle, stream_into_store,
+};
 
 const MAX_CORRUPTION_RETRIES: usize = 3;
 
@@ -301,11 +303,15 @@ impl Installer {
             }) {
                 crate::network::tls::preload_roots();
             }
+            let tabs: Vec<Tab> = bottle_items
+                .iter()
+                .map(|item| fetch_tab(&self.downloader, &self.store, item))
+                .collect();
             let requests: Vec<DownloadRequest> = bottle_items
                 .iter()
                 .enumerate()
                 .map(|(index, item)| {
-                    let job = BottleJob::new(index, item);
+                    let job = BottleJob::new(index, item, tabs[index].clone());
                     let request = DownloadRequest::new(
                         job.url.clone(),
                         job.sha256.clone(),
@@ -339,7 +345,11 @@ impl Installer {
                         None => downloads_open = false,
                         Some(Err(e)) => keep_last(&mut error, e, &report),
                         Some(Ok(download)) => {
-                            let job = BottleJob::new(download.index, &bottle_items[download.index]);
+                            let job = BottleJob::new(
+                                download.index,
+                                &bottle_items[download.index],
+                                tabs[download.index].clone(),
+                            );
                             report(InstallProgress::UnpackStarted {
                                 name: job.formula_name.clone(),
                             });

@@ -19,6 +19,8 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use nb_core::Error;
+
+use super::{RelocationFiles, in_keg};
 use rayon::prelude::*;
 use regex::Regex;
 use tracing::warn;
@@ -451,17 +453,9 @@ fn strip_quarantine(path: &Path) {
     }
 }
 
-/// Rewrite every placeholder and build-prefix path in a keg so it runs from
-/// this prefix, sign what changed, and strip quarantine attributes.
-pub fn relocate_keg(
-    keg_path: &Path,
-    cellar_dir: &Path,
-    pkg_name: &str,
-    pkg_version: &str,
-    build_prefix: &str,
-) -> Result<(), Error> {
-    let relocation = Relocation::new(cellar_dir, pkg_name, pkg_version, build_prefix);
-
+/// Every regular file in the keg, sorted into binaries and texts by its
+/// first bytes.
+fn walk_keg(keg_path: &Path) -> (Vec<PathBuf>, Vec<PathBuf>) {
     // One walk: strip quarantine from everything, and sort regular files by
     // the first bytes so each is read once below. The syscalls run on rayon:
     // ruby has 10,000 entries.
@@ -489,8 +483,31 @@ pub fn relocate_keg(
         .collect();
     let (binaries, texts): (Vec<_>, Vec<_>) =
         classified.into_iter().partition(|(_, binary)| *binary);
-    let binaries: Vec<PathBuf> = binaries.into_iter().map(|(path, _)| path).collect();
-    let texts: Vec<PathBuf> = texts.into_iter().map(|(path, _)| path).collect();
+    (
+        binaries.into_iter().map(|(path, _)| path).collect(),
+        texts.into_iter().map(|(path, _)| path).collect(),
+    )
+}
+
+/// Rewrite every placeholder and build-prefix path in a keg so it runs from
+/// this prefix, sign what changed, and strip quarantine attributes. With
+/// the tab's `files`, only those are looked at, as Homebrew does.
+pub fn relocate_keg(
+    keg_path: &Path,
+    cellar_dir: &Path,
+    pkg_name: &str,
+    pkg_version: &str,
+    build_prefix: &str,
+    files: Option<&RelocationFiles>,
+) -> Result<(), Error> {
+    let relocation = Relocation::new(cellar_dir, pkg_name, pkg_version, build_prefix);
+    let (binaries, texts) = match files {
+        Some(files) => (
+            in_keg(keg_path, &files.binary),
+            in_keg(keg_path, &files.text),
+        ),
+        None => walk_keg(keg_path),
+    };
 
     nb_core::timing::mark(format_args!(
         "{pkg_name}: walked {} binaries, {} texts",
@@ -1010,7 +1027,7 @@ echo "Hello from $PREFIX"
         assert!(rewrite.unfit.is_empty(), "{:?}", rewrite.unfit);
         assert_eq!(rewrite.written.len(), 2, "install name and rpath");
 
-        relocate_keg(&built.keg, &cellar, "x", "1.0", "/opt/homebrew").unwrap();
+        relocate_keg(&built.keg, &cellar, "x", "1.0", "/opt/homebrew", None).unwrap();
 
         let want_lib = format!("{}/opt/x/lib/libx.dylib", prefix.display());
         let dylib_cmds = otool(&["-l"], &built.dylib);
@@ -1073,7 +1090,7 @@ echo "Hello from $PREFIX"
         // which needs the Command Line Tools.
         assert!(rewrite.unfit.is_empty(), "{:?}", rewrite.unfit);
 
-        relocate_keg(&built.keg, &cellar, "x", "1.0", "/opt/homebrew").unwrap();
+        relocate_keg(&built.keg, &cellar, "x", "1.0", "/opt/homebrew", None).unwrap();
 
         let want_lib = format!("{}/opt/x/lib/libx.dylib", prefix.display());
         let dylib_cmds = otool(&["-l"], &built.dylib);
@@ -1105,7 +1122,7 @@ echo "Hello from $PREFIX"
         };
         let cellar = prefix.join("Cellar");
 
-        relocate_keg(&built.keg, &cellar, "x", "1.0", "/opt/homebrew").unwrap();
+        relocate_keg(&built.keg, &cellar, "x", "1.0", "/opt/homebrew", None).unwrap();
 
         let want_lib = format!("{}/x/1.0/lib/libx.dylib", cellar.display());
         assert!(otool(&["-D"], &built.dylib).contains(&want_lib));
@@ -1143,6 +1160,7 @@ echo "Hello from $PREFIX"
             "x",
             "1.0",
             "/opt/homebrew",
+            None,
         )
         .unwrap();
 
@@ -1252,7 +1270,7 @@ echo "Hello from $PREFIX"
         }
         let cellar = prefix.join("Cellar");
 
-        relocate_keg(&keg, &cellar, "x", "1.0", "/opt/homebrew").unwrap();
+        relocate_keg(&keg, &cellar, "x", "1.0", "/opt/homebrew", None).unwrap();
 
         let ids = otool(&["-D"], &dylib);
         let want = format!("{}/opt/x/lib/libx.dylib", prefix.display());
@@ -1262,6 +1280,34 @@ echo "Hello from $PREFIX"
             "both slices must carry the new install name:\n{ids}"
         );
         assert!(signature_is_valid(&dylib));
+    }
+
+    #[test]
+    fn the_tab_lists_limit_what_is_relocated() {
+        let tmp = TempDir::new().unwrap();
+        let keg = tmp.path().join("Cellar/x/1.0");
+        fs::create_dir_all(keg.join("bin")).unwrap();
+        for name in ["listed", "unlisted"] {
+            fs::write(keg.join("bin").join(name), "@@HOMEBREW_PREFIX@@/bin\n").unwrap();
+        }
+        let files = RelocationFiles {
+            text: vec!["bin/listed".into(), "bin/missing".into()],
+            binary: Vec::new(),
+        };
+
+        relocate_keg(
+            &keg,
+            &tmp.path().join("Cellar"),
+            "x",
+            "1.0",
+            "/opt/homebrew",
+            Some(&files),
+        )
+        .unwrap();
+
+        let read = |name: &str| fs::read_to_string(keg.join("bin").join(name)).unwrap();
+        assert_eq!(read("listed"), format!("{}/bin\n", tmp.path().display()));
+        assert_eq!(read("unlisted"), "@@HOMEBREW_PREFIX@@/bin\n");
     }
 
     #[test]

@@ -79,6 +79,16 @@ impl ParallelDownloader {
         self.downloader.remove_blob(sha256)
     }
 
+    /// See [`Downloader::bottle_tab`].
+    pub(crate) async fn bottle_tab(
+        &self,
+        blob_url: &str,
+        tag: &str,
+        sha256: &str,
+    ) -> Option<serde_json::Value> {
+        self.downloader.bottle_tab(blob_url, tag, sha256).await
+    }
+
     pub async fn download_single(
         &self,
         request: DownloadRequest,

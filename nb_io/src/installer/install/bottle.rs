@@ -1,5 +1,8 @@
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
+
+use futures::future::{BoxFuture, FutureExt, Shared};
 
 use nb_core::{Error, InstallMethod, formula_token};
 use tracing::warn;
@@ -8,6 +11,7 @@ use super::cask_deps::check_requirements;
 use super::quarantine::{propagate, quarantine_download};
 use crate::cellar::link::Linker;
 use crate::cellar::materialize::Cellar;
+use crate::extraction::patch::RelocationFiles;
 use crate::installer::cask::{check_deprecate_disable, for_current_platform, resolve_cask};
 use crate::network::download::{
     BodyConsumer, Commit, DownloadProgressCallback, DownloadRequest, ParallelDownloader,
@@ -440,8 +444,43 @@ pub(super) fn cask_download(
     request.unverified()
 }
 
+/// The relocation lists from a bottle's tab, fetched while it downloads.
+pub(super) type Tab = Shared<BoxFuture<'static, Option<Arc<RelocationFiles>>>>;
+
+/// Start fetching the tab of a bottle the store does not have yet.
+pub(super) fn fetch_tab(
+    downloader: &ParallelDownloader,
+    store: &Store,
+    item: &PlannedInstall,
+) -> Tab {
+    let InstallMethod::Bottle(ref bottle) = item.method else {
+        unreachable!()
+    };
+    if store.has_entry(&bottle.sha256) {
+        return futures::future::ready(None).boxed().shared();
+    }
+    let version = item.formula.effective_version();
+    let tag = match item.formula.bottle.stable.rebuild {
+        0 => version,
+        rebuild => format!("{version}-{rebuild}"),
+    };
+    let (downloader, url, sha256) = (
+        downloader.clone(),
+        bottle.url.clone(),
+        bottle.sha256.clone(),
+    );
+    let name = item.formula.name.clone();
+    let task = tokio::spawn(async move {
+        let tab = downloader.bottle_tab(&url, &tag, &sha256).await;
+        let files = tab.as_ref().and_then(RelocationFiles::from_tab);
+        nb_core::timing::mark(format_args!("{name}: tab {}", files.is_some()));
+        files.map(Arc::new)
+    });
+    async move { task.await.ok().flatten() }.boxed().shared()
+}
+
 /// What it takes to turn a downloaded bottle into a store entry.
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub(super) struct BottleJob {
     /// Position in the plan's bottle list.
     pub(super) index: usize,
@@ -450,10 +489,11 @@ pub(super) struct BottleJob {
     pub(super) sha256: String,
     pub(super) url: String,
     pub(super) build_prefix: String,
+    pub(super) tab: Tab,
 }
 
 impl BottleJob {
-    pub(super) fn new(index: usize, item: &PlannedInstall) -> Self {
+    pub(super) fn new(index: usize, item: &PlannedInstall, tab: Tab) -> Self {
         let InstallMethod::Bottle(ref bottle) = item.method else {
             unreachable!()
         };
@@ -464,6 +504,7 @@ impl BottleJob {
             sha256: bottle.sha256.clone(),
             url: bottle.url.clone(),
             build_prefix: bottle.build_prefix().to_string(),
+            tab,
         }
     }
 }
@@ -475,15 +516,19 @@ impl BottleJob {
 pub(super) fn stream_into_store(store: &Store, cellar: &Cellar, job: BottleJob) -> BodyConsumer {
     let store = store.clone();
     let cellar = cellar.clone();
+    let runtime = tokio::runtime::Handle::current();
     BodyConsumer {
         consume: Box::new(move |body| {
             let fingerprint = cellar.relocation_fingerprint(&job.build_prefix);
             let staged = store.stage_entry(&job.sha256, body, &fingerprint, |extracted| {
+                // The consumer runs on a blocking thread, so it may wait.
+                let files = runtime.block_on(job.tab.clone());
                 cellar.relocate_extracted(
                     extracted,
                     &job.formula_name,
                     &job.version,
                     &job.build_prefix,
+                    files.as_deref(),
                 )
             })?;
             Ok(Box::new(move || staged.commit().map(|_| ())) as Commit)
@@ -505,25 +550,29 @@ pub(super) async fn prepare_bottle(
     progress: Option<DownloadProgressCallback>,
 ) -> Result<PathBuf, Error> {
     let fingerprint = cellar.relocation_fingerprint(&job.build_prefix);
+    let runtime = tokio::runtime::Handle::current();
     let mut last_error = None;
 
     for attempt in 0..MAX_CORRUPTION_RETRIES {
-        let (store, task_cellar, job_for_task, fingerprint, blob) = (
+        let (store, task_cellar, job_for_task, fingerprint, blob, runtime) = (
             store.clone(),
             cellar.clone(),
             job.clone(),
             fingerprint.clone(),
             blob_path.clone(),
+            runtime.clone(),
         );
         let outcome = tokio::task::spawn_blocking(move || {
             let job = job_for_task;
             store.ensure_entry(&job.sha256, &blob, &fingerprint, |extracted| {
+                let files = runtime.block_on(job.tab.clone());
                 task_cellar
                     .relocate_extracted(
                         extracted,
                         &job.formula_name,
                         &job.version,
                         &job.build_prefix,
+                        files.as_deref(),
                     )
                     .map_err(|e| relocation_failed(&job.formula_name, e))
             })

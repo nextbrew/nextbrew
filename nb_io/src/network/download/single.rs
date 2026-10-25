@@ -127,6 +127,42 @@ impl Downloader {
         }
     }
 
+    /// The `sh.brew.tab` annotation of the bottle at `blob_url`, read from
+    /// the registry's image index for `tag`. Only registries taking an
+    /// anonymous token are asked; `None` on any failure.
+    pub(crate) async fn bottle_tab(
+        &self,
+        blob_url: &str,
+        tag: &str,
+        sha256: &str,
+    ) -> Option<serde_json::Value> {
+        let (host, _) = super::auth::registry_scope(blob_url)?;
+        let token = self.token_endpoints.get(&host)?.anonymous.as_deref()?;
+        let index = blob_url.rfind("/blobs/")?;
+        let url = format!("{}/manifests/{tag}", &blob_url[..index]);
+        let response = self
+            .client
+            .get(url)
+            .bearer_auth(token)
+            .header(
+                reqwest::header::ACCEPT,
+                "application/vnd.oci.image.index.v1+json",
+            )
+            .timeout(Duration::from_secs(10))
+            .send()
+            .await
+            .ok()?
+            .error_for_status()
+            .ok()?;
+        let index: serde_json::Value = response.json().await.ok()?;
+        let annotations = index["manifests"]
+            .as_array()?
+            .iter()
+            .map(|manifest| &manifest["annotations"])
+            .find(|annotations| annotations["sh.brew.bottle.digest"] == sha256)?;
+        serde_json::from_str(annotations["sh.brew.tab"].as_str()?).ok()
+    }
+
     pub async fn download(&self, url: &str, expected_sha256: &str) -> Result<PathBuf, Error> {
         self.download_with_progress(url, expected_sha256, None, None, None)
             .await
@@ -1644,6 +1680,31 @@ mod tests {
 
         downloader.prefetch_tokens(std::slice::from_ref(&url)).await;
         downloader.download(&url, HELLO_SHA).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn the_tab_of_the_bottle_with_the_digest_is_read_from_the_index() {
+        let server = MockServer::start().await;
+        let index = serde_json::json!({ "manifests": [
+            { "annotations": { "sh.brew.bottle.digest": "other", "sh.brew.tab": "{\"n\":1}" } },
+            { "annotations": { "sh.brew.bottle.digest": "abc", "sh.brew.tab": "{\"n\":2}" } },
+        ]});
+        Mock::given(method("GET"))
+            .and(path("/v2/homebrew/core/a/manifests/1.0-1"))
+            .and(header("authorization", "Bearer QQ=="))
+            .respond_with(ResponseTemplate::new(200).set_body_json(index))
+            .mount(&server)
+            .await;
+
+        let host = server.uri().trim_start_matches("http://").to_string();
+        let tmp = TempDir::new().unwrap();
+        let downloader = downloader(&tmp).with_token_endpoint(&host, anonymous_registry(&server));
+        let url = format!("{}/v2/homebrew/core/a/blobs/sha256:abc", server.uri());
+
+        let tab = downloader.bottle_tab(&url, "1.0-1", "abc").await;
+        assert_eq!(tab, Some(serde_json::json!({ "n": 2 })));
+        assert_eq!(downloader.bottle_tab(&url, "1.0-1", "zzz").await, None);
+        assert_eq!(downloader.bottle_tab(&url, "2.0", "abc").await, None);
     }
 
     #[tokio::test]
