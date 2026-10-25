@@ -7,7 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.2] - 2026-10-25
+
+### Changed
+- Installs are faster: kegs are cloned and linked in parallel, ad-hoc signatures on macOS are rehashed in place instead of running `codesign`, and an unshared `share/man` is linked as one directory
+
 ### Fixed
+- The Linux binaries run on glibc 2.17 and later; they needed glibc 2.34, so they failed on Ubuntu 20.04 and Zorin OS 16
+- `install.sh` shows why `nb` failed to run instead of only saying it did not execute properly
 - Installing anything that depends on `ca-certificates` (openssl, curl, git, node, ...) on macOS no longer takes about 12 seconds longer since its 2026-10-20 release
 
 ## [0.1.1] - 2026-10-23
