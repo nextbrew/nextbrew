@@ -536,6 +536,11 @@ pub(super) fn copy_tree(source: &Path, destination: &Path) -> Result<(), StepErr
         let target = fs::read_link(source).map_err(failed("reading link"))?;
         symlink(target, destination).map_err(failed("copying link"))?;
     } else if metadata.is_dir() {
+        // One clone for the tree on APFS: node's npm alone is 2,000 files.
+        #[cfg(target_os = "macos")]
+        if crate::cellar::materialize::try_clonefile_dir(source, destination).is_ok() {
+            return Ok(());
+        }
         fs::create_dir_all(destination).map_err(failed("copying directory"))?;
         for entry in fs::read_dir(source).map_err(failed("reading"))? {
             let entry = entry.map_err(failed("reading"))?;

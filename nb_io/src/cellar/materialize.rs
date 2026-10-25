@@ -261,7 +261,7 @@ fn copy_dir_with_fallback(src: &Path, dst: &Path) -> Result<(), Error> {
 }
 
 #[cfg(target_os = "macos")]
-fn try_clonefile_dir(src: &Path, dst: &Path) -> io::Result<()> {
+pub(crate) fn try_clonefile_dir(src: &Path, dst: &Path) -> io::Result<()> {
     use std::ffi::CString;
     use std::os::unix::ffi::OsStrExt;
 
