@@ -104,10 +104,11 @@ jobs:
       - name: Integration tests
         run: cargo test --package nb_cli --test integration --locked -- --ignored
 
-      # The runner's Homebrew moves into nextbrew. Linux only: the macOS
-      # runner's Homebrew holds many packages (parity.yml migrates those).
+      # The runner's Homebrew moves into nextbrew. Only the x64 Linux image
+      # has one to spare: the macOS runner's holds many packages (parity.yml
+      # migrates those).
       - name: Migrate from Homebrew
-        if: runner.os == 'Linux'
+        if: matrix.os == 'ubuntu-latest'
         env:
           NEXTBREW_ROOT: ${{ runner.temp }}/nbmig
           NEXTBREW_PREFIX: ${{ runner.temp }}/nbmig-prefix
