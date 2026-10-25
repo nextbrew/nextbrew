@@ -104,6 +104,22 @@ jobs:
       - name: Integration tests
         run: cargo test --package nb_cli --test integration --locked -- --ignored
 
+      # The runner's Homebrew moves into nextbrew. Linux only: the macOS
+      # runner's Homebrew holds many packages (parity.yml migrates those).
+      - name: Migrate from Homebrew
+        if: runner.os == 'Linux'
+        env:
+          NEXTBREW_ROOT: ${{ runner.temp }}/nbmig
+          NEXTBREW_PREFIX: ${{ runner.temp }}/nbmig-prefix
+          NEXTBREW_AUTO_INIT: 'true'
+        run: |
+          eval "$(/home/linuxbrew/.linuxbrew/bin/brew shellenv)"
+          brew install hello
+          cargo build --locked --package nb_cli --bin nb
+          ./target/debug/nb migrate --yes
+          "$NEXTBREW_PREFIX/bin/hello"
+          if brew list --formula hello; then echo "hello still in Homebrew"; exit 1; fi
+
   build:
     name: build
     permissions:
