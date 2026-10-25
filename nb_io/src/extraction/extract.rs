@@ -124,43 +124,288 @@ pub fn extract_archive_from_reader<R: Read>(
 
 fn extract_tar_archive<R: Read>(reader: R, dest_dir: &Path) -> Result<(), Error> {
     let mut archive = Archive::new(reader);
-    #[cfg(target_os = "macos")]
-    let mut renames = Vec::new();
-
     archive.set_preserve_permissions(true);
     archive.set_unpack_xattrs(true);
-
-    for entry in archive
+    let entries = archive
         .entries()
-        .map_err(Error::store("failed to read archive entries"))?
-    {
-        let mut entry = entry.map_err(Error::store("failed to read archive entry"))?;
+        .map_err(Error::store("failed to read archive entries"))?;
 
+    // Regular files are written by a few threads while the archive is read:
+    // a bottle like ruby's has 20,000 of them, and writing them one by one
+    // took longer than the download.
+    let writers = std::thread::available_parallelism().map_or(1, |n| n.get().min(4));
+    let (jobs, queue) = std::sync::mpsc::sync_channel::<FileJob>(64);
+    let queue = std::sync::Mutex::new(queue);
+    std::thread::scope(|scope| {
+        let handles: Vec<_> = (0..writers)
+            .map(|_| {
+                scope.spawn(|| {
+                    let mut result = Ok(());
+                    loop {
+                        let Ok(job) = queue.lock().unwrap().recv() else {
+                            break;
+                        };
+                        // Keep draining after a failure so the reader never blocks.
+                        if result.is_ok() {
+                            result = job.write();
+                        }
+                    }
+                    result
+                })
+            })
+            .collect();
+        let read = read_entries(entries, dest_dir, &jobs);
+        drop(jobs);
+        let written = handles
+            .into_iter()
+            .map(|handle| handle.join().expect("file writer panicked"))
+            .collect::<Result<Vec<_>, _>>();
+        let finish = read?;
+        written?;
+        finish.run(dest_dir)
+    })
+}
+
+/// Files at most this big go to the writer threads; bigger ones are written
+/// as they are read, which keeps the memory in flight small.
+const QUEUED_FILE_LIMIT: u64 = 1 << 20;
+
+struct FileJob {
+    path: PathBuf,
+    contents: Vec<u8>,
+    mode: u32,
+    mtime: Option<std::time::SystemTime>,
+}
+
+impl FileJob {
+    fn write(&self) -> Result<(), Error> {
+        write_file(&self.path, &self.contents[..], self.mode, self.mtime)
+    }
+}
+
+/// Write a file as tar does: anew, replacing whatever was there without
+/// following it, with the archive's times and then its mode.
+fn write_file(
+    path: &Path,
+    mut contents: impl Read,
+    mode: u32,
+    mtime: Option<std::time::SystemTime>,
+) -> Result<(), Error> {
+    use std::os::unix::fs::PermissionsExt;
+    let ctx = || format!("failed to unpack entry {}", path.display());
+    let create = || {
+        std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(path)
+    };
+    let mut file = match create() {
+        Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
+            std::fs::remove_file(path).map_err(Error::store(&ctx()))?;
+            create()
+        }
+        other => other,
+    }
+    .map_err(Error::store(&ctx()))?;
+    std::io::copy(&mut contents, &mut file).map_err(Error::store(&ctx()))?;
+    if let Some(mtime) = mtime {
+        let times = std::fs::FileTimes::new()
+            .set_accessed(mtime)
+            .set_modified(mtime);
+        file.set_times(times).map_err(Error::store(&ctx()))?;
+    }
+    file.set_permissions(std::fs::Permissions::from_mode(mode))
+        .map_err(Error::store(&ctx()))
+}
+
+/// What is left once every file is written: hard links, which need their
+/// targets, directory modes, which could stop the writes, and on macOS the
+/// renames to decomposed names.
+#[derive(Default)]
+struct Finish {
+    hard_links: Vec<(PathBuf, PathBuf)>,
+    dir_modes: Vec<(PathBuf, u32)>,
+    #[cfg(target_os = "macos")]
+    renames: Vec<(PathBuf, String)>,
+}
+
+impl Finish {
+    fn run(self, dest_dir: &Path) -> Result<(), Error> {
+        use std::os::unix::fs::PermissionsExt;
+        for (link, target) in self.hard_links {
+            let _ = std::fs::remove_file(&link);
+            std::fs::hard_link(&target, &link).map_err(Error::store(&format!(
+                "failed to hard link {}",
+                link.display()
+            )))?;
+        }
+        for (dir, mode) in self.dir_modes.into_iter().rev() {
+            std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(mode))
+                .map_err(Error::store("failed to set directory mode"))?;
+        }
+        #[cfg(target_os = "macos")]
+        for (path, name) in self.renames {
+            let from = dest_dir.join(&path);
+            let to = from.with_file_name(name);
+            // The same file to APFS, which only stores the name anew.
+            std::fs::rename(&from, &to).map_err(Error::store("failed to rename entry"))?;
+        }
+        let _ = dest_dir;
+        Ok(())
+    }
+}
+
+fn read_entries<R: Read>(
+    entries: tar::Entries<'_, R>,
+    dest_dir: &Path,
+    jobs: &std::sync::mpsc::SyncSender<FileJob>,
+) -> Result<Finish, Error> {
+    let mut finish = Finish::default();
+    let mut dirs = Dirs::default();
+    for entry in entries {
+        let mut entry = entry.map_err(Error::store("failed to read archive entry"))?;
         let entry_path = entry
             .path()
-            .map_err(Error::store("failed to read entry path"))?;
-
-        // Store path as owned string for error message
+            .map_err(Error::store("failed to read entry path"))?
+            .into_owned();
         let path_display = entry_path.display().to_string();
 
         // Security check: validate path doesn't escape destination
         validate_path(&entry_path, dest_dir)?;
 
+        let rel: PathBuf = entry_path
+            .components()
+            .filter(|c| matches!(c, std::path::Component::Normal(_)))
+            .collect();
+        if rel.as_os_str().is_empty() {
+            continue;
+        }
         #[cfg(target_os = "macos")]
-        renames.extend(decomposed_names(&entry_path));
+        finish.renames.extend(decomposed_names(&entry_path));
+
         let ctx = format!("failed to unpack entry {path_display}");
-        entry.unpack_in(dest_dir).map_err(Error::store(&ctx))?;
+        let kind = entry.header().entry_type();
+        let plain = kind.is_dir() || kind.is_file() || kind.is_symlink() || kind.is_hard_link();
+        if !plain || has_xattrs(&mut entry) {
+            entry.unpack_in(dest_dir).map_err(Error::store(&ctx))?;
+            dirs.forget(&rel);
+            continue;
+        }
+
+        if let Some(parent) = rel.parent() {
+            dirs.ensure(dest_dir, parent)?;
+        }
+        let target = dest_dir.join(&rel);
+        let mode = entry.header().mode().map_err(Error::store(&ctx))?;
+        if kind.is_dir() {
+            dirs.ensure(dest_dir, &rel)?;
+            finish.dir_modes.push((target, mode));
+        } else if kind.is_symlink() || kind.is_hard_link() {
+            let link = entry
+                .link_name()
+                .map_err(Error::store(&ctx))?
+                .ok_or_else(|| Error::StoreCorruption {
+                    message: format!("link without a target: {path_display}"),
+                })?
+                .into_owned();
+            if kind.is_hard_link() {
+                validate_path(&link, dest_dir)?;
+                finish.hard_links.push((target, dest_dir.join(&link)));
+            } else {
+                dirs.forget(&rel);
+                let _ = std::fs::remove_file(&target);
+                std::os::unix::fs::symlink(&link, &target).map_err(Error::store(&ctx))?;
+            }
+        } else {
+            // tar never writes a file with mtime 0.
+            let mtime =
+                entry.header().mtime().ok().map(|secs| {
+                    std::time::UNIX_EPOCH + std::time::Duration::from_secs(secs.max(1))
+                });
+            if entry.size() > QUEUED_FILE_LIMIT {
+                write_file(&target, &mut entry, mode, mtime)?;
+            } else {
+                let mut contents = Vec::with_capacity(entry.size() as usize);
+                entry
+                    .read_to_end(&mut contents)
+                    .map_err(Error::store(&ctx))?;
+                let job = FileJob {
+                    path: target,
+                    contents,
+                    mode,
+                    mtime,
+                };
+                if jobs.send(job).is_err() {
+                    break;
+                }
+            }
+        }
+    }
+    Ok(finish)
+}
+
+/// Whether the entry carries extended attributes, which tar sets by path.
+fn has_xattrs<R: Read>(entry: &mut tar::Entry<'_, R>) -> bool {
+    let Ok(Some(extensions)) = entry.pax_extensions() else {
+        return false;
+    };
+    extensions
+        .flatten()
+        .any(|extension| extension.key_bytes().starts_with(b"SCHILY.xattr."))
+}
+
+/// The directories under the destination known to be real ones, so each is
+/// checked once rather than for every file in it.
+#[derive(Default)]
+struct Dirs(std::collections::HashSet<PathBuf>);
+
+impl Dirs {
+    /// Make `rel` and its parents, refusing to go through a symlink that
+    /// leads out of the destination.
+    fn ensure(&mut self, dest_dir: &Path, rel: &Path) -> Result<(), Error> {
+        let mut prefix = PathBuf::new();
+        for component in rel.components() {
+            prefix.push(component);
+            if self.0.contains(&prefix) {
+                continue;
+            }
+            let dir = dest_dir.join(&prefix);
+            match std::fs::symlink_metadata(&dir) {
+                Ok(meta) if meta.is_dir() => {}
+                Ok(meta) if meta.file_type().is_symlink() => {
+                    let inside = dir.canonicalize().ok().zip(dest_dir.canonicalize().ok());
+                    if !inside.is_some_and(|(dir, dest)| dir.starts_with(dest) && dir.is_dir()) {
+                        return Err(Error::StoreCorruption {
+                            message: format!(
+                                "archive entry written through a symlink: {}",
+                                rel.display()
+                            ),
+                        });
+                    }
+                }
+                Ok(_) => {
+                    return Err(Error::StoreCorruption {
+                        message: format!("not a directory: {}", prefix.display()),
+                    });
+                }
+                Err(_) => match std::fs::create_dir(&dir) {
+                    Err(e) if e.kind() != std::io::ErrorKind::AlreadyExists => {
+                        return Err(Error::store("failed to create directory")(e));
+                    }
+                    _ => {}
+                },
+            }
+            self.0.insert(prefix.clone());
+        }
+        Ok(())
     }
 
-    #[cfg(target_os = "macos")]
-    for (path, name) in renames {
-        let from = dest_dir.join(&path);
-        let to = from.with_file_name(name);
-        // The same file to APFS, which only stores the name anew.
-        std::fs::rename(&from, &to).map_err(Error::store("failed to rename entry"))?;
+    /// `rel` may no longer be a directory.
+    fn forget(&mut self, rel: &Path) {
+        if self.0.contains(rel) {
+            self.0.retain(|dir| !dir.starts_with(rel));
+        }
     }
-
-    Ok(())
 }
 
 /// The names in `path` that macOS's tar (libarchive), which Homebrew
@@ -547,6 +792,114 @@ mod tests {
         }
 
         zip.finish().unwrap().into_inner()
+    }
+
+    fn gz(builder: Builder<Vec<u8>>) -> Vec<u8> {
+        let mut encoder = GzEncoder::new(Vec::new(), Compression::default());
+        encoder.write_all(&builder.into_inner().unwrap()).unwrap();
+        encoder.finish().unwrap()
+    }
+
+    fn header(path: &str, kind: tar::EntryType, size: u64, mode: u32) -> tar::Header {
+        let mut header = tar::Header::new_gnu();
+        header.set_path(path).unwrap();
+        header.set_entry_type(kind);
+        header.set_size(size);
+        header.set_mode(mode);
+        header.set_mtime(1_700_000_000);
+        header.set_cksum();
+        header
+    }
+
+    #[test]
+    fn writes_many_files_with_their_modes_and_times() {
+        let tmp = TempDir::new().unwrap();
+        let mut builder = Builder::new(Vec::new());
+        let big = vec![7u8; (QUEUED_FILE_LIMIT + 1) as usize];
+        builder
+            .append(
+                &header("pkg/big", tar::EntryType::Regular, big.len() as u64, 0o644),
+                &big[..],
+            )
+            .unwrap();
+        for i in 0..500 {
+            let body = format!("file {i}");
+            let mode = if i % 2 == 0 { 0o755 } else { 0o444 };
+            let path = format!("pkg/d{}/f{i}", i % 7);
+            builder
+                .append(
+                    &header(&path, tar::EntryType::Regular, body.len() as u64, mode),
+                    body.as_bytes(),
+                )
+                .unwrap();
+        }
+
+        extract_archive_from_reader(&gz(builder)[..], tmp.path()).unwrap();
+
+        assert_eq!(fs::read(tmp.path().join("pkg/big")).unwrap(), big);
+        for i in 0..500 {
+            let path = tmp.path().join(format!("pkg/d{}/f{i}", i % 7));
+            assert_eq!(fs::read_to_string(&path).unwrap(), format!("file {i}"));
+            let meta = fs::metadata(&path).unwrap();
+            let mode = if i % 2 == 0 { 0o755 } else { 0o444 };
+            assert_eq!(meta.permissions().mode() & 0o7777, mode);
+            assert_eq!(
+                meta.modified().unwrap(),
+                std::time::UNIX_EPOCH + std::time::Duration::from_secs(1_700_000_000)
+            );
+        }
+    }
+
+    #[test]
+    fn hard_links_and_read_only_directories_unpack() {
+        let tmp = TempDir::new().unwrap();
+        let mut builder = Builder::new(Vec::new());
+        builder
+            .append(
+                &header("pkg/ro/", tar::EntryType::Directory, 0, 0o555),
+                &b""[..],
+            )
+            .unwrap();
+        builder
+            .append(
+                &header("pkg/ro/a", tar::EntryType::Regular, 2, 0o644),
+                &b"hi"[..],
+            )
+            .unwrap();
+        let mut link = header("pkg/ro/b", tar::EntryType::Link, 0, 0o644);
+        builder
+            .append_link(&mut link, "pkg/ro/b", "pkg/ro/a")
+            .unwrap();
+
+        extract_archive_from_reader(&gz(builder)[..], tmp.path()).unwrap();
+
+        let ro = tmp.path().join("pkg/ro");
+        assert_eq!(fs::read_to_string(ro.join("b")).unwrap(), "hi");
+        assert_eq!(
+            fs::metadata(&ro).unwrap().permissions().mode() & 0o777,
+            0o555
+        );
+        fs::set_permissions(&ro, fs::Permissions::from_mode(0o755)).unwrap();
+    }
+
+    #[test]
+    fn refuses_a_file_written_through_a_symlink_out_of_the_destination() {
+        let tmp = TempDir::new().unwrap();
+        let outside = TempDir::new().unwrap();
+        let mut builder = Builder::new(Vec::new());
+        let mut link = header("pkg/escape", tar::EntryType::Symlink, 0, 0o777);
+        builder
+            .append_link(&mut link, "pkg/escape", outside.path())
+            .unwrap();
+        builder
+            .append(
+                &header("pkg/escape/evil", tar::EntryType::Regular, 4, 0o644),
+                &b"evil"[..],
+            )
+            .unwrap();
+
+        assert!(extract_archive_from_reader(&gz(builder)[..], tmp.path()).is_err());
+        assert!(!outside.path().join("evil").exists());
     }
 
     #[test]
