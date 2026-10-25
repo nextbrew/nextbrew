@@ -35,7 +35,8 @@ jobs:
       contents: read
     strategy:
       fail-fast: false
-      # Linux on 22.04 for an older glibc than ubuntu-latest's.
+      # Linux links against glibc 2.17 through cargo-zigbuild, so the
+      # binaries run on older distributions too (Zorin OS 16 has 2.31).
       matrix: ${{ fromJSON(inputs.full && '{"include":[
           {"target":"aarch64-apple-darwin","os":"macos-latest","name":"darwin-arm64"},
           {"target":"x86_64-apple-darwin","os":"macos-latest","name":"darwin-x64"},
@@ -56,18 +57,39 @@ jobs:
           cache-key: release-${{ matrix.target }}
           cache: ${{ !inputs.release }}
 
-      - name: Install the Linux Arm64 cross toolchain
-        if: matrix.target == 'aarch64-unknown-linux-gnu'
-        run: sudo apt-get update && sudo apt-get install -y gcc-aarch64-linux-gnu g++-aarch64-linux-gnu
+      - name: Install cargo-zigbuild (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          python3 -m pip install --user cargo-zigbuild==0.24.0 ziglang==0.17.0
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
 
-      - name: Build
+      - name: Build (macOS)
+        if: runner.os == 'macOS'
         env:
           TARGET: ${{ matrix.target }}
           LZMA_API_STATIC: '1'
-          CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER: aarch64-linux-gnu-gcc
-          CC_aarch64_unknown_linux_gnu: aarch64-linux-gnu-gcc
-          CXX_aarch64_unknown_linux_gnu: aarch64-linux-gnu-g++
         run: cargo build --release --locked --target "$TARGET" --package nb_cli
+
+      - name: Build (Linux, glibc 2.17)
+        if: runner.os == 'Linux'
+        env:
+          TARGET: ${{ matrix.target }}
+          LZMA_API_STATIC: '1'
+        run: cargo zigbuild --release --locked --target "$TARGET.2.17" --package nb_cli
+
+      - name: Check the glibc floor (Linux)
+        if: runner.os == 'Linux'
+        env:
+          TARGET: ${{ matrix.target }}
+        run: |
+          for bin in nb nbx; do
+            floor=$(objdump -T "target/$TARGET/release/$bin" | grep -o 'GLIBC_[0-9.]*' | sort -uV | tail -1)
+            echo "$bin needs $floor"
+            if [ "$(printf '%s\n' "$floor" GLIBC_2.17 | sort -V | tail -1)" != GLIBC_2.17 ]; then
+              echo "::error::$bin needs $floor, newer than glibc 2.17"
+              exit 1
+            fi
+          done
 
       - name: Check for no dynamic liblzma (macOS)
         if: runner.os == 'macOS'

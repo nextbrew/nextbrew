@@ -245,7 +245,9 @@ finalize_installation() {
     local no_modify="$1"
 
     # Verify the binary works
-    if ! "$NEXTBREW_BIN/nb" --version >/dev/null 2>&1; then
+    local version_output
+    if ! version_output=$("$NEXTBREW_BIN/nb" --version 2>&1); then
+        printf '%s\n' "$version_output" >&2
         error_exit "Installation succeeded but binary does not execute properly"
     fi
 
