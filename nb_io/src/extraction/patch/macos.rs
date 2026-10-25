@@ -206,12 +206,14 @@ fn relocate_binary(path: &Path, relocation: &Relocation) -> Result<BinaryOutcome
     let is_macho = macho::has_macho_magic(&contents);
     let mut unfit = Vec::new();
     let mut signed = true;
+    let mut signable = false;
     if is_macho {
         match macho::rewrite(&mut contents, |_, current| relocation.load_path(current)) {
             Ok(rewrite) => {
                 written.extend(rewrite.written);
                 unfit = rewrite.unfit;
                 signed = rewrite.signed;
+                signable = rewrite.signable;
             }
             // A Java class file starts with the fat magic; leave it alone.
             Err(MachoError::NotMacho) => {
@@ -225,13 +227,13 @@ fn relocate_binary(path: &Path, relocation: &Relocation) -> Result<BinaryOutcome
         }
     }
 
-    let needs_signature = is_macho && !signed;
+    let needs_signature = signable && !signed;
     if written.is_empty() && unfit.is_empty() && !needs_signature {
         return Ok(BinaryOutcome::Untouched);
     }
 
     // Rehashing an ad-hoc signature in place saves a `codesign` run.
-    let rehashed = is_macho
+    let rehashed = signable
         && signed
         && unfit.is_empty()
         && macho::rehash_adhoc(&mut contents, &written)
@@ -245,7 +247,7 @@ fn relocate_binary(path: &Path, relocation: &Relocation) -> Result<BinaryOutcome
 
     Ok(BinaryOutcome::Changed {
         writable,
-        sign: is_macho && !rehashed,
+        sign: signable && !rehashed,
     })
 }
 
@@ -461,25 +463,34 @@ pub fn relocate_keg(
     let relocation = Relocation::new(cellar_dir, pkg_name, pkg_version, build_prefix);
 
     // One walk: strip quarantine from everything, and sort regular files by
-    // the first bytes so each is read once below.
-    let mut binaries = Vec::new();
-    let mut texts = Vec::new();
-    for entry in walkdir::WalkDir::new(keg_path)
+    // the first bytes so each is read once below. The syscalls run on rayon:
+    // ruby has 10,000 entries.
+    let entries: Vec<_> = walkdir::WalkDir::new(keg_path)
         .follow_links(false)
         .into_iter()
         .filter_map(Result::ok)
-    {
-        strip_quarantine(entry.path());
-        if !entry.file_type().is_file() {
-            continue;
-        }
-        let path = entry.into_path();
-        match text::is_binary(&path) {
-            Ok(true) => binaries.push(path),
-            Ok(false) => texts.push(path),
-            Err(e) => warn!(path = %path.display(), error = %e, "cannot read file; skipping"),
-        }
-    }
+        .collect();
+    let classified: Vec<(PathBuf, bool)> = entries
+        .into_par_iter()
+        .filter_map(|entry| {
+            strip_quarantine(entry.path());
+            if !entry.file_type().is_file() {
+                return None;
+            }
+            let path = entry.into_path();
+            match text::is_binary(&path) {
+                Ok(binary) => Some((path, binary)),
+                Err(e) => {
+                    warn!(path = %path.display(), error = %e, "cannot read file; skipping");
+                    None
+                }
+            }
+        })
+        .collect();
+    let (binaries, texts): (Vec<_>, Vec<_>) =
+        classified.into_iter().partition(|(_, binary)| *binary);
+    let binaries: Vec<PathBuf> = binaries.into_iter().map(|(path, _)| path).collect();
+    let texts: Vec<PathBuf> = texts.into_iter().map(|(path, _)| path).collect();
 
     nb_core::timing::mark(format_args!(
         "{pkg_name}: walked {} binaries, {} texts",

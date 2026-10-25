@@ -64,6 +64,9 @@ pub(crate) struct MachoInfo {
     pub(crate) paths: Vec<LoadPath>,
     /// Whether every architecture in the file carries an `LC_CODE_SIGNATURE`.
     pub(crate) signed: bool,
+    /// Whether some architecture is an executable, dylib or bundle, the
+    /// kinds `codesign` signs. Objects and dSYMs are left unsigned.
+    pub(crate) signable: bool,
     layouts: Vec<SliceLayout>,
 }
 
@@ -84,6 +87,7 @@ pub(crate) struct Rewrite {
     pub(crate) unfit: Vec<UnfitChange>,
     /// Whether the file was signed before the rewrite; see [`MachoInfo`].
     pub(crate) signed: bool,
+    pub(crate) signable: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -141,6 +145,7 @@ pub(crate) fn inspect(data: &[u8]) -> Result<MachoInfo, MachoError> {
     let mut info = MachoInfo {
         paths: Vec::new(),
         signed: true,
+        signable: false,
         layouts: Vec::new(),
     };
     for slice in slices(data)? {
@@ -161,10 +166,12 @@ pub(crate) fn rewrite(
     let MachoInfo {
         paths,
         signed,
+        signable,
         mut layouts,
     } = inspect(data)?;
     let mut rewrite = Rewrite {
         signed,
+        signable,
         ..Rewrite::default()
     };
     let mut grow_later = Vec::new();
@@ -441,6 +448,10 @@ fn parse_slice(data: &[u8], slice: Slice, info: &mut MachoInfo) -> Result<(), Ma
     }
 
     info.signed &= signed;
+    info.signable |= matches!(
+        read_u32(data, slice.start + 12, endian),
+        Some(macho::MH_EXECUTE | macho::MH_DYLIB | macho::MH_BUNDLE)
+    );
     info.layouts.push(SliceLayout {
         start: slice.start,
         endian,
@@ -724,6 +735,17 @@ mod tests {
             .iter()
             .map(|p| (p.kind, p.value.as_str()))
             .collect()
+    }
+
+    #[test]
+    fn only_executables_dylibs_and_bundles_are_signable() {
+        let dylib = thin(Endian::Little, true, &[Cmd::Other]);
+        assert!(inspect(&dylib).unwrap().signable);
+        for filetype in [macho::MH_OBJECT, macho::MH_DSYM] {
+            let mut file = dylib.clone();
+            file[12..16].copy_from_slice(&filetype.to_le_bytes());
+            assert!(!inspect(&file).unwrap().signable, "filetype {filetype}");
+        }
     }
 
     #[test]
