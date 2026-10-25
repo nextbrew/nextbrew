@@ -259,6 +259,15 @@ module Enumerable
 end
 
 module Kernel
+  # Homebrew's: the block's environment with `hash` set, then the old one.
+  def with_env(hash)
+    old = hash.keys.to_h { |key| [key.to_s, ENV.fetch(key.to_s, nil)] }
+    hash.each { |key, value| ENV[key.to_s] = value&.to_s }
+    yield if block_given?
+  ensure
+    ENV.update(old) if old
+  end
+
   def odie(message)
     $stderr.puts "Error: #{message}"
     exit 1
@@ -1129,6 +1138,12 @@ class Formula
       "-DCMAKE_VERBOSE_MAKEFILE=ON",
       "-DBUILD_TESTING=OFF",
     ]
+  end
+
+  def std_cargo_args(root: prefix, path: ".", features: nil)
+    args = ["--jobs", ENV.make_jobs.to_s, "--locked", "--root=#{root}", "--path=#{path}"]
+    args << "--features=#{Array(features).join(",")}" if features
+    args
   end
 
   def std_meson_args

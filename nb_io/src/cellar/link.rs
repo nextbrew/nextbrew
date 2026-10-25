@@ -233,6 +233,14 @@ fn resolve_link_target(dst: &Path) -> Option<PathBuf> {
 
 /// Whether a link's target is `src`: the path nextbrew writes, or one
 /// that resolves to the same file.
+/// A keg's symlink to the prefix's own file or directory, as llvm's
+/// `etc/clang -> ../../../../etc/clang`: Homebrew skips it
+/// (`src.resolved_path == dst`).
+fn is_link_to_itself(src: &Path, dst: &Path) -> bool {
+    !dst.is_symlink()
+        && fs::canonicalize(src).is_ok_and(|s| fs::canonicalize(dst).is_ok_and(|d| s == d))
+}
+
 fn same_file(target: &Path, src: &Path) -> bool {
     target == src || fs::canonicalize(target).ok() == fs::canonicalize(src).ok()
 }
@@ -348,6 +356,11 @@ impl Linker {
                 format!("{rel}/{}", file_name.to_string_lossy())
             };
 
+            if entry.file_type().is_ok_and(|t| t.is_symlink())
+                && is_link_to_itself(&src_path, &dst_path)
+            {
+                continue;
+            }
             // Follow symlinks, so that keg entries like `man -> ../gnuman`
             // (symlinks to directories) are treated as dirs.
             let is_dir = match entry.file_type() {
@@ -626,6 +639,9 @@ impl Linker {
             let file_type = entry
                 .file_type()
                 .map_err(Error::store("failed to read directory entry"))?;
+            if file_type.is_symlink() && !created && is_link_to_itself(&src_path, &dst_path) {
+                continue;
+            }
             let is_dir = if file_type.is_symlink() {
                 src_path.is_dir()
             } else {
@@ -1535,6 +1551,25 @@ mod tests {
         // gnuman dirs should also be expanded and merged
         assert!(prefix.join("share/gnuman/man1/sed.1").exists());
         assert!(prefix.join("share/gnuman/man1/tar.1").exists());
+    }
+
+    #[test]
+    fn keg_symlink_to_the_prefix_itself_is_skipped() {
+        // llvm's bottle: `etc/clang -> ../../../../etc/clang`, the prefix's
+        // own `etc/clang` holding `.keepme`.
+        let tmp = TempDir::new().unwrap();
+        let prefix = tmp.path();
+        let linker = Linker::new(prefix).unwrap();
+        fs::create_dir_all(prefix.join("etc/clang")).unwrap();
+        fs::write(prefix.join("etc/clang/.keepme"), b"").unwrap();
+        let keg = prefix.join("Cellar/llvm/23.1.4");
+        fs::create_dir_all(keg.join("etc")).unwrap();
+        std::os::unix::fs::symlink("../../../../etc/clang", keg.join("etc/clang")).unwrap();
+
+        linker.link_keg(&keg).unwrap();
+
+        assert!(prefix.join("etc/clang/.keepme").is_file());
+        assert!(!prefix.join("etc/clang/.keepme").is_symlink());
     }
 
     #[test]

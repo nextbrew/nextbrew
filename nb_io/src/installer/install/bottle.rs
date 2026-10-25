@@ -95,7 +95,9 @@ impl Installer {
                     ));
                 }
                 Err(e) => {
-                    let _ = self.linker.unlink_keg(&keg_path);
+                    // Installed but unlinked, as `brew install` leaves it on
+                    // a conflict: `opt/` stays for the dependents.
+                    let _ = self.linker.unlink_files(&keg_path);
                     report(InstallProgress::InstallCompleted {
                         name: formula_name.clone(),
                     });

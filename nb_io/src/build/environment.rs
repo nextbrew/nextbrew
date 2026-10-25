@@ -280,10 +280,24 @@ fn superenv_paths(prefix: &Path, keg: &Path, deps: &[BuildDep]) -> Vec<(&'static
         ("CPLUS_INCLUDE_PATH", system_include.clone()),
         ("OBJC_INCLUDE_PATH", system_include),
         ("LIBRARY_PATH", libraries),
+        // cargo links with `cc` but not `LDFLAGS`, which Homebrew's
+        // wrapper would add to it anyway.
+        ("RUSTFLAGS", rustflags(&ldflags)),
         ("LDFLAGS", ldflags),
         ("CFLAGS", optimization.into()),
         ("CXXFLAGS", optimization.into()),
     ]
+}
+
+fn rustflags(ldflags: &str) -> String {
+    if cfg!(target_os = "macos") {
+        return String::new();
+    }
+    ldflags
+        .split_whitespace()
+        .map(|flag| format!("-C link-arg={flag}"))
+        .collect::<Vec<_>>()
+        .join(" ")
 }
 
 /// A build's whole environment, as Homebrew gives one: only the variables
@@ -634,6 +648,16 @@ mod tests {
                 env["LDFLAGS"],
                 format!(
                     "-Wl,-rpath={} -Wl,-rpath={} -Wl,-rpath={} -Wl,-rpath={}",
+                    p("Cellar/f/1/lib"),
+                    p("opt/gcc/lib/gcc/current"),
+                    p("opt/xz/lib"),
+                    p("lib")
+                )
+            );
+            assert_eq!(
+                env["RUSTFLAGS"],
+                format!(
+                    "-C link-arg=-Wl,-rpath={} -C link-arg=-Wl,-rpath={} -C link-arg=-Wl,-rpath={} -C link-arg=-Wl,-rpath={}",
                     p("Cellar/f/1/lib"),
                     p("opt/gcc/lib/gcc/current"),
                     p("opt/xz/lib"),
