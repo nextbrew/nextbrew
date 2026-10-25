@@ -117,17 +117,15 @@ pub(crate) fn registry_scope(url: &str) -> Option<(String, String)> {
         (host, Some(port)) => format!("{host}:{port}"),
         (host, None) => host.to_string(),
     };
-    let mut segments = parsed.path_segments()?;
-    if segments.next()? != "v2" {
+    // The repository is everything between `v2` and `blobs`: three names,
+    // or four for a versioned formula (`homebrew/core/openssl/3`).
+    let segments: Vec<&str> = parsed.path_segments()?.collect();
+    let blobs = segments.iter().position(|segment| *segment == "blobs")?;
+    let repository = segments.get(1..blobs)?;
+    if segments[0] != "v2" || repository.len() < 3 || repository.iter().any(|s| s.is_empty()) {
         return None;
     }
-    let owner = segments.next()?;
-    let repo = segments.next()?;
-    let name = segments.next()?;
-    if segments.next()? != "blobs" || owner.is_empty() || repo.is_empty() || name.is_empty() {
-        return None;
-    }
-    Some((host, format!("repository:{owner}/{repo}/{name}:pull")))
+    Some((host, format!("repository:{}:pull", repository.join("/"))))
 }
 
 async fn cached_token(token_cache: &TokenCache, scope: &str) -> Option<String> {
@@ -379,6 +377,17 @@ mod tests {
         assert_eq!(
             registry_scope("https://ghcr.io/v2/homebrew/core/lz4/blobs/sha256:abc"),
             Some(("ghcr.io".into(), "repository:homebrew/core/lz4:pull".into()))
+        );
+    }
+
+    #[test]
+    fn registry_scope_supports_versioned_formulae() {
+        assert_eq!(
+            registry_scope("https://ghcr.io/v2/homebrew/core/openssl/3/blobs/sha256:abc"),
+            Some((
+                "ghcr.io".into(),
+                "repository:homebrew/core/openssl/3:pull".into()
+            ))
         );
     }
 
