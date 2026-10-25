@@ -52,6 +52,7 @@ nb bundle dump
 
 ## brew との違い
 
-Bundle は Partial で、実際の macOS 機ではまだ検証していません。コードは `vscode`、`go`、`cargo`、`uv`、`krew`、`npm`、`mas` のエントリも扱います。`flatpak` と `winget` のエントリ、
-およびビルドの `args` は、黙ってスキップせず、理由つきの失敗として報告します。
+Bundle は Native で、`vscode`、`go`、`cargo`、`uv`、`flatpak`、`winget`、`krew`、`npm`、`mas` のエントリも扱います。
+formula の `args:` では `build-from-source` を指定でき、formula オプション（`with-…`、`without-…`）は Homebrew と同じ警告を出して無視します。
+それ以外のビルド `args`（`HEAD` など）は、黙ってスキップせず、理由つきの失敗として報告します。
 [互換性](/ja/docs/reference/compatibility)を参照してください。

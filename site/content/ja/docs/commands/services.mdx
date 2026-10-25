@@ -9,7 +9,7 @@ description: インストール済み formula のバックグラウンドサー�
 nb services [OPTIONS] [COMMAND]
 ```
 
-`nb services` は、nextbrew 版の `brew services` です。macOS では launchd を使い、
+`nb services` は、nextbrew 版の `brew services` です。macOS では launchd、Linux では systemd を使い、
 ラベルは `dev.nextbrew.<formula>` の形式です。
 
 ## サブコマンド
@@ -44,7 +44,5 @@ nb services restart postgresql@16
 
 ## brew との違い
 
-Services は macOS（launchd）では Native ですが、実際の macOS 機ではまだ検証していません。
-`--help` が説明しているのは launchd だけです。コードは Linux 向けの systemd ユニットも書きますが、
-プロジェクトはまだ Linux の services を対象にしていません。
+Services は macOS（launchd）と Linux（systemd のユーザーユニット、`sudo` ではシステムユニット）で Native です。
 launchd ドメインの警告を表示しないようにするには、`NEXTBREW_SERVICES_NO_DOMAIN_WARNING=1` を設定します。

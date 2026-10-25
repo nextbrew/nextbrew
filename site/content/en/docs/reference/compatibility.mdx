@@ -9,19 +9,21 @@ description: What works like Homebrew today, what is partial, and what is not su
 - **Partial**: some options or packages have limits.
 - **Unsupported**: fails with an explicit error.
 
-Cask, bundle, services and `nb migrate` have not yet been verified on real macOS hardware.
+Formula commands, every cask artifact and container, bundle and services are
+exercised end to end on macOS and Linux by the integration tests on every change.
 
 | Feature | Status |
 | --- | --- |
 | Formulae: install, uninstall, upgrade, outdated, list, info | Native |
-| Formulae: link, unlink, pin, autoremove, deps, uses, search | Partial (not yet verified on real macOS hardware) |
-| Casks: app, suite, dmg, zip, tar, binary | Native (not yet verified on real macOS hardware) |
+| Formulae: link, unlink, pin, autoremove, deps, uses, search | Native |
+| Casks: app, suite, dmg, zip, tar, binary | Native |
 | Casks: hooks (`*_steps`) | Native; an unknown step or a failure rolls the install back |
-| Casks: pkg and installer | Native (not yet verified on real macOS hardware) |
+| Casks: pkg and installer | Native |
 | Casks: upgrade | Native; self-updating casks only when named |
-| Casks: uninstall stanza and `--zap` | Native; casks that only install a binary are not yet supported |
-| Bundle (Brewfile) | Partial |
-| Services | Native on macOS (launchd), labels `dev.nextbrew.<formula>`; Linux (systemd) is planned |
+| Casks: uninstall stanza and `--zap` | Native |
+| Casks: `--language` | Native; the system's languages by default |
+| Bundle (Brewfile) | Native, including `flatpak`, `winget` and the extensions; build `args` other than `build-from-source` and formula options fail with the reason |
+| Services | Native on macOS (launchd) and Linux (systemd), labels `dev.nextbrew.<formula>` |
 | Taps | Implemented (`nb tap`, `nb trust`); third-party taps must be trusted before they load. |
 | Migrating from Homebrew (`nb migrate`) | Partial |
 | Building from source | Limited coverage; developer commands (create, audit, bottle) are not planned |

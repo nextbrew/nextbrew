@@ -9,8 +9,8 @@ description: Manage background services for installed formulae.
 nb services [OPTIONS] [COMMAND]
 ```
 
-`nb services` is `brew services` for nextbrew. On macOS it uses launchd, with
-labels of the form `dev.nextbrew.<formula>`.
+`nb services` is `brew services` for nextbrew. On macOS it uses launchd and
+on Linux systemd, with labels of the form `dev.nextbrew.<formula>`.
 
 ## Subcommands
 
@@ -44,7 +44,6 @@ nb services restart postgresql@16
 
 ## Differences from brew
 
-Services are Native on macOS (launchd), but not yet verified on real macOS
-hardware. `--help` describes launchd only; the code also writes systemd units on
-Linux, but the project does not list Linux services as a target yet.
+Services are Native on macOS (launchd) and on Linux (systemd user units, or
+system units under `sudo`).
 Set `NEXTBREW_SERVICES_NO_DOMAIN_WARNING=1` to hide the launchd domain warning.

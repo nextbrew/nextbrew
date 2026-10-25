@@ -1,0 +1,76 @@
+name: source-builds
+
+# How many popular formulae `nb install --build-from-source` builds, on
+# macOS and Linux. By hand: the builds take long, and macOS minutes are paid
+# while the repository is private.
+on:
+  workflow_dispatch:
+
+permissions: {}
+
+defaults:
+  run:
+    shell: bash --noprofile --norc -euo pipefail {0}
+
+concurrency:
+  group: source-builds-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    name: ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 180
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Setup Rust
+        uses: ./.github/actions/setup-rust
+        with:
+          cache-key: ${{ matrix.os }}
+
+      - name: Build nb
+        run: cargo build --locked --package nb_cli --bin nb
+
+      - name: Build formulae from source
+        env:
+          NEXTBREW_ROOT: ${{ runner.temp }}/nb
+          NEXTBREW_PREFIX: /tmp/nbs
+          NEXTBREW_AUTO_INIT: 'true'
+          OS: ${{ matrix.os }}
+          FORMULAE: >-
+            jq tree htop fd ripgrep fzf wget curl git tmux zoxide sqlite
+            readline pcre2 zstd lz4 xz pkgconf libyaml gmp bat gh lua
+            oniguruma libevent
+        run: |
+          built=0 total=0
+          {
+            echo "| Formula | Built from source |"
+            echo "| --- | --- |"
+          } > /tmp/table.md
+          for formula in $FORMULAE; do
+            # Each from nothing, so a formula already there as another's
+            # bottled dependency is still built.
+            ./target/debug/nb uninstall --all --force > /dev/null 2>&1 || true
+            total=$((total + 1))
+            if ./target/debug/nb install --build-from-source "$formula" > "/tmp/$formula.log" 2>&1; then
+              built=$((built + 1))
+              echo "| $formula | yes |" >> /tmp/table.md
+            else
+              echo "| $formula | no |" >> /tmp/table.md
+              echo "::group::$formula"; tail -40 "/tmp/$formula.log"; echo "::endgroup::"
+            fi
+          done
+          {
+            echo "## $OS: $built of $total built"
+            cat /tmp/table.md
+          } >> "$GITHUB_STEP_SUMMARY"

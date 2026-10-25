@@ -433,7 +433,7 @@ pub enum Commands {
         #[arg(long, visible_alias = "commands")]
         command: bool,
     },
-    /// Manage background services with launchd
+    /// Manage background services with launchd (macOS) or systemd (Linux)
     Services {
         /// When run as root on macOS, run the service(s) as this user
         #[arg(long, global = true)]
