@@ -114,6 +114,19 @@ impl Downloader {
         prefetch_tokens(&self.client, &self.token_cache, &self.token_endpoints, urls).await;
     }
 
+    /// Connect to the CDN GHCR redirects bottles to while the first
+    /// requests still go to GHCR, so the downloads find the connection open.
+    pub(crate) fn preconnect(&self, urls: &[String]) {
+        if urls.iter().any(|url| url.starts_with("https://ghcr.io/")) {
+            let request = self
+                .client
+                .head("https://pkg-containers.githubusercontent.com/");
+            tokio::spawn(async move {
+                let _ = request.send().await;
+            });
+        }
+    }
+
     pub async fn download(&self, url: &str, expected_sha256: &str) -> Result<PathBuf, Error> {
         self.download_with_progress(url, expected_sha256, None, None, None)
             .await
@@ -876,7 +889,7 @@ mod tests {
     use super::*;
     use std::sync::atomic::{AtomicUsize, Ordering};
     use tempfile::TempDir;
-    use wiremock::matchers::{header_exists, method, path, query_param};
+    use wiremock::matchers::{header, header_exists, method, path, query_param};
     use wiremock::{Mock, MockServer, Request, ResponseTemplate};
 
     const HELLO_SHA: &str = "b94d27b9934d3e08a52e52d7da7dabfac484efe37a5380ee9088f7ace2efcde9";
@@ -1569,6 +1582,7 @@ mod tests {
             TokenEndpoint {
                 realm: format!("{}/token", server.uri()),
                 service: "test".into(),
+                anonymous: None,
             },
         );
         let urls: Vec<String> = ["a", "b", "c"]
@@ -1595,6 +1609,83 @@ mod tests {
             challenged, 0,
             "every blob GET carried the pre-fetched token"
         );
+    }
+
+    fn anonymous_registry(server: &MockServer) -> TokenEndpoint {
+        TokenEndpoint {
+            realm: format!("{}/token", server.uri()),
+            service: "test".into(),
+            anonymous: Some("QQ==".into()),
+        }
+    }
+
+    #[tokio::test]
+    async fn a_registry_taking_an_anonymous_token_is_not_asked_for_one() {
+        let server = MockServer::start().await;
+        let blob = "/v2/homebrew/core/a/blobs/sha256:abc";
+        Mock::given(method("GET"))
+            .and(path(blob))
+            .and(header("authorization", "Bearer QQ=="))
+            .respond_with(ResponseTemplate::new(200).set_body_bytes(b"hello world".to_vec()))
+            .expect(1)
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/token"))
+            .respond_with(ResponseTemplate::new(200))
+            .expect(0)
+            .mount(&server)
+            .await;
+
+        let host = server.uri().trim_start_matches("http://").to_string();
+        let tmp = TempDir::new().unwrap();
+        let downloader = downloader(&tmp).with_token_endpoint(&host, anonymous_registry(&server));
+        let url = format!("{}{blob}", server.uri());
+
+        downloader.prefetch_tokens(std::slice::from_ref(&url)).await;
+        downloader.download(&url, HELLO_SHA).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn a_turned_down_anonymous_token_is_traded_for_a_real_one() {
+        let server = MockServer::start().await;
+        let blob = "/v2/homebrew/core/x/blobs/sha256:abc";
+        Mock::given(method("GET"))
+            .and(path(blob))
+            .and(header("authorization", "Bearer real"))
+            .respond_with(ResponseTemplate::new(200).set_body_bytes(b"hello world".to_vec()))
+            .mount(&server)
+            .await;
+        registry(&server, blob).await;
+        Mock::given(method("GET"))
+            .and(path(blob))
+            .and(header("authorization", "Bearer QQ=="))
+            .respond_with(ResponseTemplate::new(401).append_header(
+                "WWW-Authenticate",
+                format!(
+                    "Bearer realm=\"{}/token\",service=\"test\",scope=\"repository:homebrew/core/x:pull\"",
+                    server.uri()
+                ),
+            ))
+            .with_priority(1)
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/token"))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_json(serde_json::json!({ "token": "real" })),
+            )
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let host = server.uri().trim_start_matches("http://").to_string();
+        let tmp = TempDir::new().unwrap();
+        let downloader = downloader(&tmp).with_token_endpoint(&host, anonymous_registry(&server));
+        let url = format!("{}{blob}", server.uri());
+
+        downloader.prefetch_tokens(std::slice::from_ref(&url)).await;
+        downloader.download(&url, HELLO_SHA).await.unwrap();
     }
 
     #[tokio::test]

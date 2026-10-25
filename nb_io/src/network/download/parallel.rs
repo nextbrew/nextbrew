@@ -106,9 +106,9 @@ impl ParallelDownloader {
         requests: Vec<DownloadRequest>,
         progress: Option<DownloadProgressCallback>,
     ) -> Result<Vec<PathBuf>, Error> {
-        self.downloader
-            .prefetch_tokens(&self.missing_urls(&requests))
-            .await;
+        let missing = self.missing_urls(&requests);
+        self.downloader.preconnect(&missing);
+        self.downloader.prefetch_tokens(&missing).await;
         let handles: Vec<_> = requests
             .into_iter()
             .map(|req| {
@@ -145,6 +145,7 @@ impl ParallelDownloader {
 
         tokio::spawn(async move {
             // One token for the whole plan before the first bottle request.
+            downloader.preconnect(&missing);
             downloader.prefetch_tokens(&missing).await;
 
             for (index, req) in requests.into_iter().enumerate() {

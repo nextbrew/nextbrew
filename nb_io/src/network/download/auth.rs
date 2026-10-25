@@ -50,6 +50,9 @@ pub(crate) type TokenCache = Arc<RwLock<HashMap<String, CachedToken>>>;
 pub(crate) struct TokenEndpoint {
     pub(crate) realm: String,
     pub(crate) service: String,
+    /// A token the registry takes for any public repository, so none has
+    /// to be asked for. GHCR takes `QQ==`, as Homebrew sends it.
+    pub(crate) anonymous: Option<String>,
 }
 
 impl TokenEndpoint {
@@ -61,6 +64,7 @@ impl TokenEndpoint {
             Self {
                 realm: "https://ghcr.io/token".to_string(),
                 service: "ghcr.io".to_string(),
+                anonymous: Some("QQ==".to_string()),
             },
         )])
     }
@@ -97,6 +101,7 @@ impl TokenEndpoint {
             Self {
                 realm: realm.ok_or_else(|| missing("realm"))?,
                 service: service.ok_or_else(|| missing("service"))?,
+                anonymous: None,
             },
             scope.ok_or_else(|| missing("scope"))?,
         ))
@@ -165,6 +170,13 @@ pub(crate) async fn fetch_download_response_internal(
     })?;
 
     let response = if response.status() == StatusCode::UNAUTHORIZED {
+        // The cached token was turned down (an anonymous one for a private
+        // repository, say): ask the registry for one.
+        if cached_token.is_some()
+            && let Some((_, scope)) = registry_scope(url)
+        {
+            token_cache.write().await.remove(&scope);
+        }
         handle_auth_challenge_internal(client, token_cache, url, response).await?
     } else {
         response
@@ -338,6 +350,15 @@ pub(crate) async fn prefetch_tokens(
             continue;
         };
         let scopes: Vec<String> = scopes.into_iter().collect();
+        if let Some(token) = &endpoint.anonymous {
+            let expires_at = Instant::now() + DEFAULT_TOKEN_TTL;
+            let mut cache = token_cache.write().await;
+            for scope in scopes {
+                let token = token.clone();
+                cache.insert(scope, CachedToken { token, expires_at });
+            }
+            continue;
+        }
         match request_token(client, token_cache, endpoint, &scopes).await {
             Ok(_) => debug!(host, scopes = scopes.len(), "pre-fetched registry token"),
             Err(e) => warn!(
