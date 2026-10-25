@@ -601,6 +601,7 @@ impl Linker {
     ) -> Result<Vec<LinkedFile>, Error> {
         let mut linked = Vec::new();
         let mut files = Vec::new();
+        let mut subdirs = Vec::new();
         // A directory made here is empty, so nothing in it needs checking.
         let created = !dst.exists();
         if created {
@@ -689,9 +690,7 @@ impl Linker {
                 }
 
                 if dst_is_dir || mode == DirMode::Mkpath {
-                    linked.extend(Self::link_recursive(
-                        &src_path, &dst_path, top, &entry_rel, overwrite,
-                    )?);
+                    subdirs.push((src_path, dst_path, entry_rel));
                     continue;
                 }
 
@@ -742,6 +741,17 @@ impl Linker {
                 link_path: dst_path,
                 target_path: src_path,
             });
+        }
+        // Subdirectories are filled side by side too: ruby's lib/ruby is
+        // 5,000 links over a few hundred small directories.
+        let nested: Vec<_> = subdirs
+            .into_par_iter()
+            .map(|(src_path, dst_path, entry_rel)| {
+                Self::link_recursive(&src_path, &dst_path, top, &entry_rel, overwrite)
+            })
+            .collect();
+        for result in nested {
+            linked.extend(result?);
         }
         Ok(linked)
     }
