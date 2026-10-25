@@ -70,7 +70,8 @@ jobs:
               echo "::group::$formula"; tail -40 "/tmp/$formula.log"; echo "::endgroup::"
             fi
           done
+          # In the log too, which the API can read; the summary it cannot.
           {
             echo "## $OS: $built of $total built"
             cat /tmp/table.md
-          } >> "$GITHUB_STEP_SUMMARY"
+          } | tee -a "$GITHUB_STEP_SUMMARY"
