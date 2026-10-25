@@ -10,7 +10,8 @@ description: What works like Homebrew today, what is partial, and what is not su
 - **Unsupported**: fails with an explicit error.
 
 Formula commands, every cask artifact and container, bundle and services are
-exercised end to end on macOS and Linux by the integration tests on every change.
+exercised end to end on macOS and Linux by the integration tests on every change,
+and `nb migrate` moves a real Homebrew installation into nextbrew in CI.
 
 | Feature | Status |
 | --- | --- |
@@ -25,7 +26,7 @@ exercised end to end on macOS and Linux by the integration tests on every change
 | Bundle (Brewfile) | Native, including `flatpak`, `winget` and the extensions; build `args` other than `build-from-source` and formula options fail with the reason |
 | Services | Native on macOS (launchd) and Linux (systemd), labels `dev.nextbrew.<formula>` |
 | Taps | Implemented (`nb tap`, `nb trust`); third-party taps must be trusted before they load. |
-| Migrating from Homebrew (`nb migrate`) | Partial |
+| Migrating from Homebrew (`nb migrate`) | Native: formulae, casks, taps, pins and services |
 | Building from source | Limited coverage; developer commands (create, audit, bottle) are not planned |
 
 Command names, options and exit codes follow Homebrew. nextbrew never runs
