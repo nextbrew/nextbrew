@@ -22,9 +22,16 @@ The build environment follows Homebrew's superenv on Linux: dependency paths
 formula is built with its dependencies from the nextbrew prefix. Logs go to a
 per-formula log directory (`NEXTBREW_LOGS` inside the build).
 
-## Limits
+The formula's `install` runs on Homebrew's portable Ruby, which nextbrew
+downloads for the build (else the `ruby` on your `PATH`).
 
-Source build coverage is limited. The
-project does not yet know how many formulae build correctly, and developer
-commands such as `create`, `audit` and `bottle` are not planned.
-Prefer a bottle when one exists. For a formula that fails to build, `brew install --build-from-source` remains the fallback.
+## What builds
+
+On Linux, 24 of these 25 formulae build from source (measured 2026-10-25):
+jq, tree, htop, fd, ripgrep, fzf, wget, curl, git, tmux, zoxide, sqlite,
+readline, pcre2, zstd, lz4, xz, pkgconf, libyaml, bat, gh, lua, oniguruma,
+libevent; gmp does not with GCC 15, whose C23 default its `configure`
+rejects (the same under Homebrew). macOS has not been measured yet.
+
+Developer commands such as `create`, `audit` and `bottle` are not planned.
+Prefer a bottle when one exists.

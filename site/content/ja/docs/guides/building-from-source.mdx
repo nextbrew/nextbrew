@@ -22,9 +22,16 @@ Linux では、ビルド環境は Homebrew の superenv に倣います。依存
 依存パッケージを使って formula をビルドします。ログは formula ごとのログディレクトリに出力されます
 （ビルド中は `NEXTBREW_LOGS`）。
 
-## 制限
+formula の `install` は Homebrew の portable Ruby で実行します。nextbrew がビルド用に
+ダウンロードします（できないときは `PATH` 上の `ruby`）。
 
-ソースビルドの対応範囲は限られています。
-正しくビルドできる formula がどれだけあるかは、まだ分かっていません。
+## ビルドできるもの
+
+Linux では、次の 25 個中 24 個がソースからビルドできます（2026-10-25 計測）。
+jq、tree、htop、fd、ripgrep、fzf、wget、curl、git、tmux、zoxide、sqlite、
+readline、pcre2、zstd、lz4、xz、pkgconf、libyaml、bat、gh、lua、oniguruma、
+libevent。gmp は GCC 15 ではビルドできません。GCC 15 の既定の C23 を gmp の
+`configure` が受け付けないためで、Homebrew でも同じです。macOS はまだ計測していません。
+
 `create`、`audit`、`bottle` などの開発者向けコマンドは予定していません。
-bottle があるなら、bottle を使ってください。ビルドに失敗する formula には、`brew install --build-from-source` が引き続き代替手段になります。
+bottle があるなら、bottle を使ってください。

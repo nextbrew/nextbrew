@@ -27,7 +27,7 @@ and `nb migrate` moves a real Homebrew installation into nextbrew in CI.
 | Services | Native on macOS (launchd) and Linux (systemd), labels `dev.nextbrew.<formula>` |
 | Taps | Implemented (`nb tap`, `nb trust`); third-party taps must be trusted before they load. |
 | Migrating from Homebrew (`nb migrate`) | Native: formulae, casks, taps, pins and services |
-| Building from source | Limited coverage; developer commands (create, audit, bottle) are not planned |
+| Building from source | Native: 24 of 25 popular formulae build on Linux (C, Rust, Go); developer commands (create, audit, bottle) are not planned |
 
-Command names, options and exit codes follow Homebrew. nextbrew never runs
-Ruby itself. A step it does not understand is reported, not skipped silently.
+Command names, options and exit codes follow Homebrew. nextbrew runs Ruby only
+to build from source. A step it does not understand is reported, not skipped silently.
