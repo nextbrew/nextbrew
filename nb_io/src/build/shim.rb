@@ -191,9 +191,22 @@ module Hardware
       true
     end
 
+    def self.is_32_bit?
+      false
+    end
+
     # `Hardware::CPU.arch`: `:arm64` or `:x86_64`.
     def self.arch
       arm? ? :arm64 : :x86_64
+    end
+  end
+
+  # `Hardware.oldest_cpu`: what a bottle is built for.
+  def self.oldest_cpu(_version = nil)
+    if CPU.intel?
+      OS.mac? ? :nehalem : :core2
+    else
+      OS.mac? ? :arm_vortex_tempest : :armv8
     end
   end
 end
@@ -300,8 +313,9 @@ module Homebrew
     end
 
     # The compilers, as superenv names them.
-    def cc; self["CC"]; end
-    def cxx; self["CXX"]; end
+    # superenv's compiler when none is set: Linux's gcc, macOS's clang.
+    def cc; self["CC"] || (OS.mac? ? "clang" : "gcc"); end
+    def cxx; self["CXX"] || (OS.mac? ? "clang++" : "g++"); end
     def cflags; self["CFLAGS"]; end
     def cxxflags; self["CXXFLAGS"]; end
     def cppflags; self["CPPFLAGS"]; end
@@ -878,6 +892,7 @@ class Formula
   end
 
   def name; self.class.formula_name; end
+  def versioned_formula?; name.include?("@"); end
   # `Formula#tap`, which would otherwise be `Kernel#tap`.
   def tap; NextBrewTap.new(ENV.fetch("NEXTBREW_FORMULA_TAP", "homebrew/core")); end
   # `version` without the revision, `pkg_version` with it (the keg's).
