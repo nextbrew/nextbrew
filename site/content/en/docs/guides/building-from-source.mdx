@@ -27,11 +27,11 @@ downloads for the build (else the `ruby` on your `PATH`).
 
 ## What builds
 
-On Linux, 24 of these 25 formulae build from source (measured 2026-10-25):
-jq, tree, htop, fd, ripgrep, fzf, wget, curl, git, tmux, zoxide, sqlite,
-readline, pcre2, zstd, lz4, xz, pkgconf, libyaml, bat, gh, lua, oniguruma,
-libevent; gmp does not with GCC 15, whose C23 default its `configure`
-rejects (the same under Homebrew). macOS has not been measured yet.
+These 25 formulae build from source on macOS and Linux (GitHub's
+macos-latest and ubuntu-latest, 2026-10-25): jq, tree, htop, fd, ripgrep,
+fzf, wget, curl, git, tmux, zoxide, sqlite, readline, pcre2, zstd, lz4, xz,
+pkgconf, libyaml, gmp, bat, gh, lua, oniguruma, libevent. gmp does not with
+GCC 15, whose C23 default its `configure` rejects (the same under Homebrew).
 
 Developer commands such as `create`, `audit` and `bottle` are not planned.
 Prefer a bottle when one exists.
