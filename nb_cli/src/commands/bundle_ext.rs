@@ -1,7 +1,8 @@
 //! `brew bundle`'s extensions for other package managers: `mas` (the Mac
 //! App Store), `vscode` (VS Code and its forks), `go`, `cargo`, `uv`,
-//! `krew` and `npm`. As in Homebrew, nextbrew drives their own command-line
-//! tools and installs those tools first when they are missing.
+//! `flatpak`, `winget` (from WSL), `krew` and `npm`. As in Homebrew,
+//! nextbrew drives their own command-line tools and installs those tools
+//! first when they are missing (but not Flatpak or WinGet).
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -19,6 +20,8 @@ pub enum Ext {
     Go,
     Cargo,
     Uv,
+    Flatpak,
+    Winget,
     Krew,
     Npm,
 }
@@ -31,13 +34,14 @@ pub const HANDLED: &[Ext] = &[
     Ext::Go,
     Ext::Cargo,
     Ext::Uv,
+    Ext::Flatpak,
+    Ext::Winget,
     Ext::Krew,
     Ext::Npm,
 ];
 
 /// The order `brew bundle check` looks at extension entries in: the
-/// registered extensions (`flatpak` and `winget` among them), then Mac App
-/// Store apps.
+/// registered extensions, then Mac App Store apps.
 pub const CHECK_ORDER: &[&str] = &[
     "vscode", "go", "cargo", "uv", "flatpak", "winget", "krew", "npm", "mas",
 ];
@@ -62,6 +66,8 @@ impl Ext {
             Ext::Go => "go",
             Ext::Cargo => "cargo",
             Ext::Uv => "uv",
+            Ext::Flatpak => "flatpak",
+            Ext::Winget => "winget",
             Ext::Krew => "krew",
             Ext::Npm => "npm",
         }
@@ -75,6 +81,8 @@ impl Ext {
             Ext::Go => "Go Package",
             Ext::Cargo => "Cargo Package",
             Ext::Uv => "uv Tool",
+            Ext::Flatpak => "Flatpak",
+            Ext::Winget => "WinGet Package",
             Ext::Krew => "Krew Plugin",
             Ext::Npm => "npm Package",
         }
@@ -88,6 +96,8 @@ impl Ext {
             Ext::Go => "Go packages",
             Ext::Cargo => "Cargo packages",
             Ext::Uv => "uv tools",
+            Ext::Flatpak => "flatpaks",
+            Ext::Winget => "WinGet packages",
             Ext::Krew => "Krew plugins",
             Ext::Npm => "npm packages",
         }
@@ -96,6 +106,8 @@ impl Ext {
     /// The tool's executable on `PATH` or in the prefix.
     pub fn executable(self, prefix: &Path) -> Option<PathBuf> {
         let names: &[&str] = match self {
+            Ext::Winget => return winget_executable(),
+            Ext::Flatpak => &["flatpak"],
             Ext::Mas => &["mas"],
             Ext::Vscode => &["code", "codium", "cursor", "code-insiders"],
             Ext::Go => &["go"],
@@ -104,20 +116,15 @@ impl Ext {
             Ext::Krew => &["kubectl-krew"],
             Ext::Npm => &["npm"],
         };
-        let mut dirs: Vec<PathBuf> = std::env::var_os("PATH")
-            .map(|path| std::env::split_paths(&path).collect())
-            .unwrap_or_default();
-        dirs.push(prefix.join("bin"));
         names.iter().find_map(|name| {
-            dirs.iter()
-                .map(|dir| dir.join(name))
-                .find(|candidate| candidate.is_file())
+            which(name).or_else(|| Some(prefix.join("bin").join(name)).filter(|p| p.is_file()))
         })
     }
 
-    /// What nextbrew installs to get the tool: a formula or a cask.
-    pub fn provider(self) -> &'static str {
-        match self {
+    /// What nextbrew installs to get the tool: a formula or a cask. Homebrew
+    /// leaves Flatpak and WinGet to the system.
+    pub fn provider(self) -> Option<&'static str> {
+        Some(match self {
             Ext::Mas => "mas",
             Ext::Vscode => "cask:visual-studio-code",
             Ext::Go => "go",
@@ -125,7 +132,8 @@ impl Ext {
             Ext::Uv => "uv",
             Ext::Krew => "krew",
             Ext::Npm => "node",
-        }
+            Ext::Flatpak | Ext::Winget => return None,
+        })
     }
 
     /// Why `name` cannot be installed when the tool could not be.
@@ -134,18 +142,30 @@ impl Ext {
             Ext::Vscode => {
                 format!("Unable to install {name} VSCode extension. VSCode is not installed.")
             }
+            Ext::Flatpak => {
+                "flatpak is not installed. Install it with your distribution's package manager."
+                    .to_string()
+            }
+            Ext::Winget => {
+                format!("Unable to install {name} WinGet package. winget.exe is not installed.")
+            }
             _ => format!(
                 "Unable to install {name} {}. {} installation failed.",
                 self.label().to_lowercase(),
-                self.provider()
+                self.provider().unwrap_or_default()
             ),
         }
     }
 
     /// `batch_installable?`: installed all at once after Homebrew's own
-    /// batch, rather than one by one in the Brewfile's order.
-    pub fn batched(self) -> bool {
-        matches!(self, Ext::Mas | Ext::Vscode | Ext::Cargo | Ext::Npm)
+    /// batch, rather than one by one in the Brewfile's order. Flatpaks are,
+    /// unless their remote is an address.
+    pub fn batched(self, entry: &Entry) -> bool {
+        match self {
+            Ext::Mas | Ext::Vscode | Ext::Cargo | Ext::Npm => true,
+            Ext::Flatpak => !is_url(flatpak_remote(entry).0),
+            _ => false,
+        }
     }
 
     /// `install_verb`.
@@ -209,41 +229,58 @@ fn read(ext: Ext, exe: &Path, args: &[&str]) -> String {
         .unwrap_or_default()
 }
 
+/// `which`: `name` in a `PATH` directory.
+fn which(name: &str) -> Option<PathBuf> {
+    std::env::split_paths(&std::env::var_os("PATH")?)
+        .map(|dir| dir.join(name))
+        .find(|candidate| candidate.is_file())
+}
+
 /// `Bundle.system`: unless `verbose`, the tool's output (stdout and stderr
 /// together) is kept back and shown only if it fails.
 fn run(mut cmd: Command, verbose: bool) -> bool {
     if verbose {
         return cmd.status().is_ok_and(|status| status.success());
     }
+    let (ok, logs) = capture(cmd);
+    if !ok {
+        print!("{logs}");
+    }
+    ok
+}
+
+/// Whether `cmd` succeeded, and its stdout and stderr together.
+fn capture(mut cmd: Command) -> (bool, String) {
     let Ok((mut reader, writer)) = std::io::pipe() else {
-        return false;
+        return (false, String::new());
     };
     let Ok(stdout) = writer.try_clone() else {
-        return false;
+        return (false, String::new());
     };
     cmd.stdout(stdout).stderr(writer);
     let child = cmd.spawn();
     // The command keeps its copies of the pipe's writing end until dropped.
     drop(cmd);
     let Ok(mut child) = child else {
-        return false;
+        return (false, String::new());
     };
     let mut logs = Vec::new();
     let _ = std::io::Read::read_to_end(&mut reader, &mut logs);
     let ok = child.wait().is_ok_and(|status| status.success());
-    if !ok {
-        print!("{}", String::from_utf8_lossy(&logs));
-    }
-    ok
+    (ok, String::from_utf8_lossy(&logs).into_owned())
 }
 
-/// An installed package as its tool lists it. `with` and `source` are only
-/// for `uv` and `cargo`.
+/// An installed package as its tool lists it. `with` is only for `uv`;
+/// `source` for `uv`, `cargo`, `winget` and (its remote) `flatpak`; `id`
+/// (the package identifier) for `winget`; `url` (its remote's) for
+/// `flatpak`.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Package {
     pub name: String,
     pub with: Vec<String>,
     pub source: Option<String>,
+    pub id: Option<String>,
+    pub url: Option<String>,
 }
 
 impl Package {
@@ -263,6 +300,7 @@ impl Package {
                 name: entry.name.trim().to_string(),
                 with: Vec::new(),
                 source: source().and_then(brewfile::cargo_source),
+                ..Self::default()
             },
             Ext::Uv => Self {
                 name: uv_name(&entry.name),
@@ -276,6 +314,7 @@ impl Package {
                     .into_iter(),
                 ),
                 source: source().and_then(brewfile::uv_source),
+                ..Self::default()
             },
             _ => Self::named(entry.name.clone()),
         }
@@ -344,6 +383,24 @@ impl Installed {
                 ])),
                 ..Self::default()
             },
+            Ext::Flatpak => Self {
+                packages: parse_flatpak_list(
+                    &read(&["list", "--app", "--columns=application,origin"]),
+                    &parse_flatpak_remotes(&read(&[
+                        "remote-list",
+                        "--system",
+                        "--columns=name,url",
+                    ])),
+                ),
+                ..Self::default()
+            },
+            Ext::Winget => Self {
+                packages: WINGET_SOURCES
+                    .iter()
+                    .flat_map(|source| winget_apps(&exe, source))
+                    .collect(),
+                ..Self::default()
+            },
             Ext::Krew => Self {
                 packages: packages(parse_krew_list(&read(&["list"]))),
                 ..Self::default()
@@ -364,7 +421,36 @@ impl Installed {
             Ext::Mas => {
                 app_id(entry).is_some_and(|id| self.apps.iter().any(|(app, _)| same_id(app, id)))
             }
+            // `installed_and_up_to_date?`: from the remote asked for, a URL
+            // one being `<app-id>-origin` (any for a `.flatpakref`).
+            Ext::Flatpak => {
+                let (remote, url) = flatpak_remote(entry);
+                let remote = match remote {
+                    remote if url.is_some() || !is_url(remote) => remote.to_string(),
+                    remote if remote.ends_with(".flatpakref") => return self.present(ext, entry),
+                    _ => format!("{}-origin", entry.name),
+                };
+                self.packages
+                    .iter()
+                    .any(|p| p.name == entry.name && p.source.as_deref() == Some(remote.as_str()))
+            }
+            // `app_installed?`: the id in any case, from the same source.
+            Ext::Winget => {
+                let (id, source) = winget_id(entry);
+                self.packages.iter().any(|p| {
+                    p.id.as_deref().is_some_and(|i| i.eq_ignore_ascii_case(id))
+                        && p.source.as_deref() == Some(source)
+                })
+            }
             _ => self.packages.contains(&Package::wanted(ext, entry)),
+        }
+    }
+
+    /// `preinstall!`'s check: as `has`, but a Flatpak from any remote.
+    pub fn present(&self, ext: Ext, entry: &Entry) -> bool {
+        match ext {
+            Ext::Flatpak => self.packages.iter().any(|p| p.name == entry.name),
+            _ => self.has(ext, entry),
         }
     }
 
@@ -493,6 +579,7 @@ fn parse_cargo_list(text: &str) -> Vec<Package> {
             source: found
                 .name("origin")
                 .and_then(|origin| brewfile::cargo_source(origin.as_str())),
+            ..Package::default()
         };
         if !packages.contains(&package) {
             packages.push(package);
@@ -522,6 +609,7 @@ fn parse_uv_list(text: &str) -> Vec<Package> {
                 name: with_extras(name, bracket(line, "extras").as_deref()),
                 with: uv_requirements(bracket(line, "with").as_deref()),
                 source: bracket(line, "required").and_then(|required| uv_listed_source(&required)),
+                ..Package::default()
             })
         })
         .collect();
@@ -605,6 +693,418 @@ fn parse_krew_list(text: &str) -> Vec<String> {
         }
     }
     names
+}
+
+fn is_url(remote: &str) -> bool {
+    remote.starts_with("http://") || remote.starts_with("https://")
+}
+
+/// A `flatpak` entry's `remote:` (`flathub` by default) and `url:`.
+fn flatpak_remote(entry: &Entry) -> (&str, Option<&str>) {
+    let get = |key| entry.option(key).and_then(Value::as_str);
+    (
+        get("remote").unwrap_or("flathub"),
+        get("url").filter(|url| !url.is_empty()),
+    )
+}
+
+/// `remote_urls`: `flatpak remote-list --columns=name,url`, tab-separated.
+fn parse_flatpak_remotes(text: &str) -> Vec<(String, String)> {
+    text.lines()
+        .filter_map(|line| {
+            let (name, url) = line.trim().split_once('\t')?;
+            let url = url.split('\t').next()?;
+            (!name.is_empty() && !url.is_empty()).then(|| (name.to_string(), url.to_string()))
+        })
+        .collect()
+}
+
+/// `packages_with_remotes`: `flatpak list --app
+/// --columns=application,origin`, each with its remote's URL, by name.
+fn parse_flatpak_list(text: &str, remotes: &[(String, String)]) -> Vec<Package> {
+    let mut packages: Vec<Package> = text
+        .lines()
+        .filter_map(|line| {
+            let mut parts = line.trim().split('\t');
+            let name = parts.next().filter(|name| !name.is_empty())?;
+            let remote = parts.next().filter(|r| !r.is_empty()).unwrap_or("flathub");
+            Some(Package {
+                name: name.to_string(),
+                source: Some(remote.to_string()),
+                url: remotes
+                    .iter()
+                    .rev()
+                    .find(|(known, _)| known == remote)
+                    .map(|(_, url)| url.clone()),
+                ..Package::default()
+            })
+        })
+        .collect();
+    packages.sort_by(|a, b| a.name.cmp(&b.name));
+    packages
+}
+
+/// `dump_entry`: nothing for `flathub`, the URL alone for a single-app
+/// `-origin` remote, the remote's name and URL for a shared one.
+fn flatpak_dump_line(package: &Package) -> String {
+    let remote = package.source.as_deref().unwrap_or("flathub");
+    let line = format!("flatpak {:?}", package.name);
+    match &package.url {
+        _ if remote == "flathub" => line,
+        Some(url) if remote.ends_with("-origin") => format!("{line}, remote: {url:?}"),
+        Some(url) => format!("{line}, remote: {remote:?}, url: {url:?}"),
+        None => format!("{line}, remote: {remote:?}"),
+    }
+}
+
+/// `ensure_named_remote_exists!` (`replace` false) and
+/// `ensure_single_app_remote_exists!` (`replace` true): a remote at `url`
+/// called `name`, an existing one at another address replaced or kept.
+fn ensure_flatpak_remote(exe: &Path, name: &str, url: &str, replace: bool, verbose: bool) {
+    let remotes = read(
+        Ext::Flatpak,
+        exe,
+        &["remote-list", "--system", "--columns=name,url"],
+    );
+    let flatpak = |args: &[&str]| {
+        let mut cmd = command(Ext::Flatpak, exe);
+        cmd.args(args);
+        run(cmd, verbose)
+    };
+    match parse_flatpak_remotes(&remotes)
+        .into_iter()
+        .find(|(known, _)| known == name)
+    {
+        Some((_, existing)) if existing == url => return,
+        Some((_, existing)) if !replace => {
+            println!(
+                "Warning: Remote '{name}' exists with different URL ({existing}), using existing"
+            );
+            return;
+        }
+        Some(_) => {
+            flatpak(&["remote-delete", "--system", "--force", name]);
+        }
+        None => {}
+    }
+    // `add_remote!`: a bare repository without GPG verification.
+    if url.ends_with(".flatpakrepo") {
+        flatpak(&["remote-add", "--if-not-exists", "--system", name, url]);
+    } else {
+        flatpak(&[
+            "remote-add",
+            "--if-not-exists",
+            "--system",
+            "--no-gpg-verify",
+            name,
+            url,
+        ]);
+    }
+}
+
+/// `Winget::SOURCES`, the first the default.
+const WINGET_SOURCES: &[&str] = &["winget", "msstore"];
+
+/// A `winget` entry's `id:` (its name by default) and `source:`.
+fn winget_id(entry: &Entry) -> (&str, &str) {
+    let get = |key| entry.option(key).and_then(Value::as_str);
+    (
+        get("id").unwrap_or(&entry.name),
+        get("source").unwrap_or(WINGET_SOURCES[0]),
+    )
+}
+
+/// `package_manager_executable`: under WSL only, `winget.exe` on `PATH` or
+/// in the Windows user's `WindowsApps`.
+fn winget_executable() -> Option<PathBuf> {
+    let kernel = std::fs::read_to_string("/proc/sys/kernel/osrelease").unwrap_or_default();
+    if !kernel.to_lowercase().contains("-microsoft") {
+        return None;
+    }
+    if let Some(exe) = which("winget.exe") {
+        return Some(exe);
+    }
+    // `windows_local_appdata`.
+    let cmd = which("cmd.exe").unwrap_or_else(|| "/mnt/c/Windows/System32/cmd.exe".into());
+    let local_appdata = cmd
+        .is_file()
+        .then(|| read(Ext::Winget, &cmd, &["/d", "/c", "echo", "%LOCALAPPDATA%"]))
+        .map(|out| out.trim().to_string())
+        .filter(|dir| !dir.is_empty());
+    let apps = "\\Microsoft\\WindowsApps\\winget.exe";
+    [
+        std::env::var("LOCALAPPDATA").ok().map(|dir| dir + apps),
+        std::env::var("USERPROFILE")
+            .ok()
+            .map(|dir| dir + "\\AppData\\Local" + apps),
+        local_appdata.map(|dir| dir + apps),
+    ]
+    .into_iter()
+    .flatten()
+    .filter(|path| !path.contains('%'))
+    .filter_map(|path| wsl_path(&path))
+    .find(|path| path.is_file())
+}
+
+/// `windows_path_to_wsl_path`: `C:\x` as `/mnt/c/x`.
+fn wsl_path(path: &str) -> Option<PathBuf> {
+    let path = path.replace('\\', "/");
+    if path.starts_with('/') {
+        return Some(path.into());
+    }
+    let (drive, rest) = path.split_once(":/")?;
+    (drive.len() == 1 && drive.chars().all(|c| c.is_ascii_alphabetic()) && !rest.is_empty())
+        .then(|| format!("/mnt/{}/{rest}", drive.to_lowercase()).into())
+}
+
+/// `windows_export_path`: `wslpath -w`, or the path as it is.
+fn windows_path(path: &str) -> String {
+    which("wslpath")
+        .and_then(|wslpath| Command::new(wslpath).args(["-w", path]).output().ok())
+        .filter(|out| out.status.success())
+        .map(|out| String::from_utf8_lossy(&out.stdout).trim().to_string())
+        .filter(|path| !path.is_empty())
+        .unwrap_or_else(|| path.to_string())
+}
+
+/// `export_apps`: what `winget export` has from `source`, named as `winget
+/// list` shows them.
+fn winget_apps(winget: &Path, source: &str) -> Vec<Package> {
+    let names = parse_winget_names(&read(
+        Ext::Winget,
+        winget,
+        &[
+            "list",
+            "--source",
+            source,
+            "--accept-source-agreements",
+            "--disable-interactivity",
+            "--nowarn",
+        ],
+    ));
+    winget_export(winget, source)
+        .into_iter()
+        .map(|id| Package {
+            name: names
+                .iter()
+                .rev()
+                .find(|(known, _)| *known == id.to_lowercase())
+                .map_or_else(|| id.clone(), |(_, name)| name.clone()),
+            id: Some(id),
+            source: Some(source.to_string()),
+            ..Package::default()
+        })
+        .collect()
+}
+
+/// `exported_apps`: the package ids `winget export` writes for `source`.
+fn winget_export(winget: &Path, source: &str) -> Vec<String> {
+    let Ok(file) = tempfile::Builder::new()
+        .prefix("brew-bundle-winget")
+        .suffix(".json")
+        .tempfile()
+    else {
+        return Vec::new();
+    };
+    let output = windows_path(&file.path().to_string_lossy());
+    let exported = command(Ext::Winget, winget)
+        .args(["export", "--source", source, "--output", &output])
+        .args(["--accept-source-agreements", "--disable-interactivity"])
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()
+        .is_ok_and(|status| status.success());
+    if !exported {
+        return Vec::new();
+    }
+    parse_winget_export(&std::fs::read_to_string(file.path()).unwrap_or_default())
+}
+
+/// `parse_export`: each `Sources[].Packages[].PackageIdentifier`.
+fn parse_winget_export(json: &str) -> Vec<String> {
+    let Ok(json) = serde_json::from_str::<serde_json::Value>(json) else {
+        return Vec::new();
+    };
+    let list = |value: &serde_json::Value| value.as_array().cloned().unwrap_or_default();
+    list(&json["Sources"])
+        .iter()
+        .flat_map(|source| list(&source["Packages"]))
+        .filter_map(|package| package["PackageIdentifier"].as_str().map(str::to_string))
+        .filter(|id| !id.trim().is_empty())
+        .collect()
+}
+
+/// `parse_list_names`: `(lowercased id, name)` from `winget list`'s table,
+/// its columns where the `Name  Id  Version` header puts them.
+fn parse_winget_names(text: &str) -> Vec<(String, String)> {
+    static HEADER: LazyLock<Regex> =
+        LazyLock::new(|| Regex::new(r"\bName\s+Id\s+Version\b").unwrap());
+    let text = text.replace('\r', "");
+    let mut lines = text.lines().skip_while(|line| !HEADER.is_match(line));
+    let Some(header) = lines.next() else {
+        return Vec::new();
+    };
+    // Columns in characters, as Ruby counts them.
+    let header: Vec<char> = header.chars().collect();
+    let column = |word: &str, from: usize| {
+        let word: Vec<char> = word.chars().collect();
+        (from..header.len()).find(|&at| header[at..].starts_with(&word))
+    };
+    let Some(start) = column("Name", 0) else {
+        return Vec::new();
+    };
+    let (Some(id_at), Some(version_at)) = (column("Id", start), column("Version", start)) else {
+        return Vec::new();
+    };
+    let cut = |line: &[char], from: usize, to: usize| -> String {
+        line.get(from..to.min(line.len()))
+            .unwrap_or_default()
+            .iter()
+            .collect()
+    };
+    lines
+        .filter_map(|line| {
+            let line: Vec<char> = line.chars().collect();
+            let rest = cut(&line, start, usize::MAX);
+            if line.iter().all(|c| c.is_whitespace())
+                || !rest.is_empty() && rest.chars().all(|c| c == '-')
+            {
+                return None;
+            }
+            let name = cut(&line, start, id_at).trim().to_string();
+            let id = cut(&line, id_at, version_at).trim().to_lowercase();
+            (!name.is_empty() && !id.is_empty()).then_some((id, name))
+        })
+        .collect()
+}
+
+/// `internal_package?`: what Windows itself installs, never dumped or
+/// cleaned up.
+fn winget_internal(id: &str, name: &str) -> bool {
+    static INTERNAL: LazyLock<Regex> = LazyLock::new(|| {
+        Regex::new(concat!(
+            r"(?i)\AApp Installer\z|\A9NBLGGH4NNS1\z|\AMicrosoft Store\z",
+            r"|\AStore Experience Host\z|\AWindows (?:Feature|Web) Experience Pack\z",
+            r"|\AMicrosoft Edge WebView2 Runtime\z|\AMicrosoft Visual C\+\+|\AWindows App Runtime",
+            r"|\AMicrosoft\.(?:AppInstaller|DesktopAppInstaller|DirectX|DotNet|Edge|EdgeWebView2Runtime|GameInput)\b",
+            r"|\AMicrosoft\.(?:HEVCVideoExtension|NET\.Native|RawImageExtension)\b",
+            r"|\AMicrosoft\.(?:OneDrive|WSL)\z",
+            r"|\AMicrosoft\.(?:Services\.Store\.Engagement|StorePurchaseApp|UI\.Xaml|VCLibs|WindowsAppRuntime)\b",
+            r"|\AMicrosoft\.(?:WindowsStore|WebMediaExtensions|WebpImageExtension|VP9VideoExtensions)\b",
+            r"|\AMicrosoft\.VCRedist\.|\ANvidia\.PhysX\z",
+        ))
+        .unwrap()
+    });
+    INTERNAL.is_match(id) || INTERNAL.is_match(name)
+}
+
+/// `packages`: the apps not Windows' own, by source then name.
+fn winget_packages(installed: &Installed) -> Vec<&Package> {
+    let mut apps: Vec<&Package> = installed
+        .packages
+        .iter()
+        .filter(|app| !winget_internal(app.id.as_deref().unwrap_or_default(), &app.name))
+        .collect();
+    let source = |app: &Package| {
+        WINGET_SOURCES
+            .iter()
+            .position(|s| app.source.as_deref() == Some(*s))
+            .unwrap_or(WINGET_SOURCES.len())
+    };
+    apps.sort_by_key(|app| (source(app), app.name.to_lowercase()));
+    apps
+}
+
+/// `Winget.install!`: elevated through PowerShell if the installer seems to
+/// want it, with a hint on how to install it by hand if that fails too.
+fn winget_install(exe: &Path, entry: &Entry, verbose: bool) -> bool {
+    static ELEVATION: LazyLock<Regex> = LazyLock::new(|| {
+        Regex::new(
+            r"(?i)Installer failed with exit code:\s*1603|\b(?:admin|administrator|elevat|UAC)\b",
+        )
+        .unwrap()
+    });
+    static INSTALLER_UI: LazyLock<Regex> =
+        LazyLock::new(|| Regex::new(r"(?i)\b(?:interactive|user input|user cancelled)\b").unwrap());
+    let (id, source) = winget_id(entry);
+    let args = [
+        "install",
+        "--id",
+        id,
+        "--exact",
+        "--source",
+        source,
+        "--accept-source-agreements",
+        "--accept-package-agreements",
+        "--disable-interactivity",
+    ];
+    let mut cmd = command(Ext::Winget, exe);
+    cmd.args(args);
+    let (mut ok, mut output) = capture(cmd);
+    if verbose {
+        print!("{output}");
+    }
+    if !ok && ELEVATION.is_match(&output) {
+        println!(
+            "WinGet install for {} may require Windows UAC/elevation; retrying elevated.",
+            entry.name
+        );
+        let elevated;
+        (ok, elevated) = winget_elevated(exe, &args, verbose);
+        if !elevated.is_empty() {
+            output = elevated;
+        }
+    }
+    if ok {
+        return true;
+    }
+    // `report_install_failure`.
+    println!(
+        "WinGet failed to install {} ({id}) from {source}.",
+        entry.name
+    );
+    let manual = format!("winget install --id {id} --exact --source {source}");
+    if ELEVATION.is_match(&output) {
+        println!("The installer may require Windows UAC/elevation.");
+        println!("Try installing it from an elevated Windows Terminal:");
+        println!("  {manual} --disable-interactivity");
+    } else if INSTALLER_UI.is_match(&output) {
+        println!(
+            "The installer appears to require installer UI or user input, which brew bundle does not automate."
+        );
+        println!("Install it manually from Windows:");
+        println!("  {manual}");
+    } else {
+        println!("Try installing it manually from Windows:");
+        println!("  {manual}");
+    }
+    false
+}
+
+/// `run_elevated_install_command`: `winget` through PowerShell's
+/// `Start-Process -Verb RunAs`.
+fn winget_elevated(exe: &Path, args: &[&str], verbose: bool) -> (bool, String) {
+    let powershell = which("powershell.exe")
+        .unwrap_or_else(|| "/mnt/c/Windows/System32/WindowsPowerShell/v1.0/powershell.exe".into());
+    if !powershell.is_file() {
+        return (false, "powershell.exe is not available.\n".to_string());
+    }
+    let quote = |value: &str| format!("'{}'", value.replace('\'', "''"));
+    let winget = exe.to_string_lossy();
+    let winget = if winget.contains('/') {
+        windows_path(&winget)
+    } else {
+        winget.into_owned()
+    };
+    let arguments: Vec<String> = args.iter().map(|arg| quote(arg)).collect();
+    let script = format!(
+        "$startProcessArgs = @{{\n  FilePath = {}\n  ArgumentList = @({})\n  Verb = 'RunAs'\n  Wait = $true\n  PassThru = $true\n}}\n$process = Start-Process @startProcessArgs\n$process.WaitForExit()\nexit $process.ExitCode\n",
+        quote(&winget),
+        arguments.join(", ")
+    );
+    let mut cmd = Command::new(powershell);
+    cmd.args(["-NoProfile", "-Command", &script]);
+    (run(cmd, verbose), String::new())
 }
 
 /// The package names in `npm list --json` (under `dependencies`) or `npm
@@ -752,6 +1252,47 @@ pub fn install(
         Ext::Krew => entries
             .iter()
             .all(|entry| run_args(vec!["install".to_string(), entry.name.clone()])),
+        Ext::Flatpak => {
+            // `install!`'s three kinds of remote: a named one (with its
+            // `url:` added if missing), a `.flatpakref` installed as it is,
+            // or another address as the app's own `<app-id>-origin`. One
+            // `flatpak install` per named remote (`install_batch!`).
+            let install = |remote: &str, names: Vec<String>| {
+                let args = ["install", "-y", "--system", remote].map(str::to_string);
+                run_args([args.to_vec(), names].concat())
+            };
+            let mut ok = true;
+            let mut groups: Vec<(&str, Option<&str>, Vec<String>)> = Vec::new();
+            for entry in entries {
+                let (remote, url) = flatpak_remote(entry);
+                let name = entry.name.clone();
+                if url.is_some() || !is_url(remote) {
+                    match groups
+                        .iter_mut()
+                        .find(|(r, u, _)| (*r, *u) == (remote, url))
+                    {
+                        Some((_, _, names)) => names.push(name),
+                        None => groups.push((remote, url, vec![name])),
+                    }
+                } else if remote.ends_with(".flatpakref") {
+                    ok = install(remote, Vec::new()) && ok;
+                } else {
+                    let origin = format!("{}-origin", entry.name);
+                    ensure_flatpak_remote(exe, &origin, remote, true, verbose);
+                    ok = install(&origin, vec![entry.name.clone()]) && ok;
+                }
+            }
+            for (remote, url, names) in groups {
+                if let Some(url) = url {
+                    ensure_flatpak_remote(exe, remote, url, false, verbose);
+                }
+                ok = install(remote, names) && ok;
+            }
+            ok
+        }
+        Ext::Winget => entries
+            .iter()
+            .all(|entry| winget_install(exe, entry, verbose)),
         Ext::Uv => entries.iter().all(|entry| {
             let wanted = Package::wanted(ext, entry);
             let mut args = vec![
@@ -784,6 +1325,32 @@ pub fn dump(ext: Ext, installed: &Installed) -> String {
                 .collect::<Vec<_>>()
                 .join("\n")
         }
+        Ext::Flatpak => installed
+            .packages
+            .iter()
+            .map(flatpak_dump_line)
+            .collect::<Vec<_>>()
+            .join("\n"),
+        // `dump_entry`: the `id:` if not the name, the `source:` if not
+        // `winget`.
+        Ext::Winget => winget_packages(installed)
+            .into_iter()
+            .map(|app| {
+                let id = app.id.as_deref().unwrap_or(&app.name);
+                let mut line = format!("winget {:?}", app.name);
+                if id != app.name {
+                    line.push_str(&format!(", id: {id:?}"));
+                }
+                match app.source.as_deref() {
+                    Some(source) if source != WINGET_SOURCES[0] => {
+                        line.push_str(&format!(", source: {source:?}"))
+                    }
+                    _ => {}
+                }
+                line
+            })
+            .collect::<Vec<_>>()
+            .join("\n"),
         _ => installed
             .packages
             .iter()
@@ -830,6 +1397,33 @@ pub fn cleanup_items(ext: Ext, entries: &[Entry], installed: &Installed) -> Vec<
             .filter(|package| !kept.iter().any(|e| e.name.to_lowercase() == package.name))
             .map(|package| (package.name.clone(), package.name.clone()))
             .collect(),
+        // By id and source, `id<TAB>source`; shown as `winget export` names
+        // them, by id (`cleanup_item_name`).
+        Ext::Winget => {
+            let mut apps: Vec<(&str, &str)> = installed
+                .packages
+                .iter()
+                .filter_map(|app| Some((app.id.as_deref()?, app.source.as_deref()?)))
+                .filter(|(id, _)| !winget_internal(id, id))
+                .filter(|(id, source)| {
+                    !kept.iter().any(|e| {
+                        let (kept_id, kept_source) = winget_id(e);
+                        kept_id.eq_ignore_ascii_case(id) && kept_source == *source
+                    })
+                })
+                .collect();
+            let rank = |source: &str| WINGET_SOURCES.iter().position(|s| *s == source);
+            apps.sort_by_key(|(id, source)| (rank(source).unwrap_or(2), id.to_lowercase()));
+            apps.into_iter()
+                .map(|(id, source)| {
+                    let shown = match source {
+                        "winget" => id.to_string(),
+                        _ => format!("{id} ({source})"),
+                    };
+                    (format!("{id}\t{source}"), shown)
+                })
+                .collect()
+        }
         _ => installed
             .packages
             .iter()
@@ -847,6 +1441,40 @@ pub fn cleanup(ext: Ext, exe: &Path, items: &[(String, String)]) {
         Ext::Cargo | Ext::Krew => &["uninstall"],
         Ext::Uv => &["tool", "uninstall"],
         Ext::Npm => &["uninstall", "-g"],
+        Ext::Flatpak | Ext::Winget => {
+            // `Extension.cleanup!`: the Flatpaks' own output shown
+            // (`Kernel.system`), WinGet's only when it fails.
+            let removed = items
+                .iter()
+                .filter(|(item, shown)| {
+                    let mut cmd = command(ext, exe);
+                    let ok = if ext == Ext::Flatpak {
+                        cmd.args(["uninstall", "-y", "--system", item]);
+                        cmd.status().is_ok_and(|status| status.success())
+                    } else {
+                        let (id, source) = item.split_once('\t').unwrap_or((item, "winget"));
+                        cmd.args(["uninstall", "--id", id, "--exact", "--source", source])
+                            .args(["--accept-source-agreements", "--disable-interactivity"]);
+                        run(cmd, false)
+                    };
+                    if !ok {
+                        let banner = match ext {
+                            Ext::Flatpak => "Flatpak packages",
+                            _ => "WinGet packages",
+                        };
+                        eprintln!("Error: Failed to uninstall {banner}: {shown}");
+                    }
+                    ok
+                })
+                .count();
+            // `Utils.pluralize(package_description, …)`.
+            println!(
+                "Uninstalled {removed} {}{}",
+                ext.label().to_lowercase(),
+                if removed == 1 { "" } else { "s" }
+            );
+            return;
+        }
         Ext::Go => {
             // Go has no uninstall: the programs built from these modules go.
             let modules: Vec<&String> = items.iter().map(|(id, _)| id).collect();
@@ -961,7 +1589,8 @@ mod tests {
                 Package {
                     name: "foo".into(),
                     with: vec![],
-                    source: Some("https://github.com/x/foo?branch=main".into())
+                    source: Some("https://github.com/x/foo?branch=main".into()),
+                    ..Default::default()
                 },
                 Package::named("bar"),
             ]
@@ -980,12 +1609,13 @@ mod tests {
                 Package {
                     name: "black[d,jupyter]".into(),
                     with: vec!["attrs".into(), "requests>=2, <3".into()],
-                    source: None
+                    ..Default::default()
                 },
                 Package {
                     name: "mytool".into(),
                     with: vec![],
-                    source: Some("git+https://github.com/x/mytool".into())
+                    source: Some("git+https://github.com/x/mytool".into()),
+                    ..Default::default()
                 },
                 Package::named("ruff"),
             ]
@@ -1032,6 +1662,135 @@ mod tests {
         assert_eq!(
             parse_krew_list("ctx\nns  \n\nctx\n"),
             ["ctx".to_string(), "ns".to_string()]
+        );
+    }
+
+    #[test]
+    fn reads_flatpak_lists_and_dumps_their_remotes() {
+        let remotes = parse_flatpak_remotes(
+            "flathub\thttps://dl.flathub.org/repo/\n\
+             com.example.Foo-origin\thttps://example.com/foo\n\
+             mine\thttps://example.com/mine.flatpakrepo\n\
+             bare\n",
+        );
+        assert_eq!(remotes.len(), 3);
+        let installed = Installed {
+            packages: parse_flatpak_list(
+                "org.gimp.GIMP\tflathub\n\
+                 com.example.Foo\tcom.example.Foo-origin\n\
+                 com.example.Bar\tmine\n\
+                 com.example.Baz\tlocal\n\
+                 org.blank\n\n",
+                &remotes,
+            ),
+            ..Default::default()
+        };
+        assert_eq!(
+            dump(Ext::Flatpak, &installed),
+            "flatpak \"com.example.Bar\", remote: \"mine\", url: \"https://example.com/mine.flatpakrepo\"\n\
+             flatpak \"com.example.Baz\", remote: \"local\"\n\
+             flatpak \"com.example.Foo\", remote: \"https://example.com/foo\"\n\
+             flatpak \"org.blank\"\n\
+             flatpak \"org.gimp.GIMP\""
+        );
+        let entries = crate::brewfile::parse(
+            "flatpak \"org.gimp.GIMP\"\n\
+             flatpak \"org.gimp.GIMP\", remote: \"mine\"\n\
+             flatpak \"com.example.Foo\", remote: \"https://example.com/foo\"\n\
+             flatpak \"com.example.Bar\", remote: \"mine\", url: \"https://example.com/other\"\n\
+             flatpak \"org.blank\", remote: \"https://example.com/blank.flatpakref\"\n\
+             flatpak \"x.y\", remote: \"https://example.com/x.flatpakref\"\n",
+        )
+        .unwrap();
+        let has: Vec<bool> = entries
+            .iter()
+            .map(|e| installed.has(Ext::Flatpak, e))
+            .collect();
+        assert_eq!(has, [true, false, true, true, true, false]);
+        // Installing looks for the app from any remote.
+        assert!(installed.present(Ext::Flatpak, &entries[1]));
+        assert!(Ext::Flatpak.batched(&entries[1]));
+        assert!(!Ext::Flatpak.batched(&entries[2]));
+        assert_eq!(
+            cleanup_items(Ext::Flatpak, &entries[..1], &installed)
+                .into_iter()
+                .map(|(id, _)| id)
+                .collect::<Vec<_>>(),
+            [
+                "com.example.Bar",
+                "com.example.Baz",
+                "com.example.Foo",
+                "org.blank"
+            ]
+        );
+    }
+
+    #[test]
+    fn reads_winget_lists_and_dumps_them() {
+        let names = parse_winget_names(
+            "Name      Id             Version   Source\r\n\
+             -----------------------------------------\r\n\
+             Git       Git.Git        2.45.1    winget\r\n\
+             Café      Cafe.Tool      1.0       winget\r\n\
+             \r\n",
+        );
+        assert_eq!(
+            names,
+            [
+                ("git.git".to_string(), "Git".to_string()),
+                ("cafe.tool".to_string(), "Café".to_string())
+            ]
+        );
+        assert!(parse_winget_names("No installed package found.\n").is_empty());
+        assert_eq!(
+            parse_winget_export(
+                r#"{"Sources": [{"Packages": [{"PackageIdentifier": "Git.Git"}, {"PackageIdentifier": ""}, {"x": 1}]}, {"Packages": [{"PackageIdentifier": "Microsoft.Edge"}]}]}"#
+            ),
+            ["Git.Git", "Microsoft.Edge"]
+        );
+        assert!(parse_winget_export("not json").is_empty());
+        assert_eq!(
+            wsl_path("C:\\Users\\me\\AppData"),
+            Some(PathBuf::from("/mnt/c/Users/me/AppData"))
+        );
+        assert_eq!(wsl_path("relative\\path"), None);
+
+        let app = |name: &str, id: &str, source: &str| Package {
+            name: name.into(),
+            id: Some(id.into()),
+            source: Some(source.into()),
+            ..Default::default()
+        };
+        let installed = Installed {
+            packages: vec![
+                app("Spotify", "9NCBCSZSJRSB", "msstore"),
+                app("Git", "Git.Git", "winget"),
+                app("Microsoft Edge", "Microsoft.Edge", "winget"),
+                app("7zip.7zip", "7zip.7zip", "winget"),
+            ],
+            ..Default::default()
+        };
+        assert_eq!(
+            dump(Ext::Winget, &installed),
+            "winget \"7zip.7zip\"\n\
+             winget \"Git\", id: \"Git.Git\"\n\
+             winget \"Spotify\", id: \"9NCBCSZSJRSB\", source: \"msstore\""
+        );
+        let entries = crate::brewfile::parse(
+            "winget \"Git\", id: \"git.git\"\nwinget \"Git.Git\", source: \"msstore\"\n",
+        )
+        .unwrap();
+        assert!(installed.has(Ext::Winget, &entries[0]));
+        assert!(!installed.has(Ext::Winget, &entries[1]));
+        assert_eq!(
+            cleanup_items(Ext::Winget, &entries[..1], &installed),
+            [
+                ("7zip.7zip\twinget".to_string(), "7zip.7zip".to_string()),
+                (
+                    "9NCBCSZSJRSB\tmsstore".to_string(),
+                    "9NCBCSZSJRSB (msstore)".to_string()
+                ),
+            ]
         );
     }
 }

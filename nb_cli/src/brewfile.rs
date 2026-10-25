@@ -498,6 +498,9 @@ pub fn parse(source: &str) -> Result<Vec<Entry>, ParseError> {
                 options = extension_options(ext, options)
                     .map_err(|message| ParseError { line, message })?;
             }
+            Kind::Extension(ext @ ("flatpak" | "winget")) => {
+                check_options(ext, &options).map_err(|message| ParseError { line, message })?;
+            }
             Kind::Extension(ext @ ("vscode" | "go" | "krew" | "npm")) if !options.is_empty() => {
                 return Err(ParseError {
                     line,
@@ -546,6 +549,45 @@ fn unknown_options(ext: &str, options: &[(String, Value)], known: &[&str]) -> St
         .map(|(k, _)| format!(":{k}"))
         .collect();
     format!("unknown options([{}]) for {ext}", keys.join(", "))
+}
+
+/// `Flatpak.entry` and `Winget.entry`: string `remote:` and `url:` (not
+/// both addresses), or `id:` and a known `source:`.
+fn check_options(ext: &str, options: &[(String, Value)]) -> Result<(), String> {
+    let known: &[&str] = if ext == "flatpak" {
+        &["remote", "url"]
+    } else {
+        &["id", "source"]
+    };
+    if options.iter().any(|(k, _)| !known.contains(&k.as_str())) {
+        return Err(unknown_options(ext, options, known));
+    }
+    for (key, value) in options {
+        // A `flatpak` option may be `nil`; a `winget` one must be a string.
+        if !matches!(value, Value::Str(_)) && (ext == "winget" || *value != Value::Nil) {
+            return Err(format!(
+                "options[:{key}]({value}) should be a String object"
+            ));
+        }
+    }
+    let get = |key: &str| {
+        options
+            .iter()
+            .find(|(k, _)| k == key)
+            .and_then(|(_, v)| v.as_str())
+    };
+    if ext == "flatpak" {
+        if get("url").is_some()
+            && get("remote").is_some_and(|r| r.starts_with("http://") || r.starts_with("https://"))
+        {
+            return Err("url: parameter cannot be used when remote: is already a URL".to_string());
+        }
+    } else if let Some(source) = get("source").filter(|s| !["winget", "msstore"].contains(s)) {
+        return Err(format!(
+            "options[:source]({source:?}) should be one of [\"winget\", \"msstore\"]"
+        ));
+    }
+    Ok(())
 }
 
 /// `Cargo.entry` and `Uv.entry`: their options checked and normalised as
@@ -793,6 +835,14 @@ brew "wget",
                 .message
                 .contains("unknown options")
         );
+        assert!(
+            parse(concat!(
+                "flatpak \"a\", remote: \"mine\", url: \"https://x\"\n",
+                "flatpak \"b\", remote: nil\n",
+                "winget \"Git\", id: \"Git.Git\", source: \"msstore\"\n",
+            ))
+            .is_ok()
+        );
         assert_eq!(
             parse("go \"x\", with: [\"y\"]\n").unwrap_err().message,
             "unknown options([:with]) for go"
@@ -840,6 +890,26 @@ brew "wget",
             (
                 "uv \"x\", source: \"git+file:///x\"",
                 "is local to this machine",
+            ),
+            (
+                "flatpak \"x\", branch: \"y\"",
+                "unknown options([:branch]) for flatpak",
+            ),
+            (
+                "flatpak \"x\", remote: :flathub",
+                "options[:remote](:flathub) should be a String object",
+            ),
+            (
+                "flatpak \"x\", remote: \"https://a\", url: \"https://b\"",
+                "url: parameter cannot be used when remote: is already a URL",
+            ),
+            (
+                "winget \"x\", id: nil",
+                "options[:id](nil) should be a String object",
+            ),
+            (
+                "winget \"x\", source: \"choco\"",
+                "options[:source](\"choco\") should be one of [\"winget\", \"msstore\"]",
             ),
         ] {
             let message = parse(source).unwrap_err().message;

@@ -1,7 +1,7 @@
 //! `nb bundle`: `brew bundle` over a Brewfile read without Ruby (see
-//! [`crate::brewfile`]). Entries nextbrew cannot install (`flatpak`,
-//! `winget`, build `args`) count as failures and say why, as a failed
-//! install does in Homebrew; none are skipped silently.
+//! [`crate::brewfile`]). Entries nextbrew cannot install (`args:` other
+//! than a build from source or a formula option) count as failures and say why, as a failed install does in Homebrew;
+//! none are skipped silently.
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -59,10 +59,10 @@ pub async fn execute(
         } => {
             let directive = match types.selected().as_slice() {
                 [] => "brew",
-                ["mas"] => {
-                    return Err(usage(
-                        "The `add` subcommand does not accept the `--mas` switch.",
-                    ));
+                [one @ ("mas" | "winget")] => {
+                    return Err(usage(&format!(
+                        "The `add` subcommand does not accept the `--{one}` switch."
+                    )));
                 }
                 [one] => one,
                 _ => return Err(usage("`add` supports only one type of entry at a time.")),
@@ -847,20 +847,30 @@ fn unsupported(entry: &Entry) -> Option<String> {
             entry.name
         )),
         Kind::Tap => None,
-        Kind::Brew => match entry.option("args") {
-            Some(Value::Array(args)) if !args.is_empty() => Some(format!(
-                "build options ({}) need a build from source, which nextbrew does not do",
-                args.iter()
-                    .map(ToString::to_string)
-                    .collect::<Vec<_>>()
-                    .join(", ")
-            )),
-            _ => None,
-        },
+        Kind::Brew => brew_args(entry).err(),
         Kind::Cask => cask_config(entry).err().map(|e| e.to_string()),
-        Kind::Extension(_) if Ext::of(entry).is_some() => None,
-        Kind::Extension(kind) => Some(format!("nextbrew does not install `{kind}` entries")),
+        Kind::Extension(_) => None,
     }
+}
+
+/// A brew entry's `args:`, each passed to `brew install` as `--<arg>`:
+/// whether they ask for a build from source, and the `--with(out)-…`
+/// options, which a formula without options ignores; or why not.
+fn brew_args(entry: &Entry) -> Result<(bool, Vec<String>), String> {
+    let mut build = false;
+    let mut ignored = Vec::new();
+    let Some(Value::Array(args)) = entry.option("args") else {
+        return Ok((build, ignored));
+    };
+    for arg in args {
+        let arg = arg.as_str().map_or_else(|| arg.to_string(), str::to_string);
+        match arg.as_str() {
+            "build-from-source" => build = true,
+            a if a.starts_with("with-") || a.starts_with("without-") => ignored.push(arg),
+            _ => return Err(format!("nextbrew does not install with `--{arg}`")),
+        }
+    }
+    Ok((build, ignored))
 }
 
 /// The options a cask entry installs with: `$HOMEBREW_CASK_OPTS` with its
@@ -1159,7 +1169,7 @@ async fn install_from_file(
             {
                 batch.push(plan)
             }
-            Pending::Extension(ext, entry) if ext.batched() => {
+            Pending::Extension(ext, entry) if ext.batched(&entry) => {
                 match extension_batches.iter_mut().find(|(e, _)| *e == ext) {
                     Some((_, group)) => group.push(entry),
                     None => extension_batches.push((ext, vec![entry])),
@@ -1293,17 +1303,11 @@ async fn install_extension(
     options: &InstallOptions,
     ui: &mut StdUi,
 ) -> (usize, usize) {
-    let exe = match ext.executable(installer.prefix()) {
-        Some(exe) => Some(exe),
-        None => {
-            let _ = install::execute(
-                installer,
-                vec![ext.provider().to_string()],
-                false,
-                false,
-                ui,
-            )
-            .await;
+    let exe = match (ext.executable(installer.prefix()), ext.provider()) {
+        (Some(exe), _) => Some(exe),
+        (None, None) => None,
+        (None, Some(provider)) => {
+            let _ = install::execute(installer, vec![provider.to_string()], false, false, ui).await;
             ext.executable(installer.prefix())
         }
     };
@@ -1318,7 +1322,7 @@ async fn install_extension(
     let prefix = installer.prefix().to_path_buf();
     let installed = Installed::read(ext, &prefix);
     let needs = |entry: &Entry, installed: &Installed| {
-        !installed.has(ext, entry) || (!options.no_upgrade && installed.outdated(ext, entry))
+        !installed.present(ext, entry) || (!options.no_upgrade && installed.outdated(ext, entry))
     };
     let verbs: Vec<&str> = group.iter().map(|e| ext.verb(e, &installed)).collect();
     let actionable: Vec<&Entry> = group
@@ -1338,7 +1342,7 @@ async fn install_extension(
     {
         return (group.len(), 0);
     }
-    if !ext.batched() {
+    if !ext.batched(group[0]) {
         say_failed(verbs[0], &group[0].name, None);
         return (0, 1);
     }
@@ -1422,11 +1426,18 @@ async fn install_formula(
                 return false;
             }
             let no_link = matches!(link, Some(Value::Bool(false)));
+            let (build, ignored) = brew_args(&plan.entry).unwrap_or_default();
+            for option in ignored {
+                eprintln!(
+                    "{} {name}: this formula has no --{option} option so it will be ignored!",
+                    style("Warning:").yellow().bold()
+                );
+            }
             install::execute(
                 installer,
                 vec![plan.install_name.clone()],
                 no_link,
-                false,
+                build,
                 ui,
             )
             .await
@@ -1614,13 +1625,6 @@ async fn check(
             continue;
         }
         let Some(ext) = Ext::named(kind) else {
-            for entry in wanted {
-                errors.push(format!(
-                    "{} {} cannot be checked: nextbrew does not handle `{kind}` entries.",
-                    capitalize(kind),
-                    entry.name
-                ));
-            }
             continue;
         };
         let installed = Installed::read(ext, installer.prefix());
@@ -1973,14 +1977,6 @@ async fn dump_order(installer: &nb_io::Installer) -> Result<Vec<String>, nb_core
     Ok(order)
 }
 
-fn capitalize(word: &str) -> String {
-    let mut chars = word.chars();
-    chars
-        .next()
-        .map(|first| first.to_uppercase().chain(chars).collect())
-        .unwrap_or_default()
-}
-
 struct DumpOptions {
     taps: bool,
     formulae: bool,
@@ -2258,15 +2254,14 @@ mod tests {
             "tap \"hashicorp/tap\"",
             "brew \"hashicorp/tap/terraform\"",
             "cask \"microsoft/git/microsoft-git\"",
+            "flatpak \"org.gimp.GIMP\"",
+            "winget \"Git.Git\"",
+            "brew \"x\", args: [\"build-from-source\", \"with-y\"]",
+            "cask \"firefox\", args: { language: \"ja\" }",
         ] {
             assert!(unsupported(&entry(source)).is_none(), "{source}");
         }
-        for source in [
-            "tap \"homebrew/bundle\"",
-            "brew \"x\", args: [\"HEAD\"]",
-            "cask \"firefox\", args: { language: \"ja\" }",
-            "flatpak \"org.gimp.GIMP\"",
-        ] {
+        for source in ["tap \"homebrew/bundle\"", "brew \"x\", args: [\"HEAD\"]"] {
             assert!(unsupported(&entry(source)).is_some(), "{source}");
         }
     }
