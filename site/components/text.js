@@ -27,6 +27,7 @@ export const text = {
     bench: {
       formula: 'Formula', deps: 'Dependencies', measured: 'Measured', pending: 'Benchmarks have not been measured yet.',
       cold: 'Cold', warm: 'Warm', total: n => `Total (${n} formulae)`, rounds: n => (n === 1 ? '1 round' : `median of ${n} rounds`),
+      fastest: 'The fastest time in each row is in bold.',
     },
   },
   ja: {
@@ -56,6 +57,7 @@ export const text = {
     bench: {
       formula: 'Formula', deps: '依存', measured: '計測日', pending: 'ベンチマークはまだ計測していません。',
       cold: 'Cold', warm: 'Warm', total: n => `合計（${n} formula）`, rounds: n => (n === 1 ? '1 回' : `${n} 回の中央値`),
+      fastest: '各行でいちばん速い時間を太字にしています。',
     },
   },
 }

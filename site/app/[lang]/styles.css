@@ -58,3 +58,10 @@ html.dark .nb-landing { --nb-fg: #ededed; --nb-muted: #a1a1a1; --nb-line: #222; 
   .nb-features { grid-template-columns: 1fr; }
   .nb-features > div { border-right: 0; }
 }
+
+/* Benchmarks page */
+.nb-num { text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; }
+.nb-bench-bars { display: grid; grid-template-columns: 1fr 1fr; gap: 32px; margin-top: 1.25em; }
+.nb-bench-bars .nb-bar { grid-template-columns: 80px 1fr 64px; }
+.nb-note { color: #888; font-size: 14px; }
+@media (max-width: 700px) { .nb-bench-bars { grid-template-columns: 1fr; } }
