@@ -294,3 +294,218 @@ fn test_build_from_source() {
     assert_success(&output, "jq built from source");
     assert_eq!(String::from_utf8_lossy(&output.stdout), "5\n");
 }
+
+#[test]
+#[ignore = "integration test"]
+fn test_formula_commands() {
+    let t = TestEnv::new();
+    assert_success(&t.nb(&["install", "jq"]), "nb install jq");
+
+    let output = t.nb(&["deps", "jq"]);
+    assert_success(&output, "nb deps jq");
+    assert_stdout_contains(&output, "oniguruma");
+
+    let output = t.nb(&["uses", "--installed", "oniguruma"]);
+    assert_success(&output, "nb uses --installed oniguruma");
+    assert_stdout_contains(&output, "jq");
+
+    let output = t.nb(&["search", "/^jq$/"]);
+    assert_success(&output, "nb search /^jq$/");
+    assert_stdout_contains(&output, "jq");
+
+    assert_success(&t.nb(&["unlink", "jq"]), "nb unlink jq");
+    assert!(!t.bin_dir().join("jq").exists());
+    assert_success(&t.nb(&["link", "jq"]), "nb link jq");
+    assert_success(&t.run_binary("jq", &["--version"]), "jq after relink");
+
+    assert_success(&t.nb(&["pin", "jq"]), "nb pin jq");
+    let output = t.nb(&["list", "--pinned"]);
+    assert_success(&output, "nb list --pinned");
+    assert_stdout_contains(&output, "jq");
+    // Homebrew's `onoe`: refused with an error, yet not a failure.
+    t.nb(&["uninstall", "jq"]);
+    assert!(t.bin_dir().join("jq").exists(), "pinned jq uninstalled");
+    assert_success(&t.nb(&["unpin", "jq"]), "nb unpin jq");
+
+    assert_success(&t.nb(&["uninstall", "jq"]), "nb uninstall jq");
+    let output = t.nb(&["autoremove"]);
+    assert_success(&output, "nb autoremove");
+    let output = t.nb(&["list", "-1"]);
+    assert_success(&output, "nb list after autoremove");
+    assert!(
+        !String::from_utf8_lossy(&output.stdout).contains("oniguruma"),
+        "oniguruma left after autoremove"
+    );
+    assert_no_installed_symlinks(&t.prefix());
+}
+
+#[test]
+#[ignore = "integration test"]
+fn test_bundle() {
+    let t = TestEnv::new();
+    let brewfile = t.root.path().join("Brewfile");
+    std::fs::write(&brewfile, "brew \"jq\"\n").expect("failed to write Brewfile");
+    let file = brewfile.to_str().unwrap();
+
+    assert_success(
+        &t.nb(&["bundle", "install", "--file", file]),
+        "nb bundle install",
+    );
+    assert_success(&t.run_binary("jq", &["--version"]), "jq from the Brewfile");
+    assert_success(
+        &t.nb(&["bundle", "check", "--file", file]),
+        "nb bundle check",
+    );
+    let output = t.nb(&["bundle", "list", "--file", file]);
+    assert_success(&output, "nb bundle list");
+    assert_stdout_contains(&output, "jq");
+
+    assert_success(&t.nb(&["install", "tree"]), "nb install tree");
+    assert_success(
+        &t.nb(&["bundle", "cleanup", "--file", file, "--force"]),
+        "nb bundle cleanup",
+    );
+    assert!(
+        !t.bin_dir().join("tree").exists(),
+        "tree left after cleanup"
+    );
+    assert!(t.bin_dir().join("jq").exists(), "jq removed by cleanup");
+
+    let dump = t.root.path().join("Dumped");
+    assert_success(
+        &t.nb(&["bundle", "dump", "--file", dump.to_str().unwrap()]),
+        "nb bundle dump",
+    );
+    let dumped = std::fs::read_to_string(&dump).expect("failed to read dump");
+    assert!(dumped.contains("brew \"jq\""), "dump: {dumped}");
+}
+
+/// One cask per artifact and container: binaries from a zip (ngrok) and a
+/// tarball (rq), apps from a dmg (rectangle) and a zip (keycastr), and a
+/// suite moved into place by preflight steps (quakespasm).
+#[cfg(target_os = "macos")]
+#[test]
+#[ignore = "integration test"]
+fn test_casks() {
+    let t = TestEnv::new();
+    let appdir = t.root.path().join("Applications");
+    let casks = ["ngrok", "rq", "rectangle", "keycastr", "quakespasm"];
+    let mut args = vec!["install", "--cask", "--appdir", appdir.to_str().unwrap()];
+    args.extend(casks);
+    assert_success(&t.nb(&args), "nb install --cask");
+
+    assert_success(&t.run_binary("ngrok", &["--version"]), "ngrok");
+    assert_success(&t.run_binary("rq", &["--help"]), "rq");
+    for placed in ["Rectangle.app", "KeyCastr.app", "QuakeSpasm"] {
+        assert!(appdir.join(placed).is_dir(), "{placed} not placed");
+    }
+    let output = t.nb(&["list", "--cask"]);
+    assert_success(&output, "nb list --cask");
+    for cask in casks {
+        assert_stdout_contains(&output, cask);
+    }
+
+    let mut args = vec!["uninstall", "--cask", "--zap"];
+    args.extend(casks);
+    assert_success(&t.nb(&args), "nb uninstall --cask --zap");
+    assert!(!t.bin_dir().join("ngrok").exists() && !t.bin_dir().join("rq").exists());
+    assert_eq!(
+        std::fs::read_dir(&appdir).map(|d| d.count()).unwrap_or(0),
+        0,
+        "apps left in the appdir"
+    );
+    assert_no_installed_symlinks(&t.prefix());
+}
+
+/// A pkg installs system-wide through `sudo installer`, so only on CI.
+#[cfg(target_os = "macos")]
+#[test]
+#[ignore = "integration test"]
+fn test_pkg_cask() {
+    if std::env::var_os("CI").is_none() {
+        return;
+    }
+    let t = TestEnv::new();
+    let receipt = || {
+        Command::new("pkgutil")
+            .args(["--pkg-info", "com.scriptingosx.desktoppr"])
+            .output()
+            .expect("failed to run pkgutil")
+            .status
+            .success()
+    };
+    assert_success(
+        &t.nb(&["install", "--cask", "desktoppr"]),
+        "nb install desktoppr",
+    );
+    assert!(receipt(), "desktoppr's pkg not installed");
+    assert_success(
+        &t.nb(&["uninstall", "--cask", "desktoppr"]),
+        "nb uninstall desktoppr",
+    );
+    assert!(!receipt(), "desktoppr's pkg left installed");
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+#[ignore = "integration test"]
+fn test_services() {
+    let t = TestEnv::new();
+    assert_success(&t.nb(&["install", "memcached"]), "nb install memcached");
+    assert_success(
+        &t.nb(&["services", "start", "memcached"]),
+        "nb services start",
+    );
+    let output = t.nb(&["services", "list"]);
+    assert_success(&output, "nb services list");
+    assert_stdout_contains(&output, "memcached");
+    assert_stdout_contains(&output, "started");
+    assert_success(
+        &t.nb(&["services", "stop", "memcached"]),
+        "nb services stop",
+    );
+    let output = t.nb(&["services", "list"]);
+    assert_success(&output, "nb services list after stop");
+    assert!(
+        !String::from_utf8_lossy(&output.stdout).contains("started"),
+        "memcached still started"
+    );
+}
+
+/// systemd only finds user units under the real home, so only on CI,
+/// where the workflow starts a user manager for the runner.
+#[cfg(target_os = "linux")]
+#[test]
+#[ignore = "integration test"]
+fn test_services() {
+    if std::env::var_os("CI").is_none() {
+        return;
+    }
+    let t = TestEnv::new();
+    let home = std::env::var("HOME").expect("HOME");
+    let nb = |args: &[&str]| {
+        Command::new(env!("CARGO_BIN_EXE_nb"))
+            .env("NEXTBREW_ROOT", t.root.path())
+            .env("NEXTBREW_PREFIX", t.prefix())
+            .env("NEXTBREW_AUTO_INIT", "true")
+            .env("HOME", &home)
+            .args(args)
+            .output()
+            .expect("failed to run nb")
+    };
+    assert_success(&nb(&["install", "memcached"]), "nb install memcached");
+    assert_success(
+        &nb(&["services", "start", "memcached"]),
+        "nb services start",
+    );
+    let output = nb(&["services", "list"]);
+    assert_success(&output, "nb services list");
+    assert_stdout_contains(&output, "memcached");
+    assert_stdout_contains(&output, "started");
+    assert_success(&nb(&["services", "stop", "memcached"]), "nb services stop");
+    let output = nb(&["services", "list"]);
+    assert!(
+        !String::from_utf8_lossy(&output.stdout).contains("started"),
+        "memcached still started"
+    );
+}

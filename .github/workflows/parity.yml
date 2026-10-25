@@ -63,3 +63,17 @@ jobs:
         env:
           NB_PARITY_REQUIRE_BREW: '1'
         run: cargo test --locked --package nb_cli --features parity --test parity -- --nocapture --test-threads=1 --skip install_timings
+
+      # Last, as it moves the runner's Homebrew packages into nextbrew.
+      - name: Migrate from Homebrew
+        env:
+          NEXTBREW_ROOT: ${{ runner.temp }}/nb
+          NEXTBREW_PREFIX: /tmp/nbmig
+          NEXTBREW_AUTO_INIT: 'true'
+        run: |
+          brew install hello
+          cargo build --locked --package nb_cli --bin nb
+          ./target/debug/nb migrate --yes
+          ./target/debug/nb list
+          "$NEXTBREW_PREFIX/bin/hello"
+          if brew list --formula hello; then echo "hello still in Homebrew"; exit 1; fi

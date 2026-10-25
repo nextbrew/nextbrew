@@ -94,6 +94,13 @@ jobs:
       - name: Unit tests
         run: cargo test --workspace --locked
 
+      # nb services needs a user systemd, which a runner has no session for.
+      - name: Start a user systemd
+        if: runner.os == 'Linux'
+        run: |
+          sudo loginctl enable-linger "$USER"
+          echo "XDG_RUNTIME_DIR=/run/user/$(id -u)" >> "$GITHUB_ENV"
+
       - name: Integration tests
         run: cargo test --package nb_cli --test integration --locked -- --ignored
 
