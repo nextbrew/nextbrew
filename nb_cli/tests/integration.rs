@@ -381,22 +381,22 @@ fn test_bundle() {
 }
 
 /// One cask per artifact and container: binaries from a zip (ngrok) and a
-/// tarball (rq), apps from a dmg (rectangle) and a zip (keycastr), and a
-/// suite moved into place by preflight steps (quakespasm).
+/// tarball (notion-cli), apps from a dmg (rectangle) and a zip (keycastr),
+/// and a suite (digital).
 #[cfg(target_os = "macos")]
 #[test]
 #[ignore = "integration test"]
 fn test_casks() {
     let t = TestEnv::new();
     let appdir = t.root.path().join("Applications");
-    let casks = ["ngrok", "rq", "rectangle", "keycastr", "quakespasm"];
+    let casks = ["ngrok", "notion-cli", "rectangle", "keycastr", "digital"];
     let mut args = vec!["install", "--cask", "--appdir", appdir.to_str().unwrap()];
     args.extend(casks);
     assert_success(&t.nb(&args), "nb install --cask");
 
     assert_success(&t.run_binary("ngrok", &["--version"]), "ngrok");
-    assert_success(&t.run_binary("rq", &["--help"]), "rq");
-    for placed in ["Rectangle.app", "KeyCastr.app", "QuakeSpasm"] {
+    assert_success(&t.run_binary("ntn", &["--help"]), "ntn");
+    for placed in ["Rectangle.app", "KeyCastr.app", "Digital"] {
         assert!(appdir.join(placed).is_dir(), "{placed} not placed");
     }
     let output = t.nb(&["list", "--cask"]);
@@ -408,7 +408,7 @@ fn test_casks() {
     let mut args = vec!["uninstall", "--cask", "--zap"];
     args.extend(casks);
     assert_success(&t.nb(&args), "nb uninstall --cask --zap");
-    assert!(!t.bin_dir().join("ngrok").exists() && !t.bin_dir().join("rq").exists());
+    assert!(!t.bin_dir().join("ngrok").exists() && !t.bin_dir().join("ntn").exists());
     assert_eq!(
         std::fs::read_dir(&appdir).map(|d| d.count()).unwrap_or(0),
         0,
