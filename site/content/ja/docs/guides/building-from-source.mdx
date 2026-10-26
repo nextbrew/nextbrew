@@ -27,11 +27,10 @@ formula の `install` は Homebrew の portable Ruby で実行します。nextbr
 
 ## ビルドできるもの
 
-次の 25 個のうち、Linux では全部、macOS では 24 個がソースからビルドできます（GitHub の
+次の 25 個は、Linux でも macOS でも全部ソースからビルドできます（GitHub の
 ubuntu-latest と macos-latest、2026-10-26 計測）。jq、tree、htop、fd、ripgrep、fzf、wget、
 curl、git、tmux、zoxide、sqlite、readline、pcre2、zstd、lz4、xz、pkgconf、libyaml、gmp、
-bat、gh、lua、oniguruma、libevent。macOS の readline は、ミラーが返したパッチのチェックサムが
-合わず失敗しました。また gmp は GCC 15 ではビルドできません。GCC 15 の既定の
+bat、gh、lua、oniguruma、libevent。なお gmp は GCC 15 ではビルドできません。GCC 15 の既定の
 C23 を gmp の `configure` が受け付けないためで、Homebrew でも同じです。
 
 `create`、`audit`、`bottle` などの開発者向けコマンドは予定していません。

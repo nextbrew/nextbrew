@@ -27,12 +27,11 @@ downloads for the build (else the `ruby` on your `PATH`).
 
 ## What builds
 
-Of these 25 formulae, all build from source on Linux and 24 on macOS
+All 25 of these formulae build from source on Linux and macOS
 (GitHub's ubuntu-latest and macos-latest, 2026-10-26): jq, tree, htop, fd,
 ripgrep, fzf, wget, curl, git, tmux, zoxide, sqlite, readline, pcre2, zstd,
-lz4, xz, pkgconf, libyaml, gmp, bat, gh, lua, oniguruma, libevent. On macOS
-readline did not, as a mirror served a patch whose checksum did not match.
-gmp does not with GCC 15, whose C23 default its `configure` rejects (the
+lz4, xz, pkgconf, libyaml, gmp, bat, gh, lua, oniguruma, libevent.
+gmp does not build with GCC 15, whose C23 default its `configure` rejects (the
 same under Homebrew).
 
 Developer commands such as `create`, `audit` and `bottle` are not planned.
