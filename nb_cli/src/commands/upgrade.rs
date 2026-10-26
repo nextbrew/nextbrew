@@ -13,6 +13,7 @@ pub async fn execute(
     formulas: Vec<String>,
     build_from_source: bool,
     no_link: bool,
+    greedy: bool,
     ui: &mut StdUi,
 ) -> Result<(), nb_core::Error> {
     // Reported at the end so explicit-arg upgrades still run; we exit
@@ -22,7 +23,7 @@ pub async fn execute(
     let outdated = if formulas.is_empty() {
         ui.heading("Checking for outdated packages...".to_string())
             .map_err(ui_error)?;
-        let (outdated, warnings) = installer.check_outdated().await?;
+        let (outdated, warnings) = installer.check_outdated(greedy).await?;
         for warning in &warnings {
             eprintln!("{} {}", style("Warning:").yellow().bold(), warning);
         }

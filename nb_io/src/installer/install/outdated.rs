@@ -93,7 +93,10 @@ impl Installer {
         }
     }
 
-    pub async fn check_outdated(&self) -> Result<(Vec<OutdatedPackage>, Vec<String>), Error> {
+    pub async fn check_outdated(
+        &self,
+        greedy: bool,
+    ) -> Result<(Vec<OutdatedPackage>, Vec<String>), Error> {
         let installed = self.db.list_installed()?;
         if installed.is_empty() {
             return Ok((Vec::new(), Vec::new()));
@@ -105,7 +108,7 @@ impl Installer {
 
         for keg in &installed {
             if keg.name.starts_with("cask:") {
-                match self.cask_outdated(keg, false).await {
+                match self.cask_outdated(keg, greedy).await {
                     Ok(pkg) => outdated.extend(pkg),
                     Err(e) => warnings.push(format!("{}: {}", keg.name, e)),
                 }
@@ -385,7 +388,7 @@ mod tests {
     async fn check_outdated_empty_when_nothing_installed() {
         let (installer, _mock_server, _tmp) = test_installer().await;
 
-        let (outdated, warnings) = installer.check_outdated().await.unwrap();
+        let (outdated, warnings) = installer.check_outdated(false).await.unwrap();
         assert!(outdated.is_empty());
         assert!(warnings.is_empty());
     }
@@ -414,7 +417,7 @@ mod tests {
             .mount(&mock_server)
             .await;
 
-        let (outdated, warnings) = installer.check_outdated().await.unwrap();
+        let (outdated, warnings) = installer.check_outdated(false).await.unwrap();
         assert_eq!(outdated.len(), 1);
         assert_eq!(outdated[0].name, "good");
         assert_eq!(warnings.len(), 1);
@@ -444,7 +447,7 @@ mod tests {
             .mount(&mock_server)
             .await;
 
-        let (outdated, warnings) = installer.check_outdated().await.unwrap();
+        let (outdated, warnings) = installer.check_outdated(false).await.unwrap();
         assert!(outdated.is_empty());
         assert_eq!(warnings.len(), 1);
         assert!(warnings[0].contains("nobottle"));

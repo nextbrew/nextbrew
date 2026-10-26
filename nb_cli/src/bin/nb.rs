@@ -182,13 +182,15 @@ async fn run(cli: Cli) -> Result<(), nb_core::Error> {
         } => commands::info::execute(&mut installer, formula, formula_only, cask).await,
         Commands::Gc => commands::gc::execute(&mut installer),
         Commands::Update => commands::update::execute(&mut installer).await,
-        Commands::Outdated { json } => {
-            commands::outdated::execute(&mut installer, cli.quiet, cli.verbose > 0, json).await
+        Commands::Outdated { json, greedy } => {
+            commands::outdated::execute(&mut installer, cli.quiet, cli.verbose > 0, json, greedy)
+                .await
         }
         Commands::Upgrade {
             formulas,
             build_from_source,
             no_link,
+            greedy,
             cask_options,
         } => {
             installer.set_cask_config(cask_config(&cask_options)?);
@@ -198,6 +200,7 @@ async fn run(cli: Cli) -> Result<(), nb_core::Error> {
                 formulas,
                 build_from_source,
                 no_link,
+                greedy,
                 &mut ui,
             )
             .await

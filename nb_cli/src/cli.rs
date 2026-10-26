@@ -272,6 +272,11 @@ pub enum Commands {
     Outdated {
         #[arg(long, conflicts_with_all = ["quiet", "verbose"], help = "Output as JSON")]
         json: bool,
+        #[arg(
+            long,
+            help = "Also list casks that update themselves or are versioned latest"
+        )]
+        greedy: bool,
     },
     /// Upgrade installed packages to the latest versions
     Upgrade {
@@ -281,6 +286,11 @@ pub enum Commands {
         build_from_source: bool,
         #[arg(long, help = "Do not create symlinks after installation")]
         no_link: bool,
+        #[arg(
+            long,
+            help = "Also upgrade casks that update themselves or are versioned latest"
+        )]
+        greedy: bool,
         #[command(flatten)]
         cask_options: CaskOptions,
     },

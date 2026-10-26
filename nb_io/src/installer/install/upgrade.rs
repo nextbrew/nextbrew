@@ -814,7 +814,8 @@ mod tests {
         assert_eq!(blobs, 0, "an unverified download is not kept");
 
         // `latest` is outdated only when asked for by name (greedy).
-        assert!(installer.check_outdated().await.unwrap().0.is_empty());
+        assert!(installer.check_outdated(false).await.unwrap().0.is_empty());
+        assert_eq!(installer.check_outdated(true).await.unwrap().0.len(), 1);
         assert!(installer.is_outdated("cask:tool").await.unwrap().is_some());
 
         serve_unchecked_cask(&server, "latest", "#!/bin/sh\necho two\n").await;
@@ -842,7 +843,7 @@ mod tests {
         assert!(installer.is_outdated("cask:tool").await.unwrap().is_none());
 
         serve_unchecked_cask(&server, "2.0", "#!/bin/sh\n").await;
-        assert_eq!(installer.check_outdated().await.unwrap().0.len(), 1);
+        assert_eq!(installer.check_outdated(false).await.unwrap().0.len(), 1);
     }
 
     #[tokio::test]
@@ -862,7 +863,7 @@ mod tests {
 
         serve_cask(&server, "2.0", true).await;
         // auto_updates casks are skipped by a bulk check but not when named.
-        assert!(installer.check_outdated().await.unwrap().0.is_empty());
+        assert!(installer.check_outdated(false).await.unwrap().0.is_empty());
         assert!(installer.is_outdated("cask:tool").await.unwrap().is_some());
 
         installer
