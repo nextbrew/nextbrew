@@ -1003,10 +1003,7 @@ mod tests {
         // A Java class file: fat magic followed by a version, not an arch count.
         let class = [0xca, 0xfe, 0xba, 0xbe, 0x00, 0x00, 0x00, 0x41, 0, 0, 0, 0];
         assert_eq!(inspect(&class).unwrap_err(), MachoError::NotMacho);
-        assert!(
-            has_macho_magic(&class),
-            "the magic alone cannot tell them apart"
-        );
+        assert!(!has_macho_magic(&class));
     }
 
     #[test]

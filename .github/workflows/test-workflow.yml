@@ -105,8 +105,8 @@ jobs:
       # ffmpeg's dozens of dependencies would take hours from source.
       - name: Integration tests
         env:
-          SKIP: ${{ matrix.os == 'macos-15-intel' && '--skip test_ffmpeg_formula' || '' }}
-        run: cargo test --package nb_cli --test integration --locked -- --ignored $SKIP
+          SKIP: ${{ matrix.os == 'macos-15-intel' && 'test_ffmpeg_formula' || '' }}
+        run: cargo test --package nb_cli --test integration --locked -- --ignored ${SKIP:+--skip "$SKIP"}
 
       # The runner's Homebrew moves into nextbrew. Only the x64 Linux image
       # has one to spare: the macOS runner's holds many packages (parity.yml
