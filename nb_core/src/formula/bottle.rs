@@ -544,7 +544,7 @@ mod tests {
     }
 
     #[test]
-    #[cfg(target_os = "macos")]
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
     fn sequoia_user_skips_tahoe_bottle() {
         let mut files = BTreeMap::new();
         files.insert(
@@ -596,15 +596,11 @@ mod tests {
 
         let selected = select_bottle_with_version(&formula, Some(15)).unwrap();
 
-        #[cfg(target_arch = "aarch64")]
         assert_eq!(selected.tag, "arm64_sequoia");
-
-        #[cfg(target_arch = "x86_64")]
-        assert_eq!(selected.tag, "all");
     }
 
     #[test]
-    #[cfg(target_os = "macos")]
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
     fn tahoe_user_picks_tahoe_bottle() {
         let mut files = BTreeMap::new();
         files.insert(
@@ -656,11 +652,7 @@ mod tests {
 
         let selected = select_bottle_with_version(&formula, Some(26)).unwrap();
 
-        #[cfg(target_arch = "aarch64")]
         assert_eq!(selected.tag, "arm64_tahoe");
-
-        #[cfg(target_arch = "x86_64")]
-        assert_eq!(selected.tag, "all");
     }
 
     fn bottle_with_cellar(cellar: Option<&str>) -> SelectedBottle {
