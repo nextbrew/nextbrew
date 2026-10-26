@@ -1,29 +1,29 @@
 use nb_core::{Error, select_bottle};
 
-use super::{Installer, OutdatedPackage};
+use super::{Greedy, Installer, OutdatedPackage};
 use crate::installer::cask::{for_current_platform, resolve_cask};
 use crate::storage::db::InstalledKeg;
 
 impl Installer {
     /// A cask is outdated when the API's artifact checksum moved on, or,
-    /// with no checksum, its version; a `latest` one only when `greedy`.
+    /// with no checksum, its version; a `latest` one only when greedy for it.
     /// `auto_updates` casks update themselves, so like `brew outdated` they
-    /// only count when `greedy` (named explicitly).
+    /// only count when greedy for them (or named explicitly).
     async fn cask_outdated(
         &self,
         keg: &InstalledKeg,
-        greedy: bool,
+        greedy: Greedy,
     ) -> Result<Option<OutdatedPackage>, Error> {
         let token = keg.name.strip_prefix("cask:").unwrap_or(&keg.name);
         let json = for_current_platform(&self.api_client.get_cask(token).await?);
         let auto_updates = json["auto_updates"].as_bool().unwrap_or(false);
         let cask = resolve_cask(token, &json)?;
         let current = if cask.no_check {
-            keg.version == cask.version && !(cask.version == "latest" && greedy)
+            keg.version == cask.version && !(cask.version == "latest" && greedy.latest)
         } else {
             keg.store_key == cask.sha256
         };
-        if current || (auto_updates && !greedy) {
+        if current || (auto_updates && !greedy.auto_updates) {
             return Ok(None);
         }
         Ok(Some(OutdatedPackage {
@@ -45,6 +45,10 @@ impl Installer {
     ) -> Result<Option<OutdatedPackage>, Error> {
         match self.db.get_installed(name) {
             Some(installed) if name.starts_with("cask:") => {
+                let greedy = Greedy {
+                    latest: greedy,
+                    auto_updates: greedy,
+                };
                 self.cask_outdated(&installed, greedy).await
             }
             _ => self.is_outdated(name).await,
@@ -56,7 +60,7 @@ impl Installer {
             name: name.to_string(),
         })?;
         if name.starts_with("cask:") {
-            return self.cask_outdated(&installed, true).await;
+            return self.cask_outdated(&installed, Greedy::ALL).await;
         }
 
         let formula = self.api_client.get_formula(name).await?;
@@ -95,7 +99,7 @@ impl Installer {
 
     pub async fn check_outdated(
         &self,
-        greedy: bool,
+        greedy: Greedy,
     ) -> Result<(Vec<OutdatedPackage>, Vec<String>), Error> {
         let installed = self.db.list_installed()?;
         if installed.is_empty() {
@@ -179,6 +183,7 @@ mod tests {
     use crate::storage::store::Store;
     use crate::{Installer, Linker};
 
+    use super::super::Greedy;
     use super::super::test_support::get_test_bottle_tag;
 
     fn formula_json(name: &str, version: &str, sha256: &str) -> String {
@@ -388,7 +393,7 @@ mod tests {
     async fn check_outdated_empty_when_nothing_installed() {
         let (installer, _mock_server, _tmp) = test_installer().await;
 
-        let (outdated, warnings) = installer.check_outdated(false).await.unwrap();
+        let (outdated, warnings) = installer.check_outdated(Greedy::default()).await.unwrap();
         assert!(outdated.is_empty());
         assert!(warnings.is_empty());
     }
@@ -417,7 +422,7 @@ mod tests {
             .mount(&mock_server)
             .await;
 
-        let (outdated, warnings) = installer.check_outdated(false).await.unwrap();
+        let (outdated, warnings) = installer.check_outdated(Greedy::default()).await.unwrap();
         assert_eq!(outdated.len(), 1);
         assert_eq!(outdated[0].name, "good");
         assert_eq!(warnings.len(), 1);
@@ -447,7 +452,7 @@ mod tests {
             .mount(&mock_server)
             .await;
 
-        let (outdated, warnings) = installer.check_outdated(false).await.unwrap();
+        let (outdated, warnings) = installer.check_outdated(Greedy::default()).await.unwrap();
         assert!(outdated.is_empty());
         assert_eq!(warnings.len(), 1);
         assert!(warnings[0].contains("nobottle"));

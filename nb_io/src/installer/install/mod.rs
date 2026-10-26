@@ -142,6 +142,21 @@ pub struct PostInstallNotice {
     pub message: String,
 }
 
+/// Which casks a bulk check counts although they would rather not be
+/// upgraded: `brew`'s `--greedy-latest` and `--greedy-auto-updates`.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct Greedy {
+    pub latest: bool,
+    pub auto_updates: bool,
+}
+
+impl Greedy {
+    pub const ALL: Self = Self {
+        latest: true,
+        auto_updates: true,
+    };
+}
+
 /// A package that has a newer version available upstream.
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct OutdatedPackage {

@@ -20,7 +20,7 @@ and `nb migrate` moves a real Homebrew installation into nextbrew in CI.
 | Casks: app, suite, dmg, zip, tar, binary | Native |
 | Casks: hooks (`*_steps`) | Native; an unknown step or a failure rolls the install back |
 | Casks: pkg and installer | Native |
-| Casks: upgrade | Native; self-updating casks when named or with `--greedy` |
+| Casks: upgrade | Native; self-updating casks when named or with `--greedy`, `--greedy-latest` or `--greedy-auto-updates` |
 | Casks: uninstall stanza and `--zap` | Native |
 | Casks: `--language` | Native; the system's languages by default |
 | Bundle (Brewfile) | Native, including `flatpak`, `winget` and the extensions; build `args` other than `build-from-source` and formula options fail with the reason |

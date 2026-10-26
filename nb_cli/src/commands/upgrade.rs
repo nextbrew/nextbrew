@@ -13,7 +13,7 @@ pub async fn execute(
     formulas: Vec<String>,
     build_from_source: bool,
     no_link: bool,
-    greedy: bool,
+    greedy: nb_io::Greedy,
     ui: &mut StdUi,
 ) -> Result<(), nb_core::Error> {
     // Reported at the end so explicit-arg upgrades still run; we exit

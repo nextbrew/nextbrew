@@ -1204,7 +1204,7 @@ async fn install_from_file(
             .map(|plan| plan.install_name.clone())
             .collect();
         let _ = super::tap::trust_full_names(installer, &full_names);
-        let _ = upgrade::execute(installer, to_upgrade, false, false, false, ui).await;
+        let _ = upgrade::execute(installer, to_upgrade, false, false, Default::default(), ui).await;
     }
     for plan in &batch {
         let done = installer.is_installed(&plan.installed_name)
@@ -1420,7 +1420,15 @@ async fn install_formula(
         let result = if plan.installed {
             let _ =
                 super::tap::trust_full_names(installer, std::slice::from_ref(&plan.install_name));
-            upgrade::execute(installer, vec![installed.clone()], false, false, false, ui).await
+            upgrade::execute(
+                installer,
+                vec![installed.clone()],
+                false,
+                false,
+                Default::default(),
+                ui,
+            )
+            .await
         } else {
             if !prepare_full_names(installer, std::slice::from_ref(&plan.install_name)).await {
                 return false;
@@ -1539,7 +1547,7 @@ async fn install_cask(
                 vec![plan.installed_name.clone()],
                 false,
                 false,
-                false,
+                Default::default(),
                 ui,
             )
             .await

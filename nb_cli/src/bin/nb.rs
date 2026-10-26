@@ -183,8 +183,14 @@ async fn run(cli: Cli) -> Result<(), nb_core::Error> {
         Commands::Gc => commands::gc::execute(&mut installer),
         Commands::Update => commands::update::execute(&mut installer).await,
         Commands::Outdated { json, greedy } => {
-            commands::outdated::execute(&mut installer, cli.quiet, cli.verbose > 0, json, greedy)
-                .await
+            commands::outdated::execute(
+                &mut installer,
+                cli.quiet,
+                cli.verbose > 0,
+                json,
+                greedy.get(),
+            )
+            .await
         }
         Commands::Upgrade {
             formulas,
@@ -200,7 +206,7 @@ async fn run(cli: Cli) -> Result<(), nb_core::Error> {
                 formulas,
                 build_from_source,
                 no_link,
-                greedy,
+                greedy.get(),
                 &mut ui,
             )
             .await

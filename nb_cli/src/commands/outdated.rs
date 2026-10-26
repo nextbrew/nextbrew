@@ -5,7 +5,7 @@ pub async fn execute(
     quiet: bool,
     verbose: bool,
     json: bool,
-    greedy: bool,
+    greedy: nb_io::Greedy,
 ) -> Result<(), nb_core::Error> {
     let (mut outdated, warnings) = installer.check_outdated(greedy).await?;
     // Formulae from third-party taps go by their full names, as in brew.

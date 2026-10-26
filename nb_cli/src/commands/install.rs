@@ -54,8 +54,15 @@ pub async fn execute(
     let normalized_names = fresh;
     nb_core::timing::mark("names resolved");
     if !to_upgrade.is_empty() {
-        super::upgrade::execute(installer, to_upgrade, build_from_source, no_link, false, ui)
-            .await?;
+        super::upgrade::execute(
+            installer,
+            to_upgrade,
+            build_from_source,
+            no_link,
+            Default::default(),
+            ui,
+        )
+        .await?;
     }
     if normalized_names.is_empty() && cask_names.is_empty() {
         return Ok(());

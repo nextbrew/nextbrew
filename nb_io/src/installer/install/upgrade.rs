@@ -206,6 +206,7 @@ mod tests {
     use wiremock::{Mock, MockServer, ResponseTemplate};
 
     use crate::cellar::Cellar;
+    use crate::installer::install::Greedy;
     use crate::installer::install::test_support::*;
     use crate::network::api::ApiClient;
     use crate::storage::blob::BlobCache;
@@ -814,8 +815,35 @@ mod tests {
         assert_eq!(blobs, 0, "an unverified download is not kept");
 
         // `latest` is outdated only when asked for by name (greedy).
-        assert!(installer.check_outdated(false).await.unwrap().0.is_empty());
-        assert_eq!(installer.check_outdated(true).await.unwrap().0.len(), 1);
+        assert!(
+            installer
+                .check_outdated(Greedy::default())
+                .await
+                .unwrap()
+                .0
+                .is_empty()
+        );
+        assert_eq!(
+            installer.check_outdated(Greedy::ALL).await.unwrap().0.len(),
+            1
+        );
+        let latest = Greedy {
+            latest: true,
+            auto_updates: false,
+        };
+        assert_eq!(installer.check_outdated(latest).await.unwrap().0.len(), 1);
+        let auto_updates = Greedy {
+            latest: false,
+            auto_updates: true,
+        };
+        assert!(
+            installer
+                .check_outdated(auto_updates)
+                .await
+                .unwrap()
+                .0
+                .is_empty()
+        );
         assert!(installer.is_outdated("cask:tool").await.unwrap().is_some());
 
         serve_unchecked_cask(&server, "latest", "#!/bin/sh\necho two\n").await;
@@ -843,7 +871,15 @@ mod tests {
         assert!(installer.is_outdated("cask:tool").await.unwrap().is_none());
 
         serve_unchecked_cask(&server, "2.0", "#!/bin/sh\n").await;
-        assert_eq!(installer.check_outdated(false).await.unwrap().0.len(), 1);
+        assert_eq!(
+            installer
+                .check_outdated(Greedy::default())
+                .await
+                .unwrap()
+                .0
+                .len(),
+            1
+        );
     }
 
     #[tokio::test]
@@ -863,7 +899,32 @@ mod tests {
 
         serve_cask(&server, "2.0", true).await;
         // auto_updates casks are skipped by a bulk check but not when named.
-        assert!(installer.check_outdated(false).await.unwrap().0.is_empty());
+        assert!(
+            installer
+                .check_outdated(Greedy::default())
+                .await
+                .unwrap()
+                .0
+                .is_empty()
+        );
+        let latest = Greedy {
+            latest: true,
+            auto_updates: false,
+        };
+        assert!(installer.check_outdated(latest).await.unwrap().0.is_empty());
+        let auto_updates = Greedy {
+            latest: false,
+            auto_updates: true,
+        };
+        assert_eq!(
+            installer
+                .check_outdated(auto_updates)
+                .await
+                .unwrap()
+                .0
+                .len(),
+            1
+        );
         assert!(installer.is_outdated("cask:tool").await.unwrap().is_some());
 
         installer

@@ -12,7 +12,7 @@ pub use homebrew::{
 pub use install::diagnostic::{Finding, SystemEnv};
 pub use install::doctor::{DiagnosticReport, RepairSummary};
 pub use install::{
-    ExecuteResult, InstallPlan, Installer, LinkDryRun, LinkOutcome, OutdatedPackage, PlanFailure,
-    PostInstallNotice, ServiceFormula, Uses, UsesScope, create_installer,
+    ExecuteResult, Greedy, InstallPlan, Installer, LinkDryRun, LinkOutcome, OutdatedPackage,
+    PlanFailure, PostInstallNotice, ServiceFormula, Uses, UsesScope, create_installer,
 };
 pub use post_install::{PostInstallContext, StepError, StepFailure, run_steps};

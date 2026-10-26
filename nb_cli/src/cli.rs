@@ -272,11 +272,8 @@ pub enum Commands {
     Outdated {
         #[arg(long, conflicts_with_all = ["quiet", "verbose"], help = "Output as JSON")]
         json: bool,
-        #[arg(
-            long,
-            help = "Also list casks that update themselves or are versioned latest"
-        )]
-        greedy: bool,
+        #[command(flatten)]
+        greedy: GreedyOptions,
     },
     /// Upgrade installed packages to the latest versions
     Upgrade {
@@ -286,11 +283,8 @@ pub enum Commands {
         build_from_source: bool,
         #[arg(long, help = "Do not create symlinks after installation")]
         no_link: bool,
-        #[arg(
-            long,
-            help = "Also upgrade casks that update themselves or are versioned latest"
-        )]
-        greedy: bool,
+        #[command(flatten)]
+        greedy: GreedyOptions,
         #[command(flatten)]
         cask_options: CaskOptions,
     },
@@ -451,6 +445,29 @@ pub enum Commands {
         #[command(subcommand)]
         command: Option<ServicesCommands>,
     },
+}
+
+/// `brew outdated`'s and `brew upgrade`'s `--greedy` options.
+#[derive(clap::Args, Clone, Copy, Default)]
+pub struct GreedyOptions {
+    #[arg(
+        long,
+        help = "Also include casks with auto_updates true or version latest"
+    )]
+    greedy: bool,
+    #[arg(long, help = "Also include casks with version latest")]
+    greedy_latest: bool,
+    #[arg(long, help = "Also include casks with auto_updates true")]
+    greedy_auto_updates: bool,
+}
+
+impl GreedyOptions {
+    pub fn get(self) -> nb_io::Greedy {
+        nb_io::Greedy {
+            latest: self.greedy || self.greedy_latest,
+            auto_updates: self.greedy || self.greedy_auto_updates,
+        }
+    }
 }
 
 /// `brew install --cask`'s options, over `$HOMEBREW_CASK_OPTS`.

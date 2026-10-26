@@ -18,7 +18,7 @@ formula のコマンド、cask のすべての artifact とコンテナ、bundle
 | cask: app、suite、dmg、zip、tar、binary | Native |
 | cask: フック（`*_steps`） | Native。未知のステップや失敗があると、インストールはロールバックされる |
 | cask: pkg と installer | Native |
-| cask: upgrade | Native。自己更新する cask は名前を指定したときか `--greedy` のとき |
+| cask: upgrade | Native。自己更新する cask は名前を指定したときか `--greedy`、`--greedy-latest`、`--greedy-auto-updates` のとき |
 | cask: uninstall stanza と `--zap` | Native |
 | cask: `--language` | Native。既定はシステムの言語 |
 | Bundle（Brewfile） | Native。`flatpak`、`winget` と各拡張を含む。`build-from-source` と formula オプション以外のビルド `args` は理由つきで失敗 |

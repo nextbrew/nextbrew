@@ -16,7 +16,7 @@ pub use cellar::{Cellar, LinkedFile, Linker, MaterializedKeg};
 pub use extraction::extract_tarball;
 pub use installer::cask_config::CaskConfig;
 pub use installer::{
-    DiagnosticReport, ExecuteResult, Finding, HomebrewMigrationPackages, HomebrewPackage,
+    DiagnosticReport, ExecuteResult, Finding, Greedy, HomebrewMigrationPackages, HomebrewPackage,
     InstallPlan, Installer, LinkDryRun, LinkOutcome, OutdatedPackage, PlanFailure,
     PostInstallNotice, RepairSummary, ServiceFormula, SystemEnv, Uses, UsesScope, create_installer,
     get_homebrew_packages,
