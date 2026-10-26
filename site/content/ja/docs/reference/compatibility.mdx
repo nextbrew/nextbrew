@@ -25,7 +25,7 @@ formula のコマンド、cask のすべての artifact とコンテナ、bundle
 | Services | macOS（launchd）と Linux（systemd）で Native。ラベルは `dev.nextbrew.<formula>` |
 | Tap | 対応しています（`nb tap`、`nb trust`）。サードパーティの tap は、信頼すると読み込まれます。 |
 | Homebrew からの移行（`nb migrate`） | Native。formula、cask、tap、pin、service |
-| ソースからのビルド | ネイティブ。検証した主要 formula 25 個すべてが macOS と Linux でビルドできる（C、Rust、Go）。開発者向けコマンド（create、audit、bottle）は予定なし |
+| ソースからのビルド | ネイティブ。主要 formula 25 個のうち Linux で 25 個、macOS で 24 個がビルドできる（C、Rust、Go）。開発者向けコマンド（create、audit、bottle）は予定なし |
 
 コマンド名、オプション、終了コードは Homebrew に従います。nextbrew が Ruby を実行するのはソースからのビルドのときだけです。
 理解できないステップは、黙ってスキップせず報告します。

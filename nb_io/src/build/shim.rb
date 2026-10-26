@@ -29,15 +29,23 @@ require "time"
 module NextBrewChecksum
   module_function
 
-  def verify_file!(path, expected_sha256, context)
-    return if expected_sha256.nil? || expected_sha256.to_s.strip.empty?
+  # `urls` in turn, as Homebrew tries mirrors, until one gives the file
+  # `expected_sha256` names: a mirror can serve another. The error, if
+  # none does.
+  def fetch(urls, path, expected_sha256, context)
+    expected = expected_sha256.to_s.strip.empty? ? nil : normalize_sha256!(expected_sha256, context)
+    error = nil
+    urls.compact.each do |url|
+      unless Kernel.system("curl", "-fsSL", "-o", path, url)
+        error = "Error: failed to download #{context}"
+        next
+      end
+      actual = Digest::SHA256.file(path).hexdigest
+      return nil if expected.nil? || actual == expected
 
-    expected = normalize_sha256!(expected_sha256, context)
-    actual = Digest::SHA256.file(path).hexdigest
-    return if actual == expected
-
-    $stderr.puts "Error: checksum mismatch for #{context} (expected #{expected}, got #{actual})"
-    exit 1
+      error = "Error: checksum mismatch for #{context} (expected #{expected}, got #{actual})"
+    end
+    error
   end
 
   def normalize_sha256!(value, context)
@@ -547,7 +555,8 @@ class PatchDSL
 
   def url(u, **_kwargs); @patch_url = u; end
   def sha256(s); @patch_sha256 = s; end
-  def mirror(_); nil; end
+  def mirror(u); (@patch_mirrors ||= []) << u; end
+  def patch_mirrors; @patch_mirrors || []; end
   # A patch kept in the formula's repository (`Patches/...`).
   def file(path); @patch_file = path; end
   # What kind of patch it is and what it fixes: for audits only.
@@ -566,7 +575,8 @@ class ResourceDSL
 
   def url(u, **_kwargs); @resource_url = u; end
   def sha256(s); @resource_sha256 = s; end
-  def mirror(_); nil; end
+  def mirror(u); (@resource_mirrors ||= []) << u; end
+  def resource_mirrors; @resource_mirrors || []; end
   def patch(&_block); nil; end
   def on_macos(&block); yield if OS.mac?; end
   def on_linux(&block); yield if OS.linux?; end
@@ -581,7 +591,8 @@ end
 class StagedResource
   attr_reader :name, :url
 
-  def initialize(url, sha256, name: nil, test: false, version: nil)
+  def initialize(url, sha256, name: nil, test: false, version: nil, mirrors: [])
+    @mirrors = mirrors
     @url = url
     @sha256 = sha256
     @name = name
@@ -605,12 +616,10 @@ class StagedResource
       dir = File.join(root, "stage")
       FileUtils.mkdir_p([File.join(root, "download"), dir])
       archive = File.join(root, "download", basename)
-      Kernel.system("curl", "-fsSL", "-o", archive, @url)
-      unless $?.success?
-        $stderr.puts "Error: failed to download resource #{@url}"
+      if (error = NextBrewChecksum.fetch([@url, *@mirrors], archive, @sha256, "resource #{@url}"))
+        $stderr.puts error
         exit 1
       end
-      NextBrewChecksum.verify_file!(archive, @sha256, "resource #{@url}")
       # A wheel is installed as it is.
       if basename.end_with?(".whl")
         FileUtils.mv(archive, dir)
@@ -854,7 +863,7 @@ class Formula
       ctx.instance_eval(&block)
       @_resources[name.to_s] = {
         url: ctx.resource_url, sha256: ctx.resource_sha256, test: args.include?(:test),
-        version: ctx.resource_version
+        version: ctx.resource_version, mirrors: ctx.resource_mirrors
       }
     end
 
@@ -883,7 +892,7 @@ class Formula
         @_patches << if ctx.patch_file
           { type: :file, file: ctx.patch_file, strip: strip }
         else
-          { type: :url, url: ctx.patch_url, sha256: ctx.patch_sha256, strip: strip }
+          { type: :url, url: ctx.patch_url, mirrors: ctx.patch_mirrors, sha256: ctx.patch_sha256, strip: strip }
         end
       end
     end
@@ -1000,7 +1009,8 @@ class Formula
     res_info = self.class.instance_variable_get(:@_resources)&.dig(name.to_s)
     raise "Resource '#{name}' not defined" unless res_info
     StagedResource.new(res_info[:url], res_info[:sha256], name: name.to_s, test: res_info[:test],
-                                                          version: res_info[:version])
+                                                          version: res_info[:version],
+                                                          mirrors: res_info[:mirrors] || [])
   end
 
   # Every resource, in the order the formula declares them.
@@ -1504,7 +1514,8 @@ patches = formula_class.instance_variable_get(:@_patches) || []
 fetched = patches.each_with_index.select { |p, _| p[:type] == :url }.map do |p, i|
   tmp = Tempfile.new("nb_patch")
   tmp.close
-  [i, tmp, Thread.new { Kernel.system("curl", "-sSL", "-o", tmp.path, p[:url]) }]
+  urls = [p[:url], *p[:mirrors]]
+  [i, tmp, Thread.new { NextBrewChecksum.fetch(urls, tmp.path, p[:sha256], "patch #{p[:url]}") }]
 end
 downloads = fetched.to_h { |i, tmp, thread| [i, [tmp, thread.value]] }
 patches.each_with_index do |p, index|
@@ -1521,13 +1532,12 @@ patches.each_with_index do |p, index|
     end
   when :url
     puts "==> Applying patch #{p[:url]}"
-    tmp, downloaded = downloads.fetch(index)
+    tmp, error = downloads.fetch(index)
     begin
-      unless downloaded
-        $stderr.puts "Error: failed to download patch #{p[:url]}"
+      if error
+        $stderr.puts error
         exit 1
       end
-      NextBrewChecksum.verify_file!(tmp.path, p[:sha256], "patch #{p[:url]}")
       Kernel.system("patch", strip_flag, "-i", tmp.path)
       unless $?.success?
         $stderr.puts "Error: patch failed"
