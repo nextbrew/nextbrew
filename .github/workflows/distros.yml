@@ -30,7 +30,7 @@ jobs:
           - image: archlinux:latest
             deps: pacman -Syu --noconfirm gcc make git curl file procps-ng
           - image: opensuse/tumbleweed
-            deps: zypper -n install gcc gcc-c++ make git curl file procps tar gzip xz
+            deps: zypper -n install -t pattern devel_basis && zypper -n install git curl file procps tar gzip xz
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1

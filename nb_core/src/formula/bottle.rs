@@ -485,6 +485,9 @@ mod tests {
             aliases: Vec::new(),
             oldnames: Vec::new(),
             post_install_steps: Vec::new(),
+            pour_bottle_only_if: None,
+            service: None,
+            desc: None,
             lifecycle: Default::default(),
             tap: None,
         };
