@@ -256,15 +256,52 @@ fn relocate_binary(path: &Path, relocation: &Relocation) -> Result<BinaryOutcome
 /// Set a library's install name (`LC_ID_DYLIB`), as `install_name_tool -id`
 /// would, and re-sign it. Used by the `change_dylib_id` post-install step.
 pub(crate) fn set_install_name(path: &Path, id: &str) -> Result<(), Error> {
-    let metadata = fs::symlink_metadata(path).map_err(Error::store("failed to stat file"))?;
-    let mut contents = fs::read(path).map_err(Error::store("failed to read file"))?;
+    let contents = fs::read(path).map_err(Error::store("failed to read file"))?;
     if !macho::has_macho_magic(&contents) {
         return Err(Error::StoreCorruption {
             message: format!("{} is not a Mach-O file", path.display()),
         });
     }
-    let rewrite = macho::rewrite(&mut contents, |kind, _| {
-        (kind == PathKind::InstallName).then(|| id.to_string())
+    change_install_name(path, contents, |_| Some(id.to_string()))
+}
+
+/// `Keg#fix_dynamic_linkage`'s dylib IDs: each library a source build made
+/// is known by its path under `opt`, so what links to it finds it at run
+/// time, not by `@rpath` as CMake leaves it.
+pub(crate) fn fix_dylib_ids(keg: &Path, opt: &Path) -> Result<(), Error> {
+    for entry in walkdir::WalkDir::new(keg)
+        .follow_links(false)
+        .into_iter()
+        .filter_map(Result::ok)
+    {
+        let path = entry.path();
+        if !entry.file_type().is_file() {
+            continue;
+        }
+        let Ok(contents) = fs::read(path) else {
+            continue;
+        };
+        if !macho::has_macho_magic(&contents) {
+            continue;
+        }
+        let dir = path.parent().and_then(|dir| dir.strip_prefix(keg).ok());
+        change_install_name(path, contents, |old| {
+            let name = Path::new(old).file_name()?;
+            let new = opt.join(dir?).join(name).to_string_lossy().into_owned();
+            (new != old).then_some(new)
+        })?;
+    }
+    Ok(())
+}
+
+fn change_install_name(
+    path: &Path,
+    mut contents: Vec<u8>,
+    id: impl Fn(&str) -> Option<String>,
+) -> Result<(), Error> {
+    let metadata = fs::symlink_metadata(path).map_err(Error::store("failed to stat file"))?;
+    let rewrite = macho::rewrite(&mut contents, |kind, old| {
+        (kind == PathKind::InstallName).then(|| id(old)).flatten()
     })
     .map_err(|e| Error::StoreCorruption {
         message: format!("failed to parse {}: {e}", path.display()),
@@ -1240,6 +1277,32 @@ echo "Hello from $PREFIX"
             Some(PathBuf::from("/k/Frameworks"))
         );
         assert_eq!(outside_bundle(Path::new("/k/lib/libx.dylib")), None);
+    }
+
+    #[test]
+    fn a_source_built_library_is_known_by_its_opt_path() {
+        let tmp = short_prefix();
+        let src = tmp.path().join("x.c");
+        fs::write(&src, "int x(void) { return 42; }\n").unwrap();
+        let keg = tmp.path().join("Cellar/x/1.0");
+        fs::create_dir_all(keg.join("lib")).unwrap();
+        let dylib = keg.join("lib/libx.1.dylib");
+        cc(&[
+            "-dynamiclib",
+            "-o",
+            dylib.to_str().unwrap(),
+            "-install_name",
+            "@rpath/libx.1.dylib",
+            src.to_str().unwrap(),
+        ])
+        .unwrap();
+        let opt = tmp.path().join("opt/x");
+
+        fix_dylib_ids(&keg, &opt).unwrap();
+
+        let want = format!("{}/lib/libx.1.dylib", opt.display());
+        assert!(otool(&["-D"], &dylib).contains(&want));
+        assert!(signature_is_valid(&dylib));
     }
 
     #[test]

@@ -190,6 +190,23 @@ impl Installer {
             });
         }
 
+        #[cfg(target_os = "macos")]
+        if let Err(e) = crate::extraction::patch::macos::fix_dylib_ids(
+            &keg_path,
+            &self.prefix.join("opt").join(formula_name),
+        ) {
+            match previous_keg_backup.as_ref() {
+                Some(backup_path) => Self::restore_source_keg_from_backup(
+                    &keg_path,
+                    backup_path,
+                    formula_name,
+                    &version,
+                )?,
+                None => Self::cleanup_materialized(&self.cellar, formula_name, &version),
+            }
+            return Err(e);
+        }
+
         if let Some(backup_path) = previous_keg_backup.as_ref() {
             Self::remove_source_keg_backup(backup_path, formula_name, &version)?;
         }
