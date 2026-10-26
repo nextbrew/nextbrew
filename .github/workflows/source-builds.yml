@@ -65,6 +65,7 @@ jobs:
               ./target/debug/nb uninstall --all --force > /dev/null 2>&1 || true
             fi
             total=$((total + 1))
+            touch /tmp/started
             if ./target/debug/nb install --build-from-source "$formula" > "/tmp/$formula.log" 2>&1; then
               built=$((built + 1))
               echo "| $formula | yes |" >> /tmp/table.md
@@ -73,7 +74,7 @@ jobs:
               echo "::group::$formula"; tail -40 "/tmp/$formula.log"
               # What configure tried last, before its cache dump.
               find ~/Library/Logs/nextbrew ~/.cache/nextbrew/Logs -name config.log \
-                -newer "/tmp/$formula.log" 2>/dev/null | while read -r log; do
+                -newer /tmp/started 2>/dev/null | while read -r log; do
                 echo "== $log"; awk '/Cache variables/ { exit } { print }' "$log" | tail -30
               done || true
               echo "::endgroup::"

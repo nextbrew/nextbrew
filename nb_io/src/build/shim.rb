@@ -148,6 +148,11 @@ module MacOS
   def self.active_developer_dir
     `/usr/bin/xcode-select -p`.strip
   end
+
+  # `MacOS::CLT.installed?`: the Command Line Tools, apart from Xcode's.
+  module CLT
+    def self.installed?; File.directory?("/Library/Developer/CommandLineTools/usr/bin"); end
+  end
 end
 
 # Homebrew's `Utils` command helpers.
@@ -1086,9 +1091,10 @@ class Formula
         failed = s.failures
         content = s.to_s
       else
-        replaced = content.gsub(before.is_a?(Regexp) ? before : before.to_s, after.to_s)
-        failed = audit_result && replaced == content ? ["expected replacement of #{before.inspect} with #{after.inspect}"] : []
-        content = replaced
+        s = InreplaceString.new(content)
+        s.gsub!(before.is_a?(Regexp) ? before : before.to_s, after.to_s, audit_result:)
+        failed = s.failures
+        content = s.to_s
       end
       odie "inreplace failed\n#{path}:\n  #{failed.join("\n  ")}" unless failed.empty?
       File.write(path.to_s, content)
@@ -1365,8 +1371,8 @@ class InreplaceString
     @failures = []
   end
 
-  # Homebrew's: each edit is checked to have changed something, unless
-  # `audit_result: false`.
+  # Homebrew's: each edit is checked to have matched something (if only to
+  # put back what was there), unless `audit_result: false`.
   def gsub!(pattern, replacement = nil, legacy_audit = true, audit_result: legacy_audit, &block)
     edit(:gsub, pattern, replacement, audit_result, &block)
   end
@@ -1376,11 +1382,10 @@ class InreplaceString
   end
 
   def edit(how, pattern, replacement, audit_result, &block)
+    @content = @content.dup
+    how = :"#{how}!"
     result = block ? @content.public_send(how, pattern, &block) : @content.public_send(how, pattern, replacement)
-    if audit_result && result == @content
-      @failures << "expected replacement of #{pattern.inspect} with #{replacement.inspect}"
-    end
-    @content = result
+    @failures << "expected replacement of #{pattern.inspect} with #{replacement.inspect}" if audit_result && result.nil?
   end
 
   def change_make_var!(name, value)
