@@ -10,7 +10,7 @@ description: 今 Homebrew と同じように動くもの、部分的なもの、
 - **Unsupported**: 明示的なエラーで失敗します。
 
 formula のコマンド、cask のすべての artifact とコンテナ、bundle、services は、変更のたびに統合テストが macOS と Linux で実際に動かして確かめています。`nb migrate` も CI で実際の Homebrew を nextbrew に移して確かめています。
-テストは Apple Silicon と Intel の macOS、x86_64 と arm64 の Linux、Debian・Fedora・Arch・openSUSE のコンテナで動かしています。Homebrew は Intel macOS 向けの bottle を配布していないため、Intel macOS では nextbrew も Homebrew と同じくすべての formula をソースからビルドします。
+テストは Apple Silicon と Intel の macOS、x86_64 と arm64 の Linux で動かし、Debian・Fedora・Arch・openSUSE のコンテナでも手動で動かしています。Homebrew は Intel macOS 向けの bottle を配布していないため、Intel macOS では nextbrew も Homebrew と同じくすべての formula をソースからビルドします。
 
 | 機能 | 状態 |
 | --- | --- |
