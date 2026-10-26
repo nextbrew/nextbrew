@@ -207,7 +207,20 @@ pub fn source_mirrors(formula_rb: &str) -> Vec<String> {
     mirrors
 }
 
+/// Three tries with backoff on a network failure, as Homebrew's `curl --retry 3`.
 async fn download_source(url: &str, dest: &Path) -> Result<(), Error> {
+    let mut result = fetch_source(url, dest).await;
+    for attempt in 1..3 {
+        if !matches!(result, Err(Error::NetworkFailure { .. })) {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_secs(attempt)).await;
+        result = fetch_source(url, dest).await;
+    }
+    result
+}
+
+async fn fetch_source(url: &str, dest: &Path) -> Result<(), Error> {
     let client = reqwest::Client::builder()
         .timeout(std::time::Duration::from_secs(300))
         .use_preconfigured_tls((*crate::network::tls::shared_tls_config()).clone())
