@@ -16,6 +16,29 @@
 It installs Homebrew's official bottles and casks without needing Ruby or
 Homebrew itself, and runs alongside an existing Homebrew.
 
+## Speed
+
+Installing 22 popular formulae on a GitHub Actions macOS runner
+([benchmarks](https://nextbrew.dev/en/benchmarks), 2026-10-25):
+
+| | nextbrew 0.1.2 | Homebrew 7.0.10 |
+| --- | --- | --- |
+| Cold (nothing cached) | 20.5 s | 260.6 s |
+| Warm (downloads cached) | 2.8 s | 226.1 s |
+
+## Homebrew-compatible
+
+- The same bottles, casks, taps and Brewfiles; command names, options and exit
+  codes follow `brew`.
+- `nb migrate` moves an existing Homebrew installation over: formulae, casks,
+  taps, pins and services.
+- Casks (app, pkg, dmg, zip and more), services (launchd and systemd),
+  `nb bundle`, and building from source.
+- macOS and Linux, tested on Debian, Fedora, Arch and openSUSE.
+
+See [compatibility](https://nextbrew.dev/en/docs/reference/compatibility) for
+the details.
+
 ## Install
 
 ```bash
@@ -27,6 +50,7 @@ curl -fsSL https://nextbrew.dev/install | bash
 ## Quick start
 
 ```bash
+nb migrate                      # move over from Homebrew
 nb install jq                   # install a formula
 nb install cask:ghostty         # install a cask (app, DMG, zip)
 nb bundle                       # install from a Brewfile
