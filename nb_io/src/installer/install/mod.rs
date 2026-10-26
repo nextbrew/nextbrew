@@ -413,10 +413,23 @@ impl Installer {
             }
         }
 
+        // A formula whose dependency did not build is not tried, as `brew`
+        // stops there: the dependency's error stands for it.
+        let mut failed: Vec<&str> = Vec::new();
         for item in &source_items {
             let InstallMethod::Source(ref build_plan) = item.method else {
                 unreachable!()
             };
+            let formula = &item.formula;
+            if formula
+                .dependencies
+                .iter()
+                .chain(&formula.build_dependencies)
+                .any(|dep| failed.contains(&dep.as_str()))
+            {
+                failed.push(&formula.name);
+                continue;
+            }
 
             report(InstallProgress::UnpackStarted {
                 name: item.formula.name.clone(),
@@ -430,7 +443,10 @@ impl Installer {
                     installed += 1;
                     finished.push(item);
                 }
-                Err(e) => keep_last(&mut error, e, &report),
+                Err(e) => {
+                    failed.push(&formula.name);
+                    keep_last(&mut error, e, &report);
+                }
             }
         }
 

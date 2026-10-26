@@ -25,6 +25,7 @@ require "set"
 require "find"
 require "digest/sha2"
 require "time"
+require "zlib"
 
 module NextBrewChecksum
   module_function
@@ -159,13 +160,32 @@ module Utils
     odie "#{args.join(" ")} failed" unless $?.success?
     output
   end
+
+  # Homebrew's reproducible gzip: in place, mtime from SOURCE_DATE_EPOCH.
+  module Gzip
+    def self.compress(*paths, reproducible: true, mtime: ENV["SOURCE_DATE_EPOCH"].to_i)
+      paths.map do |path|
+        if reproducible
+          Zlib::GzipWriter.open("#{path}.gz") do |gz|
+            gz.mtime = [mtime.to_i, 1].max
+            gz.orig_name = File.basename(path)
+            gz.write(File.binread(path))
+          end
+          FileUtils.rm_f path
+        else
+          system "gzip", path.to_s
+        end
+        Pathname.new("#{path}.gz")
+      end
+    end
+  end
 end
 
 class MacOSVersion
   include Comparable
 
   SYMBOLS = {
-    tahoe: "26", sequoia: "15", sonoma: "14", ventura: "13", monterey: "12",
+    golden_gate: "27", tahoe: "26", sequoia: "15", sonoma: "14", ventura: "13", monterey: "12",
     big_sur: "11", catalina: "10.15", mojave: "10.14"
   }.freeze
 

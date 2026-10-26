@@ -733,6 +733,9 @@ mod tests {
     use crate::storage::blob::BlobCache;
     use crate::storage::db::Database;
     use crate::storage::store::Store;
+    use std::sync::Arc;
+
+    use crate::progress::InstallProgress;
     use crate::{Installer, Linker};
 
     #[test]
@@ -846,6 +849,51 @@ mod tests {
             assert_eq!(bp.formula_name, "nobottle");
             assert_eq!(bp.build_dependencies, vec!["pkgconf"]);
         }
+    }
+
+    /// As `brew`, a formula whose dependency did not build is not built.
+    #[tokio::test]
+    async fn a_dependent_of_a_failed_build_is_not_built() {
+        let mock_server = MockServer::start().await;
+        let tmp = TempDir::new().unwrap();
+        let unbottled = |name: &str, deps: &[&str]| {
+            format!(
+                r#"{{
+                    "name": "{name}",
+                    "tap": "someone/tools",
+                    "versions": {{ "stable": "1.0.0" }},
+                    "dependencies": {deps:?},
+                    "urls": {{ "stable": {{ "url": "https://example.com/{name}.tar.gz", "checksum": "ab" }} }},
+                    "bottle": {{ "stable": {{ "files": {{}} }} }}
+                }}"#
+            )
+        };
+        let mut installer = installer_serving(
+            &mock_server,
+            &tmp,
+            &[
+                ("lib", unbottled("lib", &[])),
+                ("app", unbottled("app", &["lib"])),
+            ],
+        )
+        .await;
+        let plan = installer.plan(&["app".to_string()]).await.unwrap();
+
+        let started = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let seen = started.clone();
+        let progress: Arc<crate::progress::ProgressCallback> = Arc::new(Box::new(move |event| {
+            if let InstallProgress::UnpackStarted { name } = event {
+                seen.lock().unwrap().push(name);
+            }
+        }));
+        // The tap is not there, so `lib` fails.
+        assert!(
+            installer
+                .execute_with_progress(plan, true, Some(progress))
+                .await
+                .is_err()
+        );
+        assert_eq!(*started.lock().unwrap(), ["lib"]);
     }
 
     /// An installer backed by a mock API serving each `(path name, formula
