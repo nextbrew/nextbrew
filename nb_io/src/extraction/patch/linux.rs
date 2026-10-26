@@ -193,26 +193,15 @@ fn patch_elf_placeholders(keg_path: &Path, prefix_dir: &Path) -> Result<(), Erro
         .map(|e| e.path().to_path_buf())
         .collect();
 
+    // Every path, hard links too: a patched file is a new one renamed into
+    // place, so its links (perl's `bin/perl`) keep the unpatched one.
     let patch_failures = AtomicUsize::new(0);
-    // Use a dashmap or similar for thread-safe inode tracking if needed,
-    // but we can just collect and then process, or use a Mutex.
-    let processed_inodes = std::sync::Mutex::new(std::collections::HashSet::new());
 
     // Clone for use in parallel closure
     let target_interpreter = target_interpreter.clone();
     let new_prefix = prefix_dir.to_string_lossy().to_string();
 
     elf_files.par_iter().for_each(|path| {
-        // Check hardlinks
-        if let Ok(meta) = fs::metadata(path) {
-            use std::os::unix::fs::MetadataExt;
-            let inode = (meta.dev(), meta.ino());
-            let mut inodes = processed_inodes.lock().unwrap();
-            if !inodes.insert(inode) {
-                return; // Already processed this inode
-            }
-        }
-
         // Get permissions and make writable if needed
         let metadata = match fs::metadata(path) {
             Ok(m) => m,
@@ -536,8 +525,16 @@ mod tests {
             "compiled binary should be executable"
         );
 
+        // A hard link to it, as perl's `bin/perl`, is patched too.
+        let link = bin_dir.join("testbin-link");
+        fs::hard_link(&elf_path, &link).unwrap();
+
         let result = patch_placeholders(&pkg_dir, &prefix, "testpkg", "1.0.0", None);
         assert!(result.is_ok());
+        for path in [&elf_path, &link] {
+            let contents = fs::read(path).unwrap();
+            assert!(!contents.windows(19).any(|w| w == b"@@HOMEBREW_PREFIX@@"));
+        }
 
         // Verify permissions are preserved after patching
         let new_mode = fs::metadata(&elf_path).unwrap().permissions().mode();
