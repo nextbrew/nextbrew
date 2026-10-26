@@ -95,6 +95,8 @@ module NextBrewLogs
     # The executor tells a failed command, already shown, from any other
     # failure of the build.
     def failed!
+      # As Homebrew, what configure and CMake found, for the report.
+      FileUtils.cp(Dir["{,*/}{config.log,CMakeCache.txt}"], dir)
       File.write(ENV.fetch("NEXTBREW_BUILD_FAILED"), "")
       exit 1
     end
@@ -214,6 +216,8 @@ module Hardware
     def self.intel?
       RUBY_PLATFORM.include?("x86_64")
     end
+
+    def self.arm64?; arm?; end
 
     def self.is_64_bit?
       true
@@ -605,7 +609,7 @@ class ResourceDSL
   # For audits and `brew livecheck` only.
   def livecheck(&_block); nil; end
   attr_reader :resource_version
-  def version(value = nil); @resource_version = value.to_s if value; end
+  def version(value = nil); value ? @resource_version = value.to_s : @resource_version; end
 end
 
 class StagedResource
@@ -939,6 +943,8 @@ class Formula
   end
   def pkg_version; FormulaVersion.new(self.class.formula_version); end
   def build; BuildOptions.new; end
+  # `Formula#deps`, by name.
+  def deps; self.class.dependency_names.map { |dep| FormulaRef.new(dep) }; end
 
   def prefix
     Pathname.new(NEXTBREW_CELLAR) + name + pkg_version
@@ -1341,6 +1347,8 @@ class FormulaRef
   end
 
   def any_installed_version; self; end
+  def name; @name; end
+  def to_formula; self; end
 
   def python3
     nextbrew_python3(@name, FORMULA_DEPS.fetch(@name, []))
@@ -1511,7 +1519,8 @@ FORMULA_DATA_CONTENT = end_marker_idx ? formula_raw[(formula_raw.index("\n", end
 ENV["HOMEBREW_PREFIX"] = NEXTBREW_PREFIX
 ENV["HOMEBREW_CELLAR"] = NEXTBREW_CELLAR
 
-load FORMULA_FILE
+# Wrapped, so that `class Ruby` doesn't reopen Ruby's own `Ruby` module.
+load FORMULA_FILE, true
 
 formula_class = ObjectSpace.each_object(Class).find { |c| c < Formula && c != Formula }
 unless formula_class

@@ -70,7 +70,13 @@ jobs:
               echo "| $formula | yes |" >> /tmp/table.md
             else
               echo "| $formula | no |" >> /tmp/table.md
-              echo "::group::$formula"; tail -40 "/tmp/$formula.log"; echo "::endgroup::"
+              echo "::group::$formula"; tail -40 "/tmp/$formula.log"
+              # What configure tried last, before its cache dump.
+              find ~/Library/Logs/nextbrew ~/.cache/nextbrew/Logs -name config.log \
+                -newer "/tmp/$formula.log" 2>/dev/null | while read -r log; do
+                echo "== $log"; awk '/Cache variables/ { exit } { print }' "$log" | tail -30
+              done || true
+              echo "::endgroup::"
             fi
           done
           # In the log too, which the API can read; the summary it cannot.
