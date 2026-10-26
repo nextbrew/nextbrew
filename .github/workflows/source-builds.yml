@@ -20,7 +20,7 @@ jobs:
   build:
     name: ${{ matrix.os }}
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 180
+    timeout-minutes: 360
     permissions:
       contents: read
     strategy:
@@ -59,8 +59,11 @@ jobs:
           } > /tmp/table.md
           for formula in $FORMULAE; do
             # Each from nothing, so a formula already there as another's
-            # bottled dependency is still built.
-            ./target/debug/nb uninstall --all --force > /dev/null 2>&1 || true
+            # bottled dependency is still built. Intel macOS has no bottles,
+            # so all there is built from source already: kept, to save hours.
+            if [ "$OS" != macos-15-intel ]; then
+              ./target/debug/nb uninstall --all --force > /dev/null 2>&1 || true
+            fi
             total=$((total + 1))
             if ./target/debug/nb install --build-from-source "$formula" > "/tmp/$formula.log" 2>&1; then
               built=$((built + 1))
