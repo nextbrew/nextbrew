@@ -73,7 +73,8 @@ jobs:
   test:
     name: test (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 60
+    # Intel macOS has no bottles: what the tests install is built from source.
+    timeout-minutes: ${{ matrix.os == 'macos-15-intel' && 180 || 60 }}
     permissions:
       contents: read
     strategy:
@@ -101,8 +102,11 @@ jobs:
           sudo loginctl enable-linger "$USER"
           echo "XDG_RUNTIME_DIR=/run/user/$(id -u)" >> "$GITHUB_ENV"
 
+      # ffmpeg's dozens of dependencies would take hours from source.
       - name: Integration tests
-        run: cargo test --package nb_cli --test integration --locked -- --ignored
+        env:
+          SKIP: ${{ matrix.os == 'macos-15-intel' && '--skip test_ffmpeg_formula' || '' }}
+        run: cargo test --package nb_cli --test integration --locked -- --ignored $SKIP
 
       # The runner's Homebrew moves into nextbrew. Only the x64 Linux image
       # has one to spare: the macOS runner's holds many packages (parity.yml

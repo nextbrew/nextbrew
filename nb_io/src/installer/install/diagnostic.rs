@@ -915,7 +915,7 @@ mod tests {
                 .message
                 .contains(&format!("  jq: {}\n", other_bin.join("jq").display()))
         );
-        assert!(!finding.message.contains("xz"));
+        assert!(!finding.message.contains("  xz:"));
 
         assert!(check_shadowed_commands(prefix.path(), &[bin.clone(), other_bin]).is_none());
         assert!(check_shadowed_commands(prefix.path(), &[]).is_none());
