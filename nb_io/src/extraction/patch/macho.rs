@@ -127,13 +127,17 @@ pub(crate) fn has_macho_magic(head: &[u8]) -> bool {
     let Some(magic) = read_u32(head, 0, Endian::Big) else {
         return false;
     };
+    // A Java class file starts `CAFEBABE` too, then a major version of 45
+    // or more where a fat file has its (few) architectures.
+    if magic == macho::FAT_MAGIC {
+        return read_u32(head, 4, Endian::Big).is_none_or(|count| count < 45);
+    }
     matches!(
         magic,
         macho::MH_MAGIC
             | macho::MH_CIGAM
             | macho::MH_MAGIC_64
             | macho::MH_CIGAM_64
-            | macho::FAT_MAGIC
             | macho::FAT_CIGAM
             | macho::FAT_MAGIC_64
             | macho::FAT_CIGAM_64
@@ -1109,6 +1113,8 @@ mod tests {
         assert!(has_macho_magic(b"\xcf\xfa\xed\xfe"));
         assert!(has_macho_magic(b"\xfe\xed\xfa\xce"));
         assert!(has_macho_magic(b"\xca\xfe\xba\xbe"));
+        assert!(has_macho_magic(b"\xca\xfe\xba\xbe\0\0\0\x02"));
+        assert!(!has_macho_magic(b"\xca\xfe\xba\xbe\0\0\0\x34"));
         assert!(!has_macho_magic(b"\x7fELF"));
         assert!(!has_macho_magic(b"\xcf\xfa"));
     }
