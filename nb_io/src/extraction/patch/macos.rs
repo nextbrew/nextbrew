@@ -1272,7 +1272,7 @@ echo "Hello from $PREFIX"
 
         relocate_keg(&keg, &cellar, "x", "1.0", "/opt/homebrew", None).unwrap();
 
-        let ids = otool(&["-D"], &dylib);
+        let ids = otool(&["-arch", "all", "-D"], &dylib);
         let want = format!("{}/opt/x/lib/libx.dylib", prefix.display());
         assert_eq!(
             ids.matches(&want).count(),
