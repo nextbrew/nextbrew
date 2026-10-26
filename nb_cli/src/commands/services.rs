@@ -222,6 +222,14 @@ pub async fn execute_as(
     if !cfg!(any(target_os = "macos", target_os = "linux")) {
         return Err(usage("`nb services` is supported only on macOS and Linux."));
     }
+    // `sd_booted`: a `systemctl` with no systemd running, as under WSL
+    // or in a container, fails on every command.
+    if cfg!(target_os = "linux") && !Path::new("/run/systemd/system").is_dir() {
+        return Err(usage(
+            "`nb services` is supported only on macOS or Linux (with systemd)! \
+             On WSL, set `systemd=true` under `[boot]` in /etc/wsl.conf and run `wsl --shutdown`.",
+        ));
+    }
     let mut launchd = Launchd::current(home()?);
     if sudo_service_user.is_some() {
         if !launchd.root() {

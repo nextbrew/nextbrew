@@ -1,0 +1,59 @@
+name: distros
+
+# The integration tests in popular distributions' containers, run by a user
+# as nb would be, from the runner's build. By hand. Services are left to
+# ci's own Linux run: a container has no systemd.
+on:
+  workflow_dispatch:
+
+permissions: {}
+
+defaults:
+  run:
+    shell: bash --noprofile --norc -euo pipefail {0}
+
+jobs:
+  test:
+    name: ${{ matrix.image }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - image: debian:stable
+            deps: apt-get update && apt-get install -y --no-install-recommends ca-certificates gcc g++ make git curl file procps
+          - image: fedora:latest
+            deps: dnf install -y gcc gcc-c++ make git curl file procps-ng
+          - image: archlinux:latest
+            deps: pacman -Syu --noconfirm gcc make git curl file procps-ng
+          - image: opensuse/tumbleweed
+            deps: zypper -n install gcc gcc-c++ make git curl file procps tar gzip xz
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Setup Rust
+        uses: ./.github/actions/setup-rust
+        with:
+          cache-key: distros
+
+      - name: Build the tests
+        run: |
+          cargo test --locked --package nb_cli --test integration --no-run --message-format=json \
+            | jq -r 'select(.profile.test == true and .target.name == "integration") | .executable' \
+            > /tmp/test-binary
+
+      - name: Integration tests
+        env:
+          IMAGE: ${{ matrix.image }}
+          DEPS: ${{ matrix.deps }}
+        run: |
+          printf 'FROM %s\nRUN %s\n' "$IMAGE" "$DEPS" | docker build -q -t distro -
+          docker run --rm --user "$(id -u):$(id -g)" -e HOME=/tmp/home \
+            -v "$PWD:$PWD" -w "$PWD" distro \
+            sh -c 'mkdir -p "$HOME" && exec "$@"' _ "$(cat /tmp/test-binary)" --ignored
