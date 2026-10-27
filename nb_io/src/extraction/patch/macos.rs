@@ -50,6 +50,8 @@ pub(crate) struct Relocation {
     cellar: String,
     library: String,
     version_fix: Option<VersionFix>,
+    /// The build prefix's paths in text files, and what they become.
+    text_prefixes: Vec<(String, String)>,
 }
 
 /// A bottle can reference another version of its own formula, for example
@@ -81,7 +83,22 @@ impl Relocation {
             version: pkg_version.to_string(),
             replacement: format!("/Cellar/{pkg_name}/{pkg_version}/"),
         });
+        // Intel's `/usr/local` is everyone's too: autoconf's frozen `.m4f`
+        // files name `/usr/local/include`, and rewriting it breaks their
+        // lengths. Only Homebrew's own paths there are its.
+        let text_prefixes = if build_prefix == "/usr/local" {
+            vec![
+                (
+                    "/usr/local/Cellar".into(),
+                    cellar_dir.to_string_lossy().into_owned(),
+                ),
+                ("/usr/local/opt".into(), format!("{prefix}/opt")),
+            ]
+        } else {
+            vec![(build_prefix.to_string(), prefix.clone())]
+        };
         Self {
+            text_prefixes,
             build_prefix: build_prefix.to_string(),
             library: format!("{prefix}/Library"),
             cellar: cellar_dir.to_string_lossy().into_owned(),
@@ -123,16 +140,21 @@ impl Relocation {
         (new != path).then_some(new)
     }
 
-    fn text_replacements(&self) -> [(&str, &str); 7] {
-        [
+    fn text_replacements(&self) -> Vec<(&str, &str)> {
+        let mut replacements = vec![
             ("@@HOMEBREW_PREFIX@@", self.prefix.as_str()),
             ("@@HOMEBREW_CELLAR@@", self.cellar.as_str()),
             ("@@HOMEBREW_REPOSITORY@@", self.prefix.as_str()),
             ("@@HOMEBREW_LIBRARY@@", self.library.as_str()),
             ("@@HOMEBREW_PERL@@", "/usr/bin/perl"),
             ("@@HOMEBREW_JAVA@@", "/usr/bin/java"),
-            (self.build_prefix.as_str(), self.prefix.as_str()),
-        ]
+        ];
+        replacements.extend(
+            self.text_prefixes
+                .iter()
+                .map(|(old, new)| (old.as_str(), new.as_str())),
+        );
+        replacements
     }
 }
 
@@ -921,6 +943,22 @@ echo "Hello from $PREFIX"
             fs::read_to_string(&test_file).unwrap(),
             "#!/bin/sh\nPATH=/usr/local/bin:@@HOMEBREW_PREFIX@@/bin\n"
                 .replace("@@HOMEBREW_PREFIX@@", "/opt/nextbrew")
+        );
+    }
+
+    #[test]
+    fn an_intel_bottle_keeps_usr_local_that_is_not_homebrews() {
+        let tmp = TempDir::new().unwrap();
+        let test_file = tmp.path().join("autoconf.m4f");
+        let content =
+            "T9,22\ninclude/usr/local/include\n/usr/local/opt/m4/bin/m4 /usr/local/Cellar/x\n";
+        fs::write(&test_file, content).unwrap();
+
+        patch_text_file_strings(&test_file, "/usr/local", "/opt/nb", "/opt/nb/Cellar").unwrap();
+
+        assert_eq!(
+            fs::read_to_string(&test_file).unwrap(),
+            "T9,22\ninclude/usr/local/include\n/opt/nb/opt/m4/bin/m4 /opt/nb/Cellar/x\n"
         );
     }
 

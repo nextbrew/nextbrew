@@ -948,6 +948,8 @@ class Formula
   end
   def pkg_version; FormulaVersion.new(self.class.formula_version); end
   def build; BuildOptions.new; end
+  def head?; false; end
+  def stable?; true; end
   # `Formula#deps`, by name.
   def deps; self.class.dependency_names.map { |dep| FormulaRef.new(dep) }; end
 
@@ -1342,6 +1344,7 @@ class FormulaRef
   def opt_share; opt_prefix + "share"; end
   def opt_pkgshare; opt_share + @name; end
   def opt_elisp; opt_share + "emacs" + "site-lisp" + @name; end
+  def pkgetc; Pathname.new(NEXTBREW_PREFIX) + "etc" + @name; end
   def opt_frameworks; opt_prefix + "Frameworks"; end
   def lib; opt_lib; end
   def include; opt_include; end

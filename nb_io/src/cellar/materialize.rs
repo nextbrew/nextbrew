@@ -102,7 +102,7 @@ impl Cellar {
     /// be cloned.
     pub fn relocation_fingerprint(&self, build_prefix: &str) -> String {
         format!(
-            "relocation v3\ncellar {}\nbuild_prefix {build_prefix}\n",
+            "relocation v4\ncellar {}\nbuild_prefix {build_prefix}\n",
             self.cellar_dir.display()
         )
     }
