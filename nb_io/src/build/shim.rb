@@ -37,7 +37,7 @@ module NextBrewChecksum
     expected = expected_sha256.to_s.strip.empty? ? nil : normalize_sha256!(expected_sha256, context)
     error = nil
     urls.compact.each do |url|
-      unless Kernel.system("curl", "-fsSL", "-o", path, url)
+      unless Kernel.system("curl", "-fsSL", "--retry", "3", "-o", path, url)
         error = "Error: failed to download #{context}"
         next
       end
@@ -637,10 +637,20 @@ class StagedResource
 
   def test?; @test; end
 
+  # The download itself, as `gem install r.cached_download` takes it.
+  def cached_download
+    @cached_download ||= begin
+      path = File.join(Dir.mktmpdir("nb_download_"), basename)
+      if (error = NextBrewChecksum.fetch([@url, *@mirrors], path, @sha256, "resource #{@url}"))
+        $stderr.puts error
+        exit 1
+      end
+      Pathname.new(path)
+    end
+  end
+
   def stage(&block)
     Dir.mktmpdir("nb_resource_") do |root|
-      basename = File.basename(URI.parse(@url).path)
-      basename = "resource" if basename.empty?
       # The download apart from what it unpacks to.
       dir = File.join(root, "stage")
       FileUtils.mkdir_p([File.join(root, "download"), dir])
@@ -670,6 +680,11 @@ class StagedResource
   end
 
   private
+
+  def basename
+    name = File.basename(URI.parse(@url).path)
+    name.empty? ? "resource" : name
+  end
 
   def extract_resource(archive, dir)
     case archive
@@ -1165,7 +1180,8 @@ class Formula
   end
 
   def mv(*sources, **options)
-    normalized = sources.map { |s| s.respond_to?(:to_path) ? s.to_path : s.to_s }
+    # An array (`mv dir.children, bin`) is moved into a directory.
+    normalized = sources.map { |s| s.is_a?(Array) ? s.map(&:to_s) : s.to_s }
     FileUtils.mv(*normalized, **options)
   end
 
