@@ -1,13 +1,9 @@
 ---
 title: Compatibility
-description: What works like Homebrew today, what is partial, and what is not supported.
+description: What works like Homebrew today, and where nextbrew differs.
 ---
 
 # Compatibility
-
-- **Native**: behaves like Homebrew.
-- **Partial**: some options or packages have limits.
-- **Unsupported**: fails with an explicit error.
 
 Formula commands, every cask artifact and container, bundle and services are
 exercised end to end on macOS and Linux by the integration tests on every change,
@@ -16,21 +12,25 @@ They run on Apple Silicon and Intel macOS, x86_64 and arm64 Linux, and (run by h
 Fedora, Arch and openSUSE containers. Homebrew ships no bottles for Intel macOS,
 so there nextbrew, like Homebrew, builds every formula from source.
 
-| Feature | Status |
+## Works like Homebrew
+
+| Area | What |
 | --- | --- |
-| Formulae: install, uninstall, upgrade, outdated, list, info | Native |
-| Formulae: link, unlink, pin, autoremove, deps, uses, search | Native |
-| Casks: app, suite, dmg, zip, tar, binary | Native |
-| Casks: hooks (`*_steps`) | Native; an unknown step or a failure rolls the install back |
-| Casks: pkg and installer | Native |
-| Casks: upgrade | Native; self-updating casks when named or with `--greedy`, `--greedy-latest` or `--greedy-auto-updates` |
-| Casks: uninstall stanza and `--zap` | Native |
-| Casks: `--language` | Native; the system's languages by default |
-| Bundle (Brewfile) | Native, including `flatpak`, `winget` and the extensions; build `args` other than `build-from-source` and formula options fail with the reason |
-| Services | Native on macOS (launchd) and Linux (systemd), labels `dev.nextbrew.<formula>` |
-| Taps | Implemented (`nb tap`, `nb trust`); third-party taps must be trusted before they load. |
-| Migrating from Homebrew (`nb migrate`) | Native: formulae, casks, taps, pins and services |
-| Building from source | Native: all 25 popular formulae tried build on Linux and macOS (C, Rust, Go); developer commands (create, audit, bottle) are not planned |
+| Formulae | install, uninstall, upgrade, outdated, list, info, link, unlink, pin, autoremove, deps, uses, search |
+| Casks | app, suite, binary, pkg, installer; dmg, zip, tar; hooks (`*_steps`); upgrade, with `--greedy`, `--greedy-latest` and `--greedy-auto-updates`; uninstall and `--zap`; `--language` |
+| Bundle | Brewfiles, including `flatpak`, `winget` and the extensions |
+| Services | launchd on macOS, systemd on Linux |
+| Taps | `nb tap` |
+| Migration | `nb migrate`: formulae, casks, taps, pins and services |
+| Building from source | C, Rust and Go; all 25 popular formulae tried build on Linux and Apple Silicon macOS |
+
+## Where nextbrew differs
+
+- A third-party tap loads only after `nb trust`.
+- Service labels are `dev.nextbrew.<formula>`.
+- A cask hook step nextbrew does not know, or one that fails, rolls the install back.
+- In a Brewfile, build `args` other than `build-from-source` (such as `HEAD`) fail with the reason.
+- Developer commands (create, audit, bottle) are not planned.
 
 Command names, options and exit codes follow Homebrew. nextbrew runs Ruby only
 to build from source. A step it does not understand is reported, not skipped silently.

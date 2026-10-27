@@ -1,32 +1,32 @@
 ---
 title: 互換性
-description: 今 Homebrew と同じように動くもの、部分的なもの、未対応のもの。
+description: 今 Homebrew と同じように動くものと、nextbrew が違うところ。
 ---
 
 # 互換性
 
-- **Native**: Homebrew と同じように動きます。
-- **Partial**: 一部のオプションやパッケージに制限があります。
-- **Unsupported**: 明示的なエラーで失敗します。
-
 formula のコマンド、cask のすべての artifact とコンテナ、bundle、services は、変更のたびに統合テストが macOS と Linux で実際に動かして確かめています。`nb migrate` も CI で実際の Homebrew を nextbrew に移して確かめています。
 テストは Apple Silicon と Intel の macOS、x86_64 と arm64 の Linux で動かし、Debian・Fedora・Arch・openSUSE のコンテナでも手動で動かしています。Homebrew は Intel macOS 向けの bottle を配布していないため、Intel macOS では nextbrew も Homebrew と同じくすべての formula をソースからビルドします。
 
-| 機能 | 状態 |
+## Homebrew と同じように動くもの
+
+| 領域 | 内容 |
 | --- | --- |
-| formula: install、uninstall、upgrade、outdated、list、info | Native |
-| formula: link、unlink、pin、autoremove、deps、uses、search | Native |
-| cask: app、suite、dmg、zip、tar、binary | Native |
-| cask: フック（`*_steps`） | Native。未知のステップや失敗があると、インストールはロールバックされる |
-| cask: pkg と installer | Native |
-| cask: upgrade | Native。自己更新する cask は名前を指定したときか `--greedy`、`--greedy-latest`、`--greedy-auto-updates` のとき |
-| cask: uninstall stanza と `--zap` | Native |
-| cask: `--language` | Native。既定はシステムの言語 |
-| Bundle（Brewfile） | Native。`flatpak`、`winget` と各拡張を含む。`build-from-source` と formula オプション以外のビルド `args` は理由つきで失敗 |
-| Services | macOS（launchd）と Linux（systemd）で Native。ラベルは `dev.nextbrew.<formula>` |
-| Tap | 対応しています（`nb tap`、`nb trust`）。サードパーティの tap は、信頼すると読み込まれます。 |
-| Homebrew からの移行（`nb migrate`） | Native。formula、cask、tap、pin、service |
-| ソースからのビルド | ネイティブ。試した主要 formula 25 個すべてが Linux と macOS でビルドできる（C、Rust、Go）。開発者向けコマンド（create、audit、bottle）は予定なし |
+| formula | install、uninstall、upgrade、outdated、list、info、link、unlink、pin、autoremove、deps、uses、search |
+| cask | app、suite、binary、pkg、installer。dmg、zip、tar。フック（`*_steps`）。upgrade（`--greedy`、`--greedy-latest`、`--greedy-auto-updates`）。uninstall と `--zap`。`--language` |
+| Bundle | Brewfile。`flatpak`、`winget` と各拡張を含む |
+| Services | macOS は launchd、Linux は systemd |
+| Tap | `nb tap` |
+| 移行 | `nb migrate`。formula、cask、tap、pin、service |
+| ソースからのビルド | C、Rust、Go。試した主要 formula 25 個すべてが Linux と Apple Silicon の macOS でビルドできる |
+
+## nextbrew が違うところ
+
+- サードパーティの tap は `nb trust` で信頼してから読み込まれます。
+- service のラベルは `dev.nextbrew.<formula>` です。
+- cask のフックに未知のステップがあるか、ステップが失敗すると、インストールはロールバックされます。
+- Brewfile では、`build-from-source` 以外のビルド `args`（`HEAD` など）は理由つきで失敗します。
+- 開発者向けコマンド（create、audit、bottle）は予定していません。
 
 コマンド名、オプション、終了コードは Homebrew に従います。nextbrew が Ruby を実行するのはソースからのビルドのときだけです。
 理解できないステップは、黙ってスキップせず報告します。
