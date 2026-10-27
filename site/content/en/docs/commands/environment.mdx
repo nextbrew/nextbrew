@@ -1,0 +1,31 @@
+---
+title: nb shellenv / config / --prefix / home / desc / man
+description: Where nextbrew keeps things, and the commands that print or open them.
+---
+
+# Environment and lookup
+
+```sh
+eval "$(nb shellenv)"
+nb config
+nb --prefix [FORMULA...]    # also --cellar, --cache; --installed skips the rest
+nb desc FORMULA...          # -s/-n/-d TEXT searches names and descriptions
+nb home [NAME...]
+nb source [FORMULA]
+nb man
+```
+
+- `nb shellenv` prints the same lines `nb init` adds to your shell's config (fish syntax when `$SHELL`, or the argument, is fish).
+- `nb --prefix jq` prints `$NEXTBREW_PREFIX/opt/jq`, `nb --cellar jq` its Cellar directory, and `nb --cache jq` where its bottle is cached. With no name they print the directories themselves. `--prefix DIR` before a command still sets the prefix.
+- `nb home` and `nb source` open the homepage and the source repository in `$BROWSER` (or `open` / `xdg-open`), and print the URL when there is no browser. With no name they open nextbrew's.
+- `nb man` shows the manual page made from `nb --help`; piped, it prints the roff.
+
+## Using nb as brew
+
+Scripts that call `brew` can run nextbrew instead:
+
+```sh
+ln -s "$(command -v nb)" ~/bin/brew
+```
+
+Commands nextbrew does not have still fail, with the reason.

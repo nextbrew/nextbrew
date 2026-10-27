@@ -1,0 +1,42 @@
+---
+title: nb cleanup / fetch / leaves / vulns / version-install
+description: キャッシュの整理、事前ダウンロード、leaves と既知の脆弱性の確認、古いバージョンのインストール。
+---
+
+# メンテナンス
+
+```sh
+nb cleanup [--prune DAYS|all] [-n] [-s]
+nb fetch [--deps] [--formula|--cask] NAMES...
+nb leaves [-r|-p]
+nb vulns [-d] [FORMULAE...]
+nb version-install FORMULA VERSION
+```
+
+## nb cleanup
+
+120 日より古いダウンロードキャッシュ（`--prune DAYS` で日数を指定、`--prune all` と `-s` はすべて）と、どの keg も使っていない store エントリを削除します。`-n` は削除対象を表示するだけです。
+
+## nb fetch
+
+bottle（`--deps` を付けると依存関係の分も）や cask のダウンロードをキャッシュに取得し、保存先を表示します。この環境向けの bottle がない formula はその旨を表示します。インストール時にソースからビルドされます。
+
+## nb leaves
+
+ほかのインストール済み formula や cask から依存されていない formula を表示します。`-r` は明示的にインストールしたものだけ、`-p` は依存関係として入ったものだけを表示します。
+
+## nb vulns
+
+インストール済みの formula（または指定した formula。`-d` で依存関係も含む）を、`brew vulns` と同じくソースリポジトリとリリースタグで [OSV.dev](https://osv.dev) から検索します。ソースが GitHub、GitLab、Codeberg、KDE や GNOME の GitLab にない formula はスキップします。見つかった場合は終了コード 1 で終わります。
+
+formula 自身のパッチで修正済みの脆弱性も表示されます。
+
+## nb version-install
+
+```sh
+nb version-install jq 1.7.1
+```
+
+homebrew/core の履歴からそのバージョンを探し、ローカル tap `<user>/versions`（`$NEXTBREW_PREFIX/taps` の下）に `jq@1.7.1` として書き出して、ソースからビルドします。`nb update` はこの tap を更新しません。GitHub API のレート制限に当たる場合は `GITHUB_TOKEN` を設定してください。
+
+古いソースはダウンロードできなくなっていたり、今のコンパイラではビルドできなかったりすることがあります。

@@ -13,6 +13,8 @@ pub use cask_link::{CaskLink, CaskLinkEvent};
 mod cask_uninstall;
 mod dependents;
 mod deps;
+mod fetch;
+pub use fetch::Cleanup;
 pub mod diagnostic;
 pub mod doctor;
 mod outdated;
@@ -599,6 +601,16 @@ impl Installer {
     /// The prefix packages are installed into.
     pub fn prefix(&self) -> &std::path::Path {
         &self.prefix
+    }
+
+    /// Where downloads are cached (`brew --cache`).
+    pub fn cache_dir(&self) -> &std::path::Path {
+        &self.cache_dir
+    }
+
+    /// The HTTP client API requests go through.
+    pub fn http(&self) -> &reqwest::Client {
+        self.api_client.http()
     }
 
     /// A formula as the API describes it.

@@ -87,15 +87,7 @@ pub fn run_init(
 
     ui.heading("Initializing nextbrew...")?;
 
-    let nextbrew_dir = match std::env::var("NEXTBREW_DIR") {
-        Ok(dir) => dir,
-        Err(_) => {
-            let home = std::env::var("HOME")
-                .map_err(|_| InitError::Message("HOME not set".to_string()))?;
-            format!("{}/.nextbrew", home)
-        }
-    };
-    let nextbrew_bin = bin_dir(&nextbrew_dir, std::env::var("NEXTBREW_BIN").ok());
+    let (nextbrew_dir, nextbrew_bin) = nextbrew_dirs()?;
 
     let dirs_to_create: Vec<PathBuf> = vec![
         root.to_path_buf(),
@@ -250,6 +242,142 @@ fn needs_sudo(dir: &Path) -> bool {
         .is_none_or(|a| !is_writable(a))
 }
 
+/// The shell code that puts nextbrew on `PATH`: what `nb init` writes into
+/// the shell's config, and what `nb shellenv` prints.
+pub fn shell_block(
+    fish: bool,
+    nextbrew_dir: &str,
+    nextbrew_bin: &str,
+    root: &str,
+    prefix: &str,
+) -> String {
+    match fish {
+        false => format!(
+            r#"
+# nextbrew
+export NEXTBREW_DIR={nextbrew_dir}
+export NEXTBREW_BIN={nextbrew_bin}
+export NEXTBREW_ROOT={root}
+export NEXTBREW_PREFIX={prefix}
+export PKG_CONFIG_PATH="$NEXTBREW_PREFIX/lib/pkgconfig:${{PKG_CONFIG_PATH:-}}"
+
+# SSL/TLS certificates (only if ca-certificates is installed)
+if [ -z "${{CURL_CA_BUNDLE:-}}" ] || [ -z "${{SSL_CERT_FILE:-}}" ]; then
+  if [ -f "$NEXTBREW_PREFIX/opt/ca-certificates/share/ca-certificates/cacert.pem" ]; then
+    [ -z "${{CURL_CA_BUNDLE:-}}" ] && export CURL_CA_BUNDLE="$NEXTBREW_PREFIX/opt/ca-certificates/share/ca-certificates/cacert.pem"
+    [ -z "${{SSL_CERT_FILE:-}}" ] && export SSL_CERT_FILE="$NEXTBREW_PREFIX/opt/ca-certificates/share/ca-certificates/cacert.pem"
+  elif [ -f "$NEXTBREW_PREFIX/etc/ca-certificates/cacert.pem" ]; then
+    [ -z "${{CURL_CA_BUNDLE:-}}" ] && export CURL_CA_BUNDLE="$NEXTBREW_PREFIX/etc/ca-certificates/cacert.pem"
+    [ -z "${{SSL_CERT_FILE:-}}" ] && export SSL_CERT_FILE="$NEXTBREW_PREFIX/etc/ca-certificates/cacert.pem"
+  elif [ -f "$NEXTBREW_PREFIX/etc/openssl/cert.pem" ]; then
+    [ -z "${{CURL_CA_BUNDLE:-}}" ] && export CURL_CA_BUNDLE="$NEXTBREW_PREFIX/etc/openssl/cert.pem"
+    [ -z "${{SSL_CERT_FILE:-}}" ] && export SSL_CERT_FILE="$NEXTBREW_PREFIX/etc/openssl/cert.pem"
+  elif [ -f "$NEXTBREW_PREFIX/share/ca-certificates/cacert.pem" ]; then
+    [ -z "${{CURL_CA_BUNDLE:-}}" ] && export CURL_CA_BUNDLE="$NEXTBREW_PREFIX/share/ca-certificates/cacert.pem"
+    [ -z "${{SSL_CERT_FILE:-}}" ] && export SSL_CERT_FILE="$NEXTBREW_PREFIX/share/ca-certificates/cacert.pem"
+  fi
+fi
+
+if [ -z "${{SSL_CERT_DIR:-}}" ]; then
+  if [ -d "$NEXTBREW_PREFIX/etc/ca-certificates" ]; then
+    export SSL_CERT_DIR="$NEXTBREW_PREFIX/etc/ca-certificates"
+  elif [ -d "$NEXTBREW_PREFIX/etc/openssl/certs" ]; then
+    export SSL_CERT_DIR="$NEXTBREW_PREFIX/etc/openssl/certs"
+  elif [ -d "$NEXTBREW_PREFIX/share/ca-certificates" ]; then
+    export SSL_CERT_DIR="$NEXTBREW_PREFIX/share/ca-certificates"
+  fi
+fi
+
+# Helper function to safely append to PATH
+_zb_path_append() {{
+    local argpath="$1"
+    case ":${{PATH}}:" in
+*:"$argpath":*) ;;
+*) export PATH="$argpath:$PATH" ;;
+    esac;
+}}
+
+_zb_path_append "$NEXTBREW_BIN"
+_zb_path_append "$NEXTBREW_PREFIX/sbin"
+_zb_path_append "$NEXTBREW_PREFIX/bin"
+"#,
+            nextbrew_dir = posix_shell_quote(nextbrew_dir),
+            nextbrew_bin = posix_shell_quote(nextbrew_bin),
+            root = posix_shell_quote(root),
+            prefix = posix_shell_quote(prefix)
+        ),
+        true => format!(
+            r#"
+# nextbrew
+set -gx NEXTBREW_DIR {nextbrew_dir}
+set -gx NEXTBREW_BIN {nextbrew_bin}
+set -gx NEXTBREW_ROOT {root}
+set -gx NEXTBREW_PREFIX {prefix}
+if set -q PKG_CONFIG_PATH
+    set -gx PKG_CONFIG_PATH "$NEXTBREW_PREFIX/lib/pkgconfig" $PKG_CONFIG_PATH
+else
+    set -gx PKG_CONFIG_PATH "$NEXTBREW_PREFIX/lib/pkgconfig"
+end
+
+# SSL/TLS certificates (only if ca-certificates is installed)
+if not set -q CURL_CA_BUNDLE; or not set -q SSL_CERT_FILE
+    if test -f "$NEXTBREW_PREFIX/opt/ca-certificates/share/ca-certificates/cacert.pem"
+set -q CURL_CA_BUNDLE; or set -gx CURL_CA_BUNDLE "$NEXTBREW_PREFIX/opt/ca-certificates/share/ca-certificates/cacert.pem"
+set -q SSL_CERT_FILE; or set -gx SSL_CERT_FILE "$NEXTBREW_PREFIX/opt/ca-certificates/share/ca-certificates/cacert.pem"
+    else if test -f "$NEXTBREW_PREFIX/etc/ca-certificates/cacert.pem"
+set -q CURL_CA_BUNDLE; or set -gx CURL_CA_BUNDLE "$NEXTBREW_PREFIX/etc/ca-certificates/cacert.pem"
+set -q SSL_CERT_FILE; or set -gx SSL_CERT_FILE "$NEXTBREW_PREFIX/etc/ca-certificates/cacert.pem"
+    else if test -f "$NEXTBREW_PREFIX/etc/openssl/cert.pem"
+set -q CURL_CA_BUNDLE; or set -gx CURL_CA_BUNDLE "$NEXTBREW_PREFIX/etc/openssl/cert.pem"
+set -q SSL_CERT_FILE; or set -gx SSL_CERT_FILE "$NEXTBREW_PREFIX/etc/openssl/cert.pem"
+    else if test -f "$NEXTBREW_PREFIX/share/ca-certificates/cacert.pem"
+set -q CURL_CA_BUNDLE; or set -gx CURL_CA_BUNDLE "$NEXTBREW_PREFIX/share/ca-certificates/cacert.pem"
+set -q SSL_CERT_FILE; or set -gx SSL_CERT_FILE "$NEXTBREW_PREFIX/share/ca-certificates/cacert.pem"
+    end
+end
+
+if not set -q SSL_CERT_DIR
+    if test -d "$NEXTBREW_PREFIX/etc/ca-certificates"
+set -gx SSL_CERT_DIR "$NEXTBREW_PREFIX/etc/ca-certificates"
+    else if test -d "$NEXTBREW_PREFIX/etc/openssl/certs"
+set -gx SSL_CERT_DIR "$NEXTBREW_PREFIX/etc/openssl/certs"
+    else if test -d "$NEXTBREW_PREFIX/share/ca-certificates"
+set -gx SSL_CERT_DIR "$NEXTBREW_PREFIX/share/ca-certificates"
+    end
+end
+
+if not contains -- "$NEXTBREW_BIN" $PATH
+    set -gx PATH "$NEXTBREW_BIN" $PATH
+end
+if not contains -- "$NEXTBREW_PREFIX/sbin" $PATH
+    set -gx PATH "$NEXTBREW_PREFIX/sbin" $PATH
+end
+if not contains -- "$NEXTBREW_PREFIX/bin" $PATH
+    set -gx PATH "$NEXTBREW_PREFIX/bin" $PATH
+end
+"#,
+            nextbrew_dir = fish_shell_quote(nextbrew_dir),
+            nextbrew_bin = fish_shell_quote(nextbrew_bin),
+            root = fish_shell_quote(root),
+            prefix = fish_shell_quote(prefix)
+        ),
+    }
+}
+
+/// `NEXTBREW_DIR` and `NEXTBREW_BIN`, or where they are by default.
+pub fn nextbrew_dirs() -> Result<(String, String), InitError> {
+    let nextbrew_dir = match std::env::var("NEXTBREW_DIR") {
+        Ok(dir) => dir,
+        Err(_) => {
+            let home = std::env::var("HOME")
+                .map_err(|_| InitError::Message("HOME not set".to_string()))?;
+            format!("{}/.nextbrew", home)
+        }
+    };
+    let nextbrew_bin = bin_dir(&nextbrew_dir, std::env::var("NEXTBREW_BIN").ok());
+    Ok((nextbrew_dir, nextbrew_bin))
+}
+
 /// Where nb and nbx live: `NEXTBREW_BIN` (install.sh exports the directory it
 /// installed into), else `$NEXTBREW_DIR/bin`.
 fn bin_dir(nextbrew_dir: &str, env_bin: Option<String>) -> String {
@@ -321,117 +449,13 @@ fn add_to_path(
     };
 
     if !no_modify_path {
-        let block_body = match shell_kind {
-            ShellConfigKind::Posix => format!(
-                r#"
-# nextbrew
-export NEXTBREW_DIR={nextbrew_dir}
-export NEXTBREW_BIN={nextbrew_bin}
-export NEXTBREW_ROOT={root}
-export NEXTBREW_PREFIX={prefix}
-export PKG_CONFIG_PATH="$NEXTBREW_PREFIX/lib/pkgconfig:${{PKG_CONFIG_PATH:-}}"
-
-# SSL/TLS certificates (only if ca-certificates is installed)
-if [ -z "${{CURL_CA_BUNDLE:-}}" ] || [ -z "${{SSL_CERT_FILE:-}}" ]; then
-  if [ -f "$NEXTBREW_PREFIX/opt/ca-certificates/share/ca-certificates/cacert.pem" ]; then
-    [ -z "${{CURL_CA_BUNDLE:-}}" ] && export CURL_CA_BUNDLE="$NEXTBREW_PREFIX/opt/ca-certificates/share/ca-certificates/cacert.pem"
-    [ -z "${{SSL_CERT_FILE:-}}" ] && export SSL_CERT_FILE="$NEXTBREW_PREFIX/opt/ca-certificates/share/ca-certificates/cacert.pem"
-  elif [ -f "$NEXTBREW_PREFIX/etc/ca-certificates/cacert.pem" ]; then
-    [ -z "${{CURL_CA_BUNDLE:-}}" ] && export CURL_CA_BUNDLE="$NEXTBREW_PREFIX/etc/ca-certificates/cacert.pem"
-    [ -z "${{SSL_CERT_FILE:-}}" ] && export SSL_CERT_FILE="$NEXTBREW_PREFIX/etc/ca-certificates/cacert.pem"
-  elif [ -f "$NEXTBREW_PREFIX/etc/openssl/cert.pem" ]; then
-    [ -z "${{CURL_CA_BUNDLE:-}}" ] && export CURL_CA_BUNDLE="$NEXTBREW_PREFIX/etc/openssl/cert.pem"
-    [ -z "${{SSL_CERT_FILE:-}}" ] && export SSL_CERT_FILE="$NEXTBREW_PREFIX/etc/openssl/cert.pem"
-  elif [ -f "$NEXTBREW_PREFIX/share/ca-certificates/cacert.pem" ]; then
-    [ -z "${{CURL_CA_BUNDLE:-}}" ] && export CURL_CA_BUNDLE="$NEXTBREW_PREFIX/share/ca-certificates/cacert.pem"
-    [ -z "${{SSL_CERT_FILE:-}}" ] && export SSL_CERT_FILE="$NEXTBREW_PREFIX/share/ca-certificates/cacert.pem"
-  fi
-fi
-
-if [ -z "${{SSL_CERT_DIR:-}}" ]; then
-  if [ -d "$NEXTBREW_PREFIX/etc/ca-certificates" ]; then
-    export SSL_CERT_DIR="$NEXTBREW_PREFIX/etc/ca-certificates"
-  elif [ -d "$NEXTBREW_PREFIX/etc/openssl/certs" ]; then
-    export SSL_CERT_DIR="$NEXTBREW_PREFIX/etc/openssl/certs"
-  elif [ -d "$NEXTBREW_PREFIX/share/ca-certificates" ]; then
-    export SSL_CERT_DIR="$NEXTBREW_PREFIX/share/ca-certificates"
-  fi
-fi
-
-# Helper function to safely append to PATH
-_zb_path_append() {{
-    local argpath="$1"
-    case ":${{PATH}}:" in
-        *:"$argpath":*) ;;
-        *) export PATH="$argpath:$PATH" ;;
-    esac;
-}}
-
-_zb_path_append "$NEXTBREW_BIN"
-_zb_path_append "$NEXTBREW_PREFIX/sbin"
-_zb_path_append "$NEXTBREW_PREFIX/bin"
-"#,
-                nextbrew_dir = posix_shell_quote(nextbrew_dir),
-                nextbrew_bin = posix_shell_quote(nextbrew_bin),
-                root = posix_shell_quote(&root_str),
-                prefix = posix_shell_quote(&prefix_str)
-            ),
-            ShellConfigKind::Fish => format!(
-                r#"
-# nextbrew
-set -gx NEXTBREW_DIR {nextbrew_dir}
-set -gx NEXTBREW_BIN {nextbrew_bin}
-set -gx NEXTBREW_ROOT {root}
-set -gx NEXTBREW_PREFIX {prefix}
-if set -q PKG_CONFIG_PATH
-    set -gx PKG_CONFIG_PATH "$NEXTBREW_PREFIX/lib/pkgconfig" $PKG_CONFIG_PATH
-else
-    set -gx PKG_CONFIG_PATH "$NEXTBREW_PREFIX/lib/pkgconfig"
-end
-
-# SSL/TLS certificates (only if ca-certificates is installed)
-if not set -q CURL_CA_BUNDLE; or not set -q SSL_CERT_FILE
-    if test -f "$NEXTBREW_PREFIX/opt/ca-certificates/share/ca-certificates/cacert.pem"
-        set -q CURL_CA_BUNDLE; or set -gx CURL_CA_BUNDLE "$NEXTBREW_PREFIX/opt/ca-certificates/share/ca-certificates/cacert.pem"
-        set -q SSL_CERT_FILE; or set -gx SSL_CERT_FILE "$NEXTBREW_PREFIX/opt/ca-certificates/share/ca-certificates/cacert.pem"
-    else if test -f "$NEXTBREW_PREFIX/etc/ca-certificates/cacert.pem"
-        set -q CURL_CA_BUNDLE; or set -gx CURL_CA_BUNDLE "$NEXTBREW_PREFIX/etc/ca-certificates/cacert.pem"
-        set -q SSL_CERT_FILE; or set -gx SSL_CERT_FILE "$NEXTBREW_PREFIX/etc/ca-certificates/cacert.pem"
-    else if test -f "$NEXTBREW_PREFIX/etc/openssl/cert.pem"
-        set -q CURL_CA_BUNDLE; or set -gx CURL_CA_BUNDLE "$NEXTBREW_PREFIX/etc/openssl/cert.pem"
-        set -q SSL_CERT_FILE; or set -gx SSL_CERT_FILE "$NEXTBREW_PREFIX/etc/openssl/cert.pem"
-    else if test -f "$NEXTBREW_PREFIX/share/ca-certificates/cacert.pem"
-        set -q CURL_CA_BUNDLE; or set -gx CURL_CA_BUNDLE "$NEXTBREW_PREFIX/share/ca-certificates/cacert.pem"
-        set -q SSL_CERT_FILE; or set -gx SSL_CERT_FILE "$NEXTBREW_PREFIX/share/ca-certificates/cacert.pem"
-    end
-end
-
-if not set -q SSL_CERT_DIR
-    if test -d "$NEXTBREW_PREFIX/etc/ca-certificates"
-        set -gx SSL_CERT_DIR "$NEXTBREW_PREFIX/etc/ca-certificates"
-    else if test -d "$NEXTBREW_PREFIX/etc/openssl/certs"
-        set -gx SSL_CERT_DIR "$NEXTBREW_PREFIX/etc/openssl/certs"
-    else if test -d "$NEXTBREW_PREFIX/share/ca-certificates"
-        set -gx SSL_CERT_DIR "$NEXTBREW_PREFIX/share/ca-certificates"
-    end
-end
-
-if not contains -- "$NEXTBREW_BIN" $PATH
-    set -gx PATH "$NEXTBREW_BIN" $PATH
-end
-if not contains -- "$NEXTBREW_PREFIX/sbin" $PATH
-    set -gx PATH "$NEXTBREW_PREFIX/sbin" $PATH
-end
-if not contains -- "$NEXTBREW_PREFIX/bin" $PATH
-    set -gx PATH "$NEXTBREW_PREFIX/bin" $PATH
-end
-"#,
-                nextbrew_dir = fish_shell_quote(nextbrew_dir),
-                nextbrew_bin = fish_shell_quote(nextbrew_bin),
-                root = fish_shell_quote(&root_str),
-                prefix = fish_shell_quote(&prefix_str)
-            ),
-        };
+        let block_body = shell_block(
+            matches!(shell_kind, ShellConfigKind::Fish),
+            nextbrew_dir,
+            nextbrew_bin,
+            &root_str,
+            &prefix_str,
+        );
         let managed_block = format!("{NB_BLOCK_START}{block_body}\n{NB_BLOCK_END}\n");
         let existing_config = match existing_config {
             Ok(contents) => contents,

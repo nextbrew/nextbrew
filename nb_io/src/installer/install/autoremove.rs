@@ -60,6 +60,31 @@ impl Installer {
             .collect())
     }
 
+    /// `brew leaves`: installed formulae that no other installed formula
+    /// or cask depends on, sorted.
+    pub async fn leaves(&self) -> Result<Vec<String>, Error> {
+        let installed = self.db.list_installed()?;
+        let (casks, formulae): (Vec<_>, Vec<_>) = installed
+            .iter()
+            .partition(|keg| keg.name.starts_with("cask:"));
+        let names: Vec<String> = formulae.iter().map(|keg| keg.name.clone()).collect();
+        let mut used: HashSet<String> = casks
+            .iter()
+            .flat_map(|keg| self.cask_formula_dependencies(&keg.name, &keg.version))
+            .collect();
+        for (name, formula) in self.fetch_all_formulas(&names).await? {
+            if names.contains(&name) || names.contains(&formula.name) {
+                used.extend(formula.runtime_dependencies());
+            }
+        }
+        let mut leaves: Vec<String> = names
+            .into_iter()
+            .filter(|name| !used.contains(name) && !used.contains(formula_token(name)))
+            .collect();
+        leaves.sort();
+        Ok(leaves)
+    }
+
     /// A cask's `depends_on formula:`, from the JSON saved in its keg. Casks
     /// installed before nextbrew tracked requests have no unrequested
     /// dependencies, so a keg without it needs nothing here.

@@ -1,0 +1,31 @@
+---
+title: nb shellenv / config / --prefix / home / desc / man
+description: nextbrew の保存場所と、それを表示したり開いたりするコマンド。
+---
+
+# 環境と参照
+
+```sh
+eval "$(nb shellenv)"
+nb config
+nb --prefix [FORMULA...]    # --cellar, --cache も同様。--installed で未インストールを飛ばす
+nb desc FORMULA...          # -s/-n/-d TEXT で名前と説明を検索
+nb home [NAME...]
+nb source [FORMULA]
+nb man
+```
+
+- `nb shellenv` は `nb init` がシェルの設定に追加するのと同じ行を表示します（`$SHELL` または引数が fish なら fish の書式）。
+- `nb --prefix jq` は `$NEXTBREW_PREFIX/opt/jq` を、`nb --cellar jq` は Cellar 内のディレクトリを、`nb --cache jq` は bottle のキャッシュ先を表示します。名前を省くとディレクトリ自体を表示します。コマンドの前の `--prefix DIR` は、これまでどおり prefix の指定です。
+- `nb home` と `nb source` はホームページとソースリポジトリを `$BROWSER`（なければ `open` / `xdg-open`）で開きます。ブラウザがない環境では URL を表示します。名前を省くと nextbrew のページを開きます。
+- `nb man` は `nb --help` から作ったマニュアルページを表示します。パイプに出すと roff を出力します。
+
+## nb を brew として使う
+
+`brew` を呼ぶスクリプトを nextbrew で動かせます。
+
+```sh
+ln -s "$(command -v nb)" ~/bin/brew
+```
+
+nextbrew にないコマンドは、理由を表示して失敗します。

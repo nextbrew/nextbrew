@@ -55,6 +55,31 @@ fn formula_key(name: &str) -> (String, Vec<u64>) {
 }
 
 impl Installer {
+    /// `brew desc --search`: homebrew/core's formulae whose name (with
+    /// `names`) or description (with `descriptions`) matches, with their
+    /// descriptions.
+    pub async fn describe(
+        &self,
+        query: &str,
+        names: bool,
+        descriptions: bool,
+    ) -> Result<Vec<(String, Option<String>)>, Error> {
+        let matches = matcher(query)?;
+        let mut found: Vec<(String, Option<String>)> = self
+            .api_client
+            .all_formulas()
+            .await?
+            .into_iter()
+            .filter(|f| {
+                (names && matches(&f.name))
+                    || (descriptions && f.desc.as_deref().is_some_and(&matches))
+            })
+            .map(|f| (f.name, f.desc))
+            .collect();
+        found.sort();
+        Ok(found)
+    }
+
     /// The installed third-party taps.
     fn search_taps(&self) -> Vec<TapName> {
         self.tap_source()

@@ -1,6 +1,7 @@
 pub mod build;
 pub mod cellar;
 pub(crate) mod checksum;
+pub mod extract;
 pub mod extraction;
 pub mod installer;
 pub mod network;
@@ -10,14 +11,15 @@ pub mod services;
 pub mod ssl;
 pub mod storage;
 pub mod tap;
+pub mod vulns;
 
 pub use build::{BuildExecutor, DepInfo};
 pub use cellar::{Cellar, LinkedFile, Linker, MaterializedKeg};
 pub use extraction::extract_tarball;
 pub use installer::cask_config::CaskConfig;
 pub use installer::{
-    DiagnosticReport, ExecuteResult, Finding, Greedy, HomebrewMigrationPackages, HomebrewPackage,
-    InstallPlan, Installer, LinkDryRun, LinkOutcome, OutdatedPackage, PlanFailure,
+    Cleanup, DiagnosticReport, ExecuteResult, Finding, Greedy, HomebrewMigrationPackages,
+    HomebrewPackage, InstallPlan, Installer, LinkDryRun, LinkOutcome, OutdatedPackage, PlanFailure,
     PostInstallNotice, RepairSummary, ServiceFormula, SystemEnv, Uses, UsesScope, create_installer,
     get_homebrew_packages,
 };

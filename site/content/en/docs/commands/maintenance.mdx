@@ -1,0 +1,42 @@
+---
+title: nb cleanup / fetch / leaves / vulns / version-install
+description: Keep the cache small, download ahead, find leaves and known vulnerabilities, and install an older version.
+---
+
+# Maintenance
+
+```sh
+nb cleanup [--prune DAYS|all] [-n] [-s]
+nb fetch [--deps] [--formula|--cask] NAMES...
+nb leaves [-r|-p]
+nb vulns [-d] [FORMULAE...]
+nb version-install FORMULA VERSION
+```
+
+## nb cleanup
+
+Removes cached downloads older than 120 days (or `--prune DAYS`; `--prune all` and `-s` remove them all) and the store entries no keg uses. `-n` lists what would go.
+
+## nb fetch
+
+Downloads the bottles (with `--deps`, the dependencies' too) or a cask's download into the cache, and prints where. A formula with no bottle for this system is reported; it is built from source on install.
+
+## nb leaves
+
+Installed formulae that no other installed formula or cask depends on. `-r` keeps the ones installed on request, `-p` the ones installed as dependencies.
+
+## nb vulns
+
+Looks up the installed formulae (or the ones named; `-d` adds their dependencies) in [OSV.dev](https://osv.dev) by source repository and release tag, as `brew vulns` does. Formulae whose source is not on GitHub, GitLab, Codeberg or KDE's and GNOME's GitLab are skipped. It exits with 1 when it finds any.
+
+An advisory that a formula's own patch fixes is still reported.
+
+## nb version-install
+
+```sh
+nb version-install jq 1.7.1
+```
+
+Finds the version in homebrew/core's history, writes it as `jq@1.7.1` into the local tap `<user>/versions` (under `$NEXTBREW_PREFIX/taps`), and builds it from source. `nb update` leaves that tap alone. Set `GITHUB_TOKEN` if GitHub's API rate limit gets in the way.
+
+Old sources may no longer download, or may no longer compile with today's compilers.

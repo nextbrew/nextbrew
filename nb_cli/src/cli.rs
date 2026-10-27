@@ -57,10 +57,55 @@ fn parse_concurrency(value: &str) -> Result<usize, String> {
     Ok(parsed)
 }
 
+/// brew's `--prefix`, `--cellar` and `--cache` queries (`nb --prefix jq`),
+/// as the hidden `__path` command. `--prefix DIR` before a command is still
+/// the option.
+pub fn path_query_args(args: Vec<std::ffi::OsString>) -> Vec<std::ffi::OsString> {
+    use clap::CommandFactory;
+    let Some(kind) = args.get(1).and_then(|a| a.to_str()).and_then(|a| match a {
+        "--prefix" => Some("prefix"),
+        "--cellar" => Some("cellar"),
+        "--cache" => Some("cache"),
+        _ => None,
+    }) else {
+        return args;
+    };
+    let cli = Cli::command();
+    let is_command = |arg: &std::ffi::OsString| {
+        arg.to_str().is_some_and(|arg| {
+            cli.get_subcommands()
+                .any(|c| c.get_name() == arg || c.get_all_aliases().any(|a| a == arg))
+        })
+    };
+    if args[2..].iter().any(is_command) {
+        return args;
+    }
+    let mut rewritten = vec![args[0].clone(), "__path".into(), kind.into()];
+    rewritten.extend(args.into_iter().skip(2));
+    rewritten
+}
+
 #[cfg(test)]
 mod tests {
     use super::Cli;
     use clap::Parser;
+
+    #[test]
+    fn reads_brews_path_queries() {
+        let args = |a: &[&str]| -> Vec<std::ffi::OsString> {
+            super::path_query_args(a.iter().map(Into::into).collect())
+        };
+        assert_eq!(
+            args(&["nb", "--prefix", "jq"]),
+            ["nb", "__path", "prefix", "jq"]
+        );
+        assert_eq!(args(&["nb", "--cache"]), ["nb", "__path", "cache"]);
+        assert_eq!(
+            args(&["nb", "--prefix", "/opt/x", "list"]),
+            ["nb", "--prefix", "/opt/x", "list"]
+        );
+        assert!(Cli::try_parse_from(args(&["nb", "--cellar", "--installed", "jq"])).is_ok());
+    }
 
     #[test]
     fn accepts_positive_concurrency() {
@@ -444,6 +489,96 @@ pub enum Commands {
         sudo_service_user: Option<String>,
         #[command(subcommand)]
         command: Option<ServicesCommands>,
+    },
+    /// List installed formulae that no other installed formula or cask depends on
+    Leaves {
+        #[arg(
+            long,
+            short = 'r',
+            conflicts_with = "installed_as_dependency",
+            help = "Only the ones installed on request"
+        )]
+        installed_on_request: bool,
+        #[arg(long, short = 'p', help = "Only the ones installed as dependencies")]
+        installed_as_dependency: bool,
+    },
+    /// Remove cached downloads and store entries nothing uses
+    Cleanup {
+        #[arg(
+            long,
+            value_name = "DAYS",
+            help = "Remove downloads older than DAYS (default 120), or `all`"
+        )]
+        prune: Option<String>,
+        #[arg(long, short = 'n', help = "List what would be removed")]
+        dry_run: bool,
+        #[arg(short = 's', help = "Remove every cached download (as --prune=all)")]
+        scrub: bool,
+    },
+    /// Download the bottles of formulae, or casks, without installing them
+    Fetch {
+        #[arg(required = true, num_args = 1..)]
+        formulas: Vec<String>,
+        #[arg(long, help = "Also download the formulae's dependencies")]
+        deps: bool,
+        #[arg(
+            long,
+            visible_alias = "formulae",
+            conflicts_with = "cask",
+            help = "Treat the names as formulae"
+        )]
+        formula: bool,
+        #[arg(long, visible_alias = "casks", help = "Treat the names as casks")]
+        cask: bool,
+    },
+    /// Print the shell code that puts nextbrew on PATH
+    Shellenv {
+        #[arg(help = "bash, zsh, fish, sh... (the login shell by default)")]
+        shell: Option<String>,
+    },
+    /// Show nextbrew's configuration
+    Config,
+    /// Open a formula's or cask's homepage, or nextbrew's
+    Home { names: Vec<String> },
+    /// Open a formula's source repository, or nextbrew's
+    Source { formula: Option<String> },
+    /// Show formulae's descriptions, or search them
+    Desc {
+        #[arg(required = true, num_args = 1..)]
+        names: Vec<String>,
+        #[arg(
+            long,
+            short = 's',
+            help = "Search names and descriptions for the text or /regex/"
+        )]
+        search: bool,
+        #[arg(
+            long,
+            short = 'n',
+            conflicts_with = "search",
+            help = "Search names only"
+        )]
+        name: bool,
+        #[arg(long, short = 'd', conflicts_with_all = ["search", "name"], help = "Search descriptions only")]
+        description: bool,
+    },
+    /// Check formulae (all installed ones by default) for known vulnerabilities in OSV.dev
+    Vulns {
+        formulas: Vec<String>,
+        #[arg(long, short = 'd', help = "Also check the formulae's dependencies")]
+        deps: bool,
+    },
+    /// Install an older version of a formula, from homebrew/core's history, through a local tap
+    VersionInstall { formula: String, version: String },
+    /// Show nextbrew's manual page
+    Man,
+    /// `nb --prefix`, `--cellar` and `--cache`, as brew prints them
+    #[command(name = "__path", hide = true)]
+    Path {
+        kind: String,
+        names: Vec<String>,
+        #[arg(long, help = "Only installed formulae")]
+        installed: bool,
     },
 }
 

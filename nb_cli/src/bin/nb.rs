@@ -14,7 +14,8 @@ use nb_io::create_installer;
 async fn main() {
     nb_core::timing::start();
     // An unknown command may be a tap's (`brew <name>`).
-    let cli = Cli::try_parse().unwrap_or_else(|e| commands::external::dispatch(e));
+    let args = nb_cli::cli::path_query_args(std::env::args_os().collect());
+    let cli = Cli::try_parse_from(args).unwrap_or_else(|e| commands::external::dispatch(e));
     logging::init(cli.verbose, cli.quiet);
     nb_core::timing::mark("args parsed");
 
@@ -33,8 +34,17 @@ async fn run(cli: Cli) -> Result<(), nb_core::Error> {
         return commands::completion::execute(shell);
     }
 
+    if let Commands::Man = cli.command {
+        return commands::man::execute();
+    }
+
     let root = get_root_path(cli.root);
     let prefix = get_prefix_path(cli.prefix, &root);
+
+    // Read by the shell at startup, before anything is set up.
+    if let Commands::Shellenv { shell } = cli.command {
+        return commands::env::shellenv(shell, &root, &prefix);
+    }
 
     if let Commands::Init { no_modify_path } = cli.command {
         return commands::init::execute(&root, &prefix, no_modify_path, &mut ui);
@@ -51,6 +61,7 @@ async fn run(cli: Cli) -> Result<(), nb_core::Error> {
     match cli.command {
         Commands::Init { .. } => unreachable!(),
         Commands::Completion { .. } => unreachable!(),
+        Commands::Man | Commands::Shellenv { .. } => unreachable!(),
         Commands::Install {
             formulas,
             no_link,
@@ -316,6 +327,41 @@ async fn run(cli: Cli) -> Result<(), nb_core::Error> {
         Commands::Run { formula, args } => {
             commands::run::execute(&mut installer, formula, args).await
         }
+        Commands::Leaves {
+            installed_on_request,
+            installed_as_dependency,
+        } => commands::env::leaves(&installer, installed_on_request, installed_as_dependency).await,
+        Commands::Cleanup {
+            prune,
+            dry_run,
+            scrub,
+        } => commands::cache::cleanup(&mut installer, prune, dry_run, scrub),
+        Commands::Fetch {
+            formulas,
+            deps,
+            formula: _,
+            cask,
+        } => commands::cache::fetch(&installer, formulas, deps, cask).await,
+        Commands::Config => commands::env::config(&installer, &root),
+        Commands::Home { names } => commands::open::home(&installer, names).await,
+        Commands::Source { formula } => commands::open::source(&installer, formula).await,
+        Commands::Desc {
+            names,
+            search,
+            name,
+            description,
+        } => commands::open::desc(&installer, names, search, name, description).await,
+        Commands::Vulns { formulas, deps } => {
+            commands::vulns::execute(&installer, formulas, deps).await
+        }
+        Commands::VersionInstall { formula, version } => {
+            commands::version_install::execute(&mut installer, formula, version, &mut ui).await
+        }
+        Commands::Path {
+            kind,
+            names,
+            installed,
+        } => commands::env::path(&installer, &kind, names, installed).await,
     }
 }
 

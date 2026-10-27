@@ -14,5 +14,7 @@ export default {
   bundle: 'nb bundle',
   services: 'nb services',
   tap: 'nb tap / trust',
+  maintenance: 'nb cleanup / fetch / leaves / vulns',
+  environment: 'nb shellenv / config / --prefix',
   nbx: 'nbx',
 }

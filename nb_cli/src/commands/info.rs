@@ -1240,7 +1240,7 @@ fn disk_usage(path: &Path) -> u64 {
 }
 
 /// `Formatter.disk_usage_readable`: in thousands, one decimal unless whole.
-fn disk_usage_readable(bytes: u64) -> String {
+pub(crate) fn disk_usage_readable(bytes: u64) -> String {
     let mut size = bytes as f64;
     let mut unit = "B";
     for next in ["KB", "MB", "GB"] {

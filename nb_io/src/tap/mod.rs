@@ -413,7 +413,10 @@ impl Taps {
     /// Fetch the tap again if its default branch moved. Returns whether it
     /// changed.
     pub async fn update(&self, tap: &TapName, client: &reqwest::Client) -> Result<bool, Error> {
-        let state = self.state(tap).unwrap_or_default();
+        // A tap made here (`nb version-install`) has no remote to fetch.
+        let Some(state) = self.state(tap) else {
+            return Ok(false);
+        };
         let remote = if state.remote.is_empty() {
             tap.default_remote()
         } else {
