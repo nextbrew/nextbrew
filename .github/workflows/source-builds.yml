@@ -26,7 +26,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, macos-latest, macos-15-intel]
+        os: [ubuntu-latest, macos-latest]
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -59,11 +59,8 @@ jobs:
           } > /tmp/table.md
           for formula in $FORMULAE; do
             # Each from nothing, so a formula already there as another's
-            # bottled dependency is still built. Intel macOS has no bottles,
-            # so all there is built from source already: kept, to save hours.
-            if [ "$OS" != macos-15-intel ]; then
-              ./target/debug/nb uninstall --all --force > /dev/null 2>&1 || true
-            fi
+            # bottled dependency is still built.
+            ./target/debug/nb uninstall --all --force > /dev/null 2>&1 || true
             total=$((total + 1))
             touch /tmp/started
             if ./target/debug/nb install --build-from-source "$formula" > "/tmp/$formula.log" 2>&1; then

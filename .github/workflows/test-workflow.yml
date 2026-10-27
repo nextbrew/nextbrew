@@ -73,14 +73,13 @@ jobs:
   test:
     name: test (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
-    # Intel macOS has no bottles: what the tests install is built from source.
-    timeout-minutes: ${{ matrix.os == 'macos-15-intel' && 180 || 60 }}
+    timeout-minutes: 60
     permissions:
       contents: read
     strategy:
       fail-fast: false
       matrix:
-        os: ${{ fromJSON(inputs.full && '["ubuntu-latest","ubuntu-24.04-arm","macos-latest","macos-15-intel"]' || '["ubuntu-latest"]') }}
+        os: ${{ fromJSON(inputs.full && '["ubuntu-latest","ubuntu-24.04-arm","macos-latest"]' || '["ubuntu-latest"]') }}
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -102,11 +101,8 @@ jobs:
           sudo loginctl enable-linger "$USER"
           echo "XDG_RUNTIME_DIR=/run/user/$(id -u)" >> "$GITHUB_ENV"
 
-      # ffmpeg's dozens of dependencies would take hours from source.
       - name: Integration tests
-        env:
-          SKIP: ${{ matrix.os == 'macos-15-intel' && 'test_ffmpeg_formula' || '' }}
-        run: cargo test --package nb_cli --test integration --locked -- --ignored ${SKIP:+--skip "$SKIP"}
+        run: cargo test --package nb_cli --test integration --locked -- --ignored
 
       # The runner's Homebrew moves into nextbrew. Only the x64 Linux image
       # has one to spare: the macOS runner's holds many packages (parity.yml

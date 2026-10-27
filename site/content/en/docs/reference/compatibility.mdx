@@ -8,9 +8,9 @@ description: What works like Homebrew today, and where nextbrew differs.
 Formula commands, every cask artifact and container, bundle and services are
 exercised end to end on macOS and Linux by the integration tests on every change,
 and `nb migrate` moves a real Homebrew installation into nextbrew in CI.
-They run on Apple Silicon and Intel macOS, x86_64 and arm64 Linux, and (run by hand) in Debian,
-Fedora, Arch and openSUSE containers. Homebrew ships no bottles for Intel macOS,
-so there nextbrew, like Homebrew, builds every formula from source.
+They run on Apple Silicon macOS, x86_64 and arm64 Linux, and (run by hand) in Debian,
+Fedora, Arch and openSUSE containers. Intel macOS is not supported: Homebrew ships
+no bottles for it, and the `darwin-x64` build is not tested.
 
 ## Works like Homebrew
 
