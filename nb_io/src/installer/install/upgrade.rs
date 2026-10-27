@@ -157,6 +157,39 @@ impl Installer {
         Ok(())
     }
 
+    /// Download what upgrading or reinstalling `names` needs, all at once,
+    /// so that each [`Self::upgrade`] after it reads the cache.
+    pub async fn prefetch(
+        &self,
+        names: &[String],
+        build_from_source: bool,
+        progress: Option<Arc<ProgressCallback>>,
+    ) -> Result<(), Error> {
+        let (casks, formulae): (Vec<&String>, Vec<&String>) =
+            names.iter().partition(|name| name.starts_with("cask:"));
+        let casks = futures::future::join_all(casks.into_iter().map(|name| async move {
+            let token = name.trim_start_matches("cask:");
+            let json = for_current_platform(&self.api_client.get_cask(token).await?);
+            let cask = crate::installer::cask::resolve_cask(token, &json)?;
+            self.downloader
+                .download_single(super::bottle::cask_download(&cask, &json), None)
+                .await
+        }));
+        let formulae: Vec<String> = formulae.into_iter().cloned().collect();
+        let bottles = async {
+            if formulae.is_empty() {
+                return Ok(());
+            }
+            let plan = self.plan_with_options(&formulae, build_from_source).await?;
+            self.prefetch_plan_bottles(&plan, progress).await
+        };
+        let (casks, bottles) = tokio::join!(casks, bottles);
+        for cask in casks {
+            cask?;
+        }
+        bottles
+    }
+
     /// Pre-download bottle artifacts in `plan` into the blob cache. No-op
     /// for source-only plans.
     async fn prefetch_plan_bottles(

@@ -1,5 +1,5 @@
 use console::style;
-use indicatif::{MultiProgress, ProgressBar, ProgressStyle};
+use indicatif::{ProgressBar, ProgressStyle};
 use nb_io::{InstallProgress, ProgressCallback};
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
@@ -312,7 +312,7 @@ pub async fn execute_formula_plan(
         .map_err(ui_error)?;
     }
 
-    let multi = MultiProgress::new();
+    let multi = crate::logging::progress();
     let bars: Arc<Mutex<HashMap<String, ProgressBar>>> = Arc::new(Mutex::new(HashMap::new()));
 
     let download_style = ProgressStyle::default_bar()

@@ -1,5 +1,5 @@
 use console::style;
-use indicatif::{MultiProgress, ProgressBar, ProgressStyle};
+use indicatif::{ProgressBar, ProgressStyle};
 use nb_io::{InstallProgress, ProgressCallback};
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
@@ -168,7 +168,7 @@ pub(crate) async fn replace_packages(
     ui.heading(format!("{} {}...", mode.verb(), style(names.len()).bold()))
         .map_err(ui_error)?;
 
-    let multi = MultiProgress::new();
+    let multi = crate::logging::progress();
     let bars: Arc<Mutex<HashMap<String, ProgressBar>>> = Arc::new(Mutex::new(HashMap::new()));
 
     let spinner_style = ProgressStyle::default_spinner()
@@ -299,6 +299,18 @@ pub(crate) async fn replace_packages(
     let mut post_install_failures = Vec::new();
     let mut messages = crate::caveats::Messages::default();
 
+    // Every download at once first; each swap below then reads the cache.
+    // A failure here is the swap's to report.
+    if names.len() > 1 {
+        let _ = installer
+            .prefetch(names, build_from_source, Some(progress_callback.clone()))
+            .await;
+        for (_, pb) in bars.lock().unwrap().drain() {
+            pb.finish_and_clear();
+            multi.remove(&pb);
+        }
+    }
+
     for name in names {
         let progress = Some(progress_callback.clone());
         let result = match mode {
@@ -318,11 +330,18 @@ pub(crate) async fn replace_packages(
         // redraw over it.
         for (_, pb) in bars.lock().unwrap().drain() {
             pb.finish_and_clear();
+            multi.remove(&pb);
         }
-        ui.step_start(name).map_err(ui_error)?;
+        // Around the bars, which otherwise redraw over what stdout wrote.
+        let ok = result.is_ok();
+        multi
+            .suspend(|| {
+                ui.step_start(name)?;
+                if ok { ui.step_ok() } else { ui.step_fail() }
+            })
+            .map_err(ui_error)?;
         match result {
             Ok(result) => {
-                ui.step_ok().map_err(ui_error)?;
                 upgraded += 1;
                 match name.strip_prefix("cask:") {
                     Some(token) => messages.record_cask(installer, token).await,
@@ -332,7 +351,6 @@ pub(crate) async fn replace_packages(
                 post_install_failures.extend(result.post_install_failures);
             }
             Err(e) => {
-                ui.step_fail().map_err(ui_error)?;
                 messages.record_installed(installer).await;
                 errors.push((name.clone(), e));
             }

@@ -3,7 +3,19 @@ use tracing_subscriber::EnvFilter;
 use tracing_subscriber::layer::SubscriberExt;
 use tracing_subscriber::util::SubscriberInitExt;
 
+static QUIET: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// Progress bars, hidden with `--quiet`.
+pub fn progress() -> indicatif::MultiProgress {
+    if QUIET.load(std::sync::atomic::Ordering::Relaxed) {
+        indicatif::MultiProgress::with_draw_target(indicatif::ProgressDrawTarget::hidden())
+    } else {
+        indicatif::MultiProgress::new()
+    }
+}
+
 pub fn init(verbose: u8, quiet: bool) {
+    QUIET.store(quiet, std::sync::atomic::Ordering::Relaxed);
     let level = if quiet {
         LevelFilter::ERROR
     } else {
