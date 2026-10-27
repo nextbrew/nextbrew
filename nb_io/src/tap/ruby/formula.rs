@@ -1210,6 +1210,40 @@ mod tests {
     }
 
     #[test]
+    fn runs_backticks_and_its_own_class_methods_like_atlas() {
+        let f = read(
+            r##"
+class Foo < Formula
+  def self.base_url
+    `exit 1`
+    if $?.exitstatus == 0
+      "https://new.example.com"
+    else
+      "https://old.example.com"
+    end
+  end
+
+  def self.latest_version
+    `echo "1.2.3 x"`.split.first
+  end
+
+  @@telemetry = "\n Telemetry " \
+    + "more"
+
+  url "#{self.base_url}/foo.zip"
+  version self.latest_version
+  sha256 "aaaa"
+end
+"##,
+        );
+        assert_eq!(
+            f.json["urls"]["stable"]["url"],
+            "https://old.example.com/foo.zip"
+        );
+        assert_eq!(f.json["versions"]["stable"], "1.2.3");
+    }
+
+    #[test]
     fn reads_a_bottled_formula() {
         let f = read(
             r#"

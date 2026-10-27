@@ -306,6 +306,28 @@ impl<'pr> Eval<'pr> {
             }
             return Ok(Str(out));
         }
+        // Backticks run, as they do when Homebrew loads the file (the
+        // tap is trusted by now); `$?` is their exit status.
+        if let Some(x) = node.as_x_string_node() {
+            return Ok(self.backticks(&String::from_utf8_lossy(x.unescaped())));
+        }
+        if let Some(x) = node.as_interpolated_x_string_node() {
+            let mut command = String::new();
+            for part in x.parts().iter() {
+                command.push_str(&self.eval(&part, scope)?.to_s());
+            }
+            return Ok(self.backticks(&command));
+        }
+        if let Some(g) = node.as_global_variable_read_node()
+            && g.name().as_slice() == b"$?"
+        {
+            return Ok(self.locals.get("$?").cloned().unwrap_or(Nil));
+        }
+        // `@@name = ...` in the class body is for `install`, which runs
+        // in Ruby.
+        if node.as_class_variable_write_node().is_some() {
+            return Ok(Nil);
+        }
         if let Some(e) = node.as_embedded_statements_node() {
             return self.exec_statements(e.statements(), scope);
         }
@@ -558,6 +580,14 @@ impl<'pr> Eval<'pr> {
         // `a && b` style operators and comparisons evaluate both sides.
         let receiver_value = self.eval(&receiver, scope)?;
         let args = self.args(call.arguments(), scope)?;
+        // `self.base_url`: the file's own `def self.base_url`.
+        if matches!(&receiver_value, Value::Module(m) if m == "self")
+            && args.positional.is_empty()
+            && block.is_none()
+            && self.defs.contains_key(&name)
+        {
+            return self.call_def(node, &name, scope);
+        }
         if let Some(value) = self.builtin(&receiver_value, &name, &args, block.as_ref(), scope)? {
             return Ok(value);
         }
@@ -571,6 +601,23 @@ impl<'pr> Eval<'pr> {
                 ),
             )),
         }
+    }
+
+    /// `` `command` ``: its output, with `$?` set to its exit status.
+    // ponytail: `$?` is the bare exit code, so only `exitstatus` and
+    // `success?` work on it.
+    fn backticks(&mut self, command: &str) -> Value {
+        let output = std::process::Command::new("/bin/sh")
+            .args(["-c", command])
+            .stderr(std::process::Stdio::inherit())
+            .output();
+        let (code, stdout) = match output {
+            Ok(o) => (o.status.code().unwrap_or(1), o.stdout),
+            Err(_) => (127, Vec::new()),
+        };
+        self.locals
+            .insert("$?".to_string(), Value::Int(code.into()));
+        Value::Str(String::from_utf8_lossy(&stdout).into_owned())
     }
 
     /// Run the file's own method `name`, which takes no arguments.
@@ -704,6 +751,8 @@ impl<'pr> Eval<'pr> {
             // Constants are often frozen; values here never change anyway.
             (value, "freeze" | "dup") => value.clone(),
             (Str(s), "to_i") => Int(s.trim().parse().unwrap_or(0)),
+            (Int(code), "exitstatus") => Int(*code),
+            (Int(code), "success?") => Bool(*code == 0),
             (Str(_) | Version(_), "+") => Str(format!(
                 "{}{}",
                 receiver.to_s(),

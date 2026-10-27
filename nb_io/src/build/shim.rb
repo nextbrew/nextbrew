@@ -157,8 +157,11 @@ end
 
 # Homebrew's `Utils` command helpers.
 module Utils
+  # One string is a command line for the shell, as `exec` takes it
+  # (`Utils.safe_popen_read("#{bin}/pulumi gen-completion bash")`).
   def self.popen_read(*args, **options)
-    IO.popen(args.map(&:to_s), err: options.fetch(:err, File::NULL), &:read).to_s
+    command = args.size == 1 ? args.first.to_s : args.map(&:to_s)
+    IO.popen(command, err: options.fetch(:err, File::NULL), &:read).to_s
   end
 
   # As `popen_read`, but failing the build when the command does.
