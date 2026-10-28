@@ -42,12 +42,14 @@ jobs:
           mv nb-darwin-arm64 nb && chmod +x nb
           echo "$HOME/bin" >> "$GITHUB_PATH"
 
-      # In their own nb prefix, so the demo's reset leaves them alone.
+      # In their own nb prefix, so the demo's reset leaves them alone. Bottles
+      # need a prefix no longer than /opt/homebrew.
       - name: Install the recording tools
         run: |
-          export NEXTBREW_ROOT="$HOME/tools-root" NEXTBREW_PREFIX="$HOME/tools" NEXTBREW_AUTO_INIT=true
+          sudo mkdir -p /opt/nbtools && sudo chown "$USER" /opt/nbtools
+          export NEXTBREW_ROOT="$HOME/tools-root" NEXTBREW_PREFIX=/opt/nbtools NEXTBREW_AUTO_INIT=true
           "$HOME/bin/nb" install -q tmux asciinema agg
-          echo "$HOME/tools/bin" >> "$GITHUB_PATH"
+          echo /opt/nbtools/bin >> "$GITHUB_PATH"
 
       - name: Update Homebrew
         run: brew update --quiet
