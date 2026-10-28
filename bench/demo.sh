@@ -21,7 +21,8 @@ cat > $pane <<'EOF'
 TIMEFORMAT=$'\n\e[1m%Rs\e[0m'
 printf '\e[1;32m$\e[0m '; s="$2"
 for ((i = 0; i < ${#s}; i++)); do printf '%s' "${s:i:1}"; sleep 0.04; done; echo
-time $2
+# stdin off the tty: brew otherwise waits forever on the recording's terminal.
+time $2 </dev/null
 touch "$3/$1.done"
 while [[ ! -e $3/nextbrew.done || ! -e $3/Homebrew.done ]]; do sleep 0.2; done
 sleep 3
