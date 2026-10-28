@@ -1,0 +1,68 @@
+name: demo
+
+# Records the README demo GIF (bench/demo.sh): a released nb and the runner's
+# Homebrew install the same formulae side by side. By hand.
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: nextbrew release to record
+        default: v0.1.2
+      formulae:
+        description: Formulae (space-separated)
+        default: bat fd ripgrep
+
+permissions: {}
+
+defaults:
+  run:
+    shell: bash --noprofile --norc -euo pipefail {0}
+
+jobs:
+  record:
+    name: record
+    runs-on: macos-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Install nb
+        env:
+          VERSION: ${{ inputs.version }}
+        run: |
+          base="https://github.com/nextbrew/nextbrew/releases/download/$VERSION"
+          mkdir -p "$HOME/bin" && cd "$HOME/bin"
+          curl -fsSL -O "$base/nb-darwin-arm64" -O "$base/SHA256SUMS"
+          grep ' nb-darwin-arm64$' SHA256SUMS | shasum -a 256 -c -
+          mv nb-darwin-arm64 nb && chmod +x nb
+          echo "$HOME/bin" >> "$GITHUB_PATH"
+
+      # In their own nb prefix, so the demo's reset leaves them alone.
+      - name: Install the recording tools
+        run: |
+          export NEXTBREW_ROOT="$HOME/tools-root" NEXTBREW_PREFIX="$HOME/tools" NEXTBREW_AUTO_INIT=true
+          "$HOME/bin/nb" install -q tmux asciinema agg
+          echo "$HOME/tools/bin" >> "$GITHUB_PATH"
+
+      - name: Update Homebrew
+        run: brew update --quiet
+
+      - name: Record
+        env:
+          FORMULAE: ${{ inputs.formulae }}
+        run: |
+          read -ra formulae <<< "$FORMULAE"
+          zsh bench/demo.sh "$RUNNER_TEMP/demo" "${formulae[@]}"
+
+      - name: Upload
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: demo
+          path: ${{ runner.temp }}/demo
+          if-no-files-found: error
