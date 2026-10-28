@@ -35,5 +35,7 @@ TERM=xterm-256color asciinema rec --headless --overwrite --window-size 160x16 -c
   select-pane -T nextbrew \; \
   split-window -h 'sleep 0.5; $pane Homebrew \"brew install $*\" $OUT' \; select-pane -T Homebrew" $OUT/demo.cast
 # Stop before tmux leaves the alternate screen so the GIF ends on both times.
-awk '/1049l/ { exit } { print }' $OUT/demo.cast > $OUT/demo.trim.cast
+# agg gives brew's U+FE0E (after ✔) a cell of its own, which pushes the last
+# column of that line onto the next one.
+awk '/1049l/ { exit } { print }' $OUT/demo.cast | LC_ALL=C sed $'s/\xef\xb8\x8e//g' > $OUT/demo.trim.cast
 agg --font-size 16 --theme monokai $OUT/demo.trim.cast $OUT/demo.gif
