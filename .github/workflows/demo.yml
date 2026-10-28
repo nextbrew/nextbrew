@@ -55,11 +55,18 @@ jobs:
         run: brew update --quiet
 
       - name: Record
+        timeout-minutes: 12
         env:
           FORMULAE: ${{ inputs.formulae }}
         run: |
           read -ra formulae <<< "$FORMULAE"
           zsh bench/demo.sh "$RUNNER_TEMP/demo" "${formulae[@]}"
+
+      - name: What was running
+        if: failure()
+        run: |
+          pgrep -ilf 'brew|ruby|curl|git|tmux|sudo' || true
+          ls -la ~/Library/Logs/Homebrew 2>/dev/null || true
 
       - name: Upload
         if: always()
