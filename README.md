@@ -13,6 +13,8 @@
 
 <p align="center"><a href="https://nextbrew.dev">Website</a> · <a href="https://nextbrew.dev/en/docs">Docs</a> · <a href="https://nextbrew.dev/ja">日本語</a></p>
 
+<p align="center"><img src="site/public/demo.gif" alt="nb install and brew install of bat, fd and ripgrep, side by side" width="800"></p>
+
 It installs Homebrew's official bottles and casks without needing Ruby or
 Homebrew itself, and runs alongside an existing Homebrew.
 
