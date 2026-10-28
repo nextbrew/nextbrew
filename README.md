@@ -69,7 +69,8 @@ cargo build --release
 
 ## Credits
 
-nextbrew is not affiliated with Homebrew. Parts derived from Homebrew are
+nextbrew started as a fork of [zerobrew](https://github.com/zerobrewhq/zerobrew)
+and keeps its license. It is not affiliated with Homebrew. Parts derived from Homebrew are
 under the BSD 2-Clause license in [LICENSE-HOMEBREW](./LICENSE-HOMEBREW).
 
 ## License
