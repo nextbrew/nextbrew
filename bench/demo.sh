@@ -29,11 +29,11 @@ sleep 3
 tmux kill-server
 EOF
 chmod +x $pane
-TERM=xterm-256color asciinema rec --headless --overwrite --window-size 120x14 -c "tmux -f /dev/null new-session \
+TERM=xterm-256color asciinema rec --headless --overwrite --window-size 160x16 -c "tmux -f /dev/null new-session \
   'sleep 0.5; HOMEBREW_NO_PATH_SHADOW_CHECK=1 $pane nextbrew \"nb install $*\" $OUT' \; \
   set status off \; set pane-border-status top \; set pane-border-format ' #{pane_title} ' \; \
   select-pane -T nextbrew \; \
   split-window -h 'sleep 0.5; $pane Homebrew \"brew install $*\" $OUT' \; select-pane -T Homebrew" $OUT/demo.cast
 # Stop before tmux leaves the alternate screen so the GIF ends on both times.
 awk '/1049l/ { exit } { print }' $OUT/demo.cast > $OUT/demo.trim.cast
-agg --font-size 20 --theme monokai $OUT/demo.trim.cast $OUT/demo.gif
+agg --font-size 16 --theme monokai $OUT/demo.trim.cast $OUT/demo.gif
