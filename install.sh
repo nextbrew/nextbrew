@@ -30,6 +30,8 @@ error_exit() {
 
     if [[ $# -gt 0 ]]; then
         local msg
+        # error_exit takes a printf format, as printf does.
+        # shellcheck disable=SC2059
         printf -v msg "$format" "$@"
         printf "\r\033[K"
         printf '\033[?25h'
