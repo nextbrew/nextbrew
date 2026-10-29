@@ -69,6 +69,11 @@ cargo build --release
 ./target/release/nb --version
 ```
 
+## Sponsoring
+
+If nextbrew saves you time, you can support its development through
+[GitHub Sponsors](https://github.com/sponsors/zorro901).
+
 ## Credits
 
 nextbrew started as a fork of [zerobrew](https://github.com/zerobrewhq/zerobrew)
