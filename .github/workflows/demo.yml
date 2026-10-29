@@ -1,7 +1,8 @@
 name: demo
 
-# Records the README demo GIF (bench/demo.sh): a released nb and the runner's
-# Homebrew install the same formulae side by side. By hand.
+# Records a demo GIF with a released nb on a runner. bench/demo.sh (README):
+# nb and the runner's Homebrew install the same formulae side by side.
+# bench/demo-migrate.sh (article): `nb migrate` from Homebrew. By hand.
 on:
   workflow_dispatch:
     inputs:
@@ -9,8 +10,11 @@ on:
         description: nextbrew release to record
         default: v0.1.2
       formulae:
-        description: Formulae (space-separated)
+        description: Formulae (space-separated; cask:<name> for casks in demo-migrate.sh)
         default: bat fd ripgrep
+      script:
+        description: Recording script
+        default: bench/demo.sh
 
 permissions: {}
 
@@ -58,9 +62,10 @@ jobs:
         timeout-minutes: 12
         env:
           FORMULAE: ${{ inputs.formulae }}
+          SCRIPT: ${{ inputs.script }}
         run: |
           read -ra formulae <<< "$FORMULAE"
-          zsh bench/demo.sh "$RUNNER_TEMP/demo" "${formulae[@]}"
+          zsh "$SCRIPT" "$RUNNER_TEMP/demo" "${formulae[@]}"
 
       - name: What was running
         if: failure()
