@@ -118,20 +118,22 @@ pub async fn execute(
         errors.push((formulas[0].clone(), e));
     }
 
-    if errors.is_empty() {
-        refused_casks.map_or(Ok(()), Err)
-    } else {
-        for (name, err) in &errors {
-            ui.error(format!(
-                "Failed to uninstall {}: {}",
-                style(name).bold(),
-                err
-            ))
-            .map_err(ui_error)?;
-        }
-        // Return just the first error up. TODO: don't return errors from this fn?
-        Err(errors.remove(0).1)
+    // The last failure goes up for the exit status and is printed there, so
+    // it is not printed here too.
+    let Some((name, err)) = errors.pop() else {
+        return refused_casks.map_or(Ok(()), Err);
+    };
+    for (name, err) in &errors {
+        ui.error(format!(
+            "Failed to uninstall {}: {}",
+            style(name).bold(),
+            err
+        ))
+        .map_err(ui_error)?;
     }
+    Err(nb_core::Error::ExecutionError {
+        message: format!("Failed to uninstall {}: {}", style(name).bold(), err),
+    })
 }
 
 fn ui_error(err: std::io::Error) -> nb_core::Error {
