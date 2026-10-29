@@ -475,38 +475,27 @@ async fn migrate_services(
     Ok(())
 }
 
-// FIXME: Abstract this return type to a more structured type (e.g., a struct)
+/// The formulae nextbrew now has, and those it does not.
 fn check_install_status(
     installer: &nb_io::Installer,
     formula_names: &[String],
 ) -> Result<(Vec<String>, Vec<String>), nb_core::Error> {
-    let mut successfully_installed = Vec::new();
-    let mut failed_installed = Vec::new();
-
-    let installed_kegs =
-        installer
-            .list_installed()
-            .map_err(|e| nb_core::Error::StoreCorruption {
-                message: format!("Failed to verify installation status: {}", e),
-            })?;
-
-    let installed_names: std::collections::HashSet<String> =
-        installed_kegs.into_iter().map(|k| k.name).collect();
-    for name in formula_names {
-        // One from another tap must be the one from that tap.
-        let installed = if name.contains('/') {
+    let installed_names: std::collections::HashSet<String> = installer
+        .list_installed()
+        .map_err(|e| nb_core::Error::StoreCorruption {
+            message: format!("Failed to verify installation status: {}", e),
+        })?
+        .into_iter()
+        .map(|k| k.name)
+        .collect();
+    // One from another tap must be the one from that tap.
+    Ok(formula_names.iter().cloned().partition(|name| {
+        if name.contains('/') {
             installer.get_installed_by_full_name(name).is_some()
         } else {
             installed_names.contains(name)
-        };
-        if !installed {
-            failed_installed.push(name.clone());
-        } else {
-            successfully_installed.push(name.clone());
         }
-    }
-
-    Ok((successfully_installed, failed_installed))
+    }))
 }
 
 fn ui_error(err: std::io::Error) -> nb_core::Error {

@@ -3,6 +3,7 @@
 
 use std::sync::LazyLock;
 
+use futures::{StreamExt, TryStreamExt, stream};
 use nb_core::Error;
 use regex::Regex;
 use serde_json::{Value, json};
@@ -110,38 +111,80 @@ pub fn target(json: &Value, version: &str) -> Option<Target> {
 }
 
 /// The advisories for each target, in their order.
-// ponytail: one page of results per target, and no `--no-ignore-patches`:
-// an advisory a formula's own patch fixes is still reported.
+// ponytail: no `--no-ignore-patches`: an advisory a formula's own patch fixes
+// is still reported.
 pub async fn scan(http: &reqwest::Client, targets: &[Target]) -> Result<Vec<Vec<Advisory>>, Error> {
-    let queries: Vec<Value> = targets
-        .iter()
-        .map(|t| json!({"package": {"ecosystem": "GIT", "name": t.repo}, "version": t.tag}))
-        .collect();
-    let batch: Value = post(
-        http,
-        &format!("{OSV}/querybatch"),
-        json!({"queries": queries}),
-    )
-    .await?;
-    let mut found = Vec::with_capacity(targets.len());
-    for result in batch["results"].as_array().into_iter().flatten() {
-        let mut advisories = Vec::new();
-        for vuln in result["vulns"].as_array().into_iter().flatten() {
-            let id = vuln["id"].as_str().unwrap_or_default().to_string();
-            let record = get(http, &format!("{OSV}/vulns/{id}")).await?;
-            let summary = record["summary"]
-                .as_str()
-                .or_else(|| record["details"].as_str())
-                .unwrap_or_default()
-                .lines()
-                .next()
-                .unwrap_or_default()
-                .to_string();
-            advisories.push(Advisory { id, summary });
+    scan_at(http, OSV, targets).await
+}
+
+async fn scan_at(
+    http: &reqwest::Client,
+    osv: &str,
+    targets: &[Target],
+) -> Result<Vec<Vec<Advisory>>, Error> {
+    // IDs page by page; a target with more comes back with a token for the next.
+    let mut ids: Vec<Vec<String>> = vec![Vec::new(); targets.len()];
+    let mut tokens: Vec<Option<String>> = vec![None; targets.len()];
+    let mut pending: Vec<usize> = (0..targets.len()).collect();
+    while !pending.is_empty() {
+        let queries: Vec<Value> = pending
+            .iter()
+            .map(|&i| {
+                let t = &targets[i];
+                let mut query =
+                    json!({"package": {"ecosystem": "GIT", "name": t.repo}, "version": t.tag});
+                if let Some(token) = &tokens[i] {
+                    query["page_token"] = json!(token);
+                }
+                query
+            })
+            .collect();
+        let batch = post(
+            http,
+            &format!("{osv}/querybatch"),
+            json!({"queries": queries}),
+        )
+        .await?;
+        let results = batch["results"].as_array().cloned().unwrap_or_default();
+        let mut next = Vec::new();
+        for (&i, result) in pending.iter().zip(&results) {
+            let vulns = result["vulns"].as_array().into_iter().flatten();
+            ids[i].extend(vulns.filter_map(|v| v["id"].as_str()).map(String::from));
+            tokens[i] = result["next_page_token"].as_str().map(String::from);
+            if tokens[i].is_some() {
+                next.push(i);
+            }
         }
-        found.push(advisories);
+        pending = next;
     }
-    Ok(found)
+
+    // The details, a few at a time, in the IDs' order.
+    let details: Vec<Advisory> = stream::iter(ids.iter().flatten())
+        .map(|id| advisory(http, osv, id))
+        .buffered(8)
+        .try_collect()
+        .await?;
+    let mut details = details.into_iter();
+    Ok(ids
+        .iter()
+        .map(|ids| details.by_ref().take(ids.len()).collect())
+        .collect())
+}
+
+async fn advisory(http: &reqwest::Client, osv: &str, id: &str) -> Result<Advisory, Error> {
+    let record = get(http, &format!("{osv}/vulns/{id}")).await?;
+    let summary = record["summary"]
+        .as_str()
+        .or_else(|| record["details"].as_str())
+        .unwrap_or_default()
+        .lines()
+        .next()
+        .unwrap_or_default()
+        .to_string();
+    Ok(Advisory {
+        id: id.to_string(),
+        summary,
+    })
 }
 
 async fn post(http: &reqwest::Client, url: &str, body: Value) -> Result<Value, Error> {
@@ -212,5 +255,60 @@ mod tests {
         assert_eq!(target.repo, "https://git.savannah.gnu.org/git/wget.git");
         assert_eq!(target.tag, "1.25.0");
         assert_eq!(super::target(&json, "1.24.5_1").unwrap().tag, "1.24.5");
+    }
+
+    #[tokio::test]
+    async fn reads_every_page_and_every_advisory() {
+        use wiremock::matchers::{body_string_contains, method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/querybatch"))
+            .and(body_string_contains("page_token"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "results": [{"vulns": [{"id": "B-2"}]}]
+            })))
+            .with_priority(1)
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/querybatch"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "results": [
+                    {"vulns": [{"id": "A-1"}]},
+                    {"vulns": [{"id": "B-1"}], "next_page_token": "t"}
+                ]
+            })))
+            .mount(&server)
+            .await;
+        for id in ["A-1", "B-1", "B-2"] {
+            Mock::given(method("GET"))
+                .and(path(format!("/vulns/{id}")))
+                .respond_with(
+                    ResponseTemplate::new(200)
+                        .set_body_json(json!({"summary": format!("{id} summary")})),
+                )
+                .mount(&server)
+                .await;
+        }
+        let target = |name: &str| Target {
+            name: name.into(),
+            version: "1".into(),
+            repo: format!("https://github.com/x/{name}"),
+            tag: "1".into(),
+        };
+        let found = scan_at(
+            &reqwest::Client::new(),
+            &server.uri(),
+            &[target("a"), target("b")],
+        )
+        .await
+        .unwrap();
+        let ids: Vec<Vec<&str>> = found
+            .iter()
+            .map(|a| a.iter().map(|a| a.id.as_str()).collect())
+            .collect();
+        assert_eq!(ids, [vec!["A-1"], vec!["B-1", "B-2"]]);
+        assert_eq!(found[1][1].summary, "B-2 summary");
     }
 }
