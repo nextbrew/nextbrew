@@ -107,7 +107,7 @@ no_modify_path=false
 binary_paths=()
 
 usage() {
-    printf "zero%bbrew%b Installer\n" "$ORANGE" "$NC"
+    printf "next%bbrew%b Installer\n" "$ORANGE" "$NC"
     printf "\n"
     printf "Usage: install.sh %b[options]%b\n" "$MUTED" "$NC"
     printf "\n"
@@ -137,7 +137,7 @@ spinner() {
         sleep 0.1
     done
 
-    wait "$pid" 2>/dev/null && exit_code=0 || exit_code=$?
+    wait "$pid" 2>/dev/null || exit_code=$?
 
     printf "\r\033[K"
     printf '\033[?25h'
@@ -477,7 +477,7 @@ fi
 if [[ -d "$NEXTBREW_PREFIX/lib/pkgconfig" ]]; then
     export PKG_CONFIG_PATH="$NEXTBREW_PREFIX/lib/pkgconfig:${PKG_CONFIG_PATH:-}"
 fi
-if [[ -d "/opt/homebrew/lib/pkgconfig" ]] && [[ ! "${PKG_CONFIG_PATH:-}" =~ "/opt/homebrew/lib/pkgconfig" ]]; then
+if [[ -d "/opt/homebrew/lib/pkgconfig" ]] && [[ "${PKG_CONFIG_PATH:-}" != *"/opt/homebrew/lib/pkgconfig"* ]]; then
     export PKG_CONFIG_PATH="/opt/homebrew/lib/pkgconfig:${PKG_CONFIG_PATH:-}"
 fi
 

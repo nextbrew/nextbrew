@@ -4,7 +4,6 @@
 set -e
 
 # Colors for output
-RED='\033[0;31m'
 GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
 CYAN='\033[0;36m'
@@ -32,10 +31,12 @@ case "$SHELL_NAME" in
     # Add completion function to shell config if not already there
     ZSHENV="${ZDOTDIR:-$HOME}/.zshenv"
     if ! grep -q "fpath=.*\.zsh/completions" "$ZSHENV" 2>/dev/null; then
-      echo "" >> "$ZSHENV"
-      echo "# nb completions" >> "$ZSHENV"
-      echo "fpath=(${ZDOTDIR:-\$HOME}/.zsh/completions \$fpath)" >> "$ZSHENV"
-      echo "autoload -Uz compinit && compinit" >> "$ZSHENV"
+      {
+        echo ""
+        echo "# nb completions"
+        echo "fpath=(${ZDOTDIR:-\$HOME}/.zsh/completions \$fpath)"
+        echo "autoload -Uz compinit && compinit"
+      } >> "$ZSHENV"
       echo -e "${GREEN}✓${NC} Added completion function to $ZSHENV"
     else
       echo -e "${YELLOW}→${NC} Completion function already in $ZSHENV"
@@ -54,8 +55,6 @@ case "$SHELL_NAME" in
       BASH_COMPLETIONS_DIR="/opt/homebrew/etc/bash_completion.d"
     elif [[ -d /usr/local/etc/bash_completion.d ]]; then
       BASH_COMPLETIONS_DIR="/usr/local/etc/bash_completion.d"
-    elif [[ -d ~/.bash_completion.d ]]; then
-      BASH_COMPLETIONS_DIR="$HOME/.bash_completion.d"
     else
       BASH_COMPLETIONS_DIR="$HOME/.bash_completion.d"
     fi
@@ -74,9 +73,7 @@ case "$SHELL_NAME" in
     fi
     
     if ! grep -q "bash_completion.d/nb" "$BASHRC" 2>/dev/null; then
-      echo "" >> "$BASHRC"
-      echo "# nb completions" >> "$BASHRC"
-      echo "source $BASH_COMPLETIONS_DIR/nb" >> "$BASHRC"
+      printf '\n# nb completions\nsource "%s"\n' "$BASH_COMPLETIONS_DIR/nb" >> "$BASHRC"
       echo -e "${GREEN}✓${NC} Added completion source to $BASHRC"
     else
       echo -e "${YELLOW}→${NC} Completion already sourced in $BASHRC"
