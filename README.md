@@ -47,6 +47,15 @@ the details.
 curl -fsSL https://nextbrew.dev/install | bash
 ```
 
+The installer adds a `# >>> nextbrew >>>` block to your shell config
+(`~/.zshenv` or `~/.zshrc`, `~/.bash_profile` or `~/.bashrc`). Restart your
+terminal or run the `source` command it prints. To keep your config untouched,
+pass `--no-modify-path`:
+
+```bash
+curl -fsSL https://nextbrew.dev/install | bash -s -- --no-modify-path
+```
+
 > Status: early development. Expect breaking changes before 1.0.
 
 ## Quick start
