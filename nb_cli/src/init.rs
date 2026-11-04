@@ -261,8 +261,8 @@ export NEXTBREW_ROOT={root}
 export NEXTBREW_PREFIX={prefix}
 export PKG_CONFIG_PATH="$NEXTBREW_PREFIX/lib/pkgconfig:${{PKG_CONFIG_PATH:-}}"
 
-# SSL/TLS certificates (only if ca-certificates is installed)
-if [ -z "${{CURL_CA_BUNDLE:-}}" ] || [ -z "${{SSL_CERT_FILE:-}}" ]; then
+# SSL/TLS certificates (only if ca-certificates is installed and neither is set)
+if [ -z "${{CURL_CA_BUNDLE:-}}" ] && [ -z "${{SSL_CERT_FILE:-}}" ]; then
   if [ -f "$NEXTBREW_PREFIX/opt/ca-certificates/share/ca-certificates/cacert.pem" ]; then
     [ -z "${{CURL_CA_BUNDLE:-}}" ] && export CURL_CA_BUNDLE="$NEXTBREW_PREFIX/opt/ca-certificates/share/ca-certificates/cacert.pem"
     [ -z "${{SSL_CERT_FILE:-}}" ] && export SSL_CERT_FILE="$NEXTBREW_PREFIX/opt/ca-certificates/share/ca-certificates/cacert.pem"
@@ -319,8 +319,8 @@ else
     set -gx PKG_CONFIG_PATH "$NEXTBREW_PREFIX/lib/pkgconfig"
 end
 
-# SSL/TLS certificates (only if ca-certificates is installed)
-if not set -q CURL_CA_BUNDLE; or not set -q SSL_CERT_FILE
+# SSL/TLS certificates (only if ca-certificates is installed and neither is set)
+if not set -q CURL_CA_BUNDLE; and not set -q SSL_CERT_FILE
     if test -f "$NEXTBREW_PREFIX/opt/ca-certificates/share/ca-certificates/cacert.pem"
 set -q CURL_CA_BUNDLE; or set -gx CURL_CA_BUNDLE "$NEXTBREW_PREFIX/opt/ca-certificates/share/ca-certificates/cacert.pem"
 set -q SSL_CERT_FILE; or set -gx SSL_CERT_FILE "$NEXTBREW_PREFIX/opt/ca-certificates/share/ca-certificates/cacert.pem"
@@ -804,7 +804,7 @@ mod tests {
         assert!(content.contains("/lib/pkgconfig"));
         assert!(
             content.contains(
-                "if [ -z \"${CURL_CA_BUNDLE:-}\" ] || [ -z \"${SSL_CERT_FILE:-}\" ]; then"
+                "if [ -z \"${CURL_CA_BUNDLE:-}\" ] && [ -z \"${SSL_CERT_FILE:-}\" ]; then"
             )
         );
         assert!(content.contains("if [ -z \"${SSL_CERT_DIR:-}\" ]; then"));
@@ -1156,7 +1156,7 @@ mod tests {
         let content = fs::read_to_string(&fish_config).unwrap();
         assert!(content.contains("# nextbrew"));
         assert!(content.contains("set -gx NEXTBREW_DIR"));
-        assert!(content.contains("if not set -q CURL_CA_BUNDLE; or not set -q SSL_CERT_FILE"));
+        assert!(content.contains("if not set -q CURL_CA_BUNDLE; and not set -q SSL_CERT_FILE"));
         assert!(content.contains("if not set -q SSL_CERT_DIR"));
         assert!(content.contains("set -q CURL_CA_BUNDLE; or set -gx CURL_CA_BUNDLE"));
         assert!(content.contains("set -q SSL_CERT_FILE; or set -gx SSL_CERT_FILE"));
