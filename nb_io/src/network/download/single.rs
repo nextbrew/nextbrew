@@ -553,14 +553,24 @@ async fn fetch_part(
         tempfile::tempfile_in(&dir).map_err(Error::network("failed to create part file"))?;
     let mut stream = response.bytes_stream();
     let mut written = 0;
-    while let Some(chunk) = stream.next().await {
-        let chunk = chunk.map_err(Error::network("failed to read part"))?;
-        file.write_all(&chunk)
-            .map_err(Error::network("failed to write part"))?;
-        written += chunk.len() as u64;
-        progress.add(chunk.len() as u64);
+    let read = async {
+        while let Some(chunk) = stream.next().await {
+            let chunk = chunk.map_err(Error::network("failed to read part"))?;
+            file.write_all(&chunk)
+                .map_err(Error::network("failed to write part"))?;
+            written += chunk.len() as u64;
+            progress.add(chunk.len() as u64);
+        }
+        Ok::<_, Error>(())
     }
-    if written != range.end - range.start {
+    .await;
+    let short = read.is_ok() && written != range.end - range.start;
+    if read.is_err() || short {
+        // The part is fetched again: take back what it showed so far.
+        progress.downloaded.fetch_sub(written, Ordering::Relaxed);
+    }
+    read?;
+    if short {
         return Err(Error::NetworkFailure {
             message: format!("part {wanted} ended after {written} bytes"),
         }
@@ -874,6 +884,11 @@ async fn download_response_internal(
     }
     if give_up && next < chunks.len() {
         running.abort_all();
+        while running.join_next().await.is_some() {}
+        // Everything past `next` is fetched again, so it no longer counts.
+        counter
+            .downloaded
+            .store(chunks[next].start, Ordering::Relaxed);
         debug!("fetching the body in chunks failed; fetching the rest at once");
         push_range(
             range_client,
@@ -1375,6 +1390,63 @@ mod tests {
         assert!(std::fs::read(blob).unwrap() == body);
         // Eight chunks: every one after the first by range, none given up on.
         assert_eq!(ranged.load(Ordering::SeqCst), 7);
+    }
+
+    #[tokio::test]
+    async fn chunks_fetched_again_are_not_counted_twice() {
+        let server = MockServer::start().await;
+        let (body, sha) = patterned(9 * 1024 * 1024 + 123);
+        let size = (body.len() as u64)
+            .div_ceil(8)
+            .clamp(CHUNK_MIN_BYTES, CHUNK_MAX_BYTES) as usize;
+        let shared = Arc::new(body.clone());
+        Mock::given(method("GET"))
+            .and(path("/large.tar.gz"))
+            .respond_with(move |request: &Request| {
+                let range = request
+                    .headers
+                    .get("range")
+                    .and_then(|v| v.to_str().ok()?.strip_prefix("bytes=")?.split_once('-'))
+                    .and_then(|(a, b)| Some((a.parse::<usize>().ok()?, b.parse::<usize>().ok()?)));
+                match range {
+                    // The third chunk is always refused, so the rest is
+                    // fetched at once after the others arrived.
+                    Some((start, _)) if start == 2 * size => ResponseTemplate::new(503),
+                    Some((start, end)) => ResponseTemplate::new(206)
+                        .insert_header("accept-ranges", "bytes")
+                        .insert_header(
+                            "content-range",
+                            format!("bytes {start}-{end}/{}", shared.len()),
+                        )
+                        .set_body_bytes(shared[start..=end].to_vec()),
+                    None => ResponseTemplate::new(200)
+                        .insert_header("accept-ranges", "bytes")
+                        .set_body_bytes(shared.to_vec()),
+                }
+            })
+            .mount(&server)
+            .await;
+        let shown = Arc::new(AtomicU64::new(0));
+        let seen = shown.clone();
+        let progress: DownloadProgressCallback = Arc::new(move |event| match event {
+            InstallProgress::DownloadProgress { downloaded, .. } => {
+                seen.fetch_max(downloaded, Ordering::SeqCst);
+            }
+            InstallProgress::DownloadCompleted { total_bytes, .. } => {
+                seen.fetch_max(total_bytes, Ordering::SeqCst);
+            }
+            _ => {}
+        });
+
+        let tmp = TempDir::new().unwrap();
+        let url = format!("{}/large.tar.gz", server.uri());
+        let blob = downloader(&tmp)
+            .download_with_progress(&url, &sha, Some("big".into()), Some(progress), None)
+            .await
+            .unwrap();
+
+        assert!(std::fs::read(blob).unwrap() == body);
+        assert_eq!(shown.load(Ordering::SeqCst), body.len() as u64);
     }
 
     #[test]
