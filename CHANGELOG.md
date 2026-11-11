@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.4] - 2026-11-11
+
+### Fixed
+- `nb shellenv` leaves `CURL_CA_BUNDLE` and `SSL_CERT_FILE` alone when either is already set, so a certificate bundle of your own (a corporate proxy's root CA) is still used by tools that read `CURL_CA_BUNDLE` first, such as the `google-cloud-sdk` cask's installer
+- A download's progress no longer counts chunks fetched again, which could show more downloaded than its size
+
 ## [0.1.3] - 2026-10-29
 
 ### Added
