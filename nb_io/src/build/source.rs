@@ -31,7 +31,7 @@ pub async fn download_and_extract_source(
         .await
         .map_err(Error::file("failed to create source directory"))?;
 
-    unpack(&tarball_path, &src_dir).await?;
+    unpack(&tarball_path, &src_dir, url).await?;
 
     find_source_root(&src_dir).await
 }
@@ -154,13 +154,13 @@ fn newest_file_time(dir: &Path) -> Option<i64> {
 /// `UnpackStrategy`'s as Homebrew picks it for a source: a zip with our
 /// own unzip, anything else with the system's `tar`, which reads every
 /// compression a source comes in (`.tar.bz2`, `.tar.lz` and the like) and
-/// names the files as Homebrew's do.
-async fn unpack(archive: &Path, dir: &Path) -> Result<(), Error> {
-    let zip = fs::read(archive)
+/// names the files as Homebrew's do. A file that is no archive at all (a
+/// bare binary) is copied in under the URL's name, as `Uncompressed` does.
+async fn unpack(archive: &Path, dir: &Path, url: &str) -> Result<(), Error> {
+    let bytes = fs::read(archive)
         .await
-        .map(|bytes| bytes.starts_with(b"PK\x03\x04"))
-        .unwrap_or(false);
-    if zip {
+        .map_err(Error::file("failed to read the source"))?;
+    if bytes.starts_with(b"PK\x03\x04") {
         return extract_tarball(archive, dir);
     }
     let output = tokio::process::Command::new("tar")
@@ -174,12 +174,46 @@ async fn unpack(archive: &Path, dir: &Path) -> Result<(), Error> {
     if output.status.success() {
         return Ok(());
     }
+    if !is_archive(&bytes) {
+        let name = url_basename(url);
+        return fs::write(dir.join(name), &bytes)
+            .await
+            .map_err(Error::file("failed to copy the source"));
+    }
     Err(Error::ExecutionError {
         message: format!(
             "failed to unpack the source: {}",
             String::from_utf8_lossy(&output.stderr).trim()
         ),
     })
+}
+
+/// Whether `bytes` start as one of the archives or compressions a source
+/// comes in.
+fn is_archive(bytes: &[u8]) -> bool {
+    const MAGIC: &[&[u8]] = &[
+        b"\x1f\x8b",           // gzip
+        b"\x1f\x9d",           // compress
+        b"BZh",                // bzip2
+        b"\xfd7zXZ\0",         // xz
+        b"\x5d\0\0",           // lzma
+        b"\x28\xb5\x2f\xfd",   // zstd
+        b"LZIP",               // lzip
+        b"7z\xbc\xaf\x27\x1c", // 7-Zip
+        b"xar!",               // xar
+        b"Rar!",               // rar
+    ];
+    MAGIC.iter().any(|magic| bytes.starts_with(magic))
+        || bytes.get(257..262) == Some(b"ustar".as_slice())
+}
+
+/// The last segment of the URL's path, as Homebrew names a download.
+fn url_basename(url: &str) -> &str {
+    let path = url.split(['?', '#']).next().unwrap_or(url);
+    path.rsplit('/')
+        .next()
+        .filter(|name| !name.is_empty())
+        .unwrap_or("source")
 }
 
 /// The formula's own `mirror`s for its source, from its file: those at
@@ -357,6 +391,37 @@ mod tests {
         std::fs::create_dir(&work).unwrap();
         let err = clone_git_source(&url, &wrong, &work).await.unwrap_err();
         assert!(err.to_string().contains("v1 tag should be"), "{err}");
+    }
+
+    #[tokio::test]
+    async fn a_bare_binary_is_staged_under_the_urls_name() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let download = tmp.path().join("source.tar.gz");
+        std::fs::write(&download, b"\xcf\xfa\xed\xfe not an archive").unwrap();
+        let src = tmp.path().join("src");
+        std::fs::create_dir(&src).unwrap();
+
+        let url = "https://github.com/Azure/bicep/releases/download/v0.49.2/bicep-osx-arm64?x=1";
+        unpack(&download, &src, url).await.unwrap();
+
+        let staged = std::fs::read(src.join("bicep-osx-arm64")).unwrap();
+        assert_eq!(staged, b"\xcf\xfa\xed\xfe not an archive");
+        assert_eq!(find_source_root(&src).await.unwrap(), src);
+    }
+
+    #[tokio::test]
+    async fn a_broken_archive_is_still_an_error() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let download = tmp.path().join("source.tar.gz");
+        std::fs::write(&download, b"\x1f\x8b truncated").unwrap();
+        let src = tmp.path().join("src");
+        std::fs::create_dir(&src).unwrap();
+
+        assert!(
+            unpack(&download, &src, "https://example.com/a.tar.gz")
+                .await
+                .is_err()
+        );
     }
 
     #[tokio::test]

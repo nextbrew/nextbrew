@@ -229,21 +229,18 @@ pub async fn execute(
         let _ = Command::new("brew").arg("unpin").args(&pinned).status();
     }
 
-    let mut args = vec!["uninstall"];
-    if force {
-        args.push("--force");
-    }
-    for target in &successfully_installed {
-        args.push(target);
-    }
+    let uninstall = if force {
+        vec!["uninstall", "--force"]
+    } else {
+        vec!["uninstall"]
+    };
 
     let status = Command::new("brew")
-        .args(&args)
+        .args(&uninstall)
+        .args(&successfully_installed)
         .status()
         .map_err(|e| format!("Failed to run brew uninstall: {}", e));
 
-    // brew can report success and still leave some behind, so ask it what
-    // is left.
     match &status {
         Ok(s) if s.success() => ui.step_ok().map_err(ui_error)?,
         res => {
@@ -253,15 +250,17 @@ pub async fn execute(
             }
         }
     }
+    // brew can report success and still leave some behind, so ask it what
+    // is left.
     let mut uninstall_failed = successfully_installed.clone();
-    if let Ok(output) = Command::new("brew").args(["list", "--formula"]).output()
-        && output.status.success()
-    {
-        let stdout = String::from_utf8_lossy(&output.stdout);
-        let still_installed: std::collections::HashSet<&str> = stdout.lines().collect();
-        // It lists the Cellar's names, without the tap.
-        uninstall_failed
-            .retain(|target| still_installed.contains(target.rsplit('/').next().unwrap_or(target)));
+    retain_still_installed(&mut uninstall_failed);
+    // brew refuses the whole command when one of them is still needed by a
+    // formula it keeps, so try the rest one at a time.
+    if status.is_ok() && !uninstall_failed.is_empty() {
+        for target in &uninstall_failed {
+            let _ = Command::new("brew").args(&uninstall).arg(target).status();
+        }
+        retain_still_installed(&mut uninstall_failed);
     }
 
     let uninstalled = successfully_installed.len() - uninstall_failed.len();
@@ -289,6 +288,20 @@ pub async fn execute(
     }
 
     Ok(())
+}
+
+/// Keep those of `targets` that `brew list --formula` still shows; all of
+/// them if brew cannot say.
+fn retain_still_installed(targets: &mut Vec<String>) {
+    if let Ok(output) = Command::new("brew").args(["list", "--formula"]).output()
+        && output.status.success()
+    {
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let still_installed: std::collections::HashSet<&str> = stdout.lines().collect();
+        // It lists the Cellar's names, without the tap.
+        targets
+            .retain(|target| still_installed.contains(target.rsplit('/').next().unwrap_or(target)));
+    }
 }
 
 /// Move each cask from Homebrew to nextbrew: nextbrew checks and downloads
